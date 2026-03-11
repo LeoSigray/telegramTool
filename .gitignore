@@ -1,0 +1,29 @@
+# Virtual environment
+.venv/
+
+# Telethon sessions (содержат авторизацию — не коммитить!)
+*.session
+*.session-journal
+
+# Account credentials (данные аккаунтов — не коммитить!)
+accounts/*.txt
+sessions/
+tdata_accounts/
+
+# Proxy config (содержит приватные данные)
+proxy.txt
+
+# Excel данные
+data/targets.xlsx
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+.vscode/
+
+# macOS
+.DS_Store

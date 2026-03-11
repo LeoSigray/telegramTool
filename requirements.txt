@@ -1,0 +1,5 @@
+telethon>=1.42.0
+requests>=2.31.0
+openpyxl>=3.1.0
+opentele>=1.15.1
+pysocks>=1.7.1
