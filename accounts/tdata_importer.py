@@ -31,9 +31,14 @@ def import_tdata_interactive():
     try:
         from opentele.tl import TelegramClient as OpenTeleClient
         from opentele.api import UseCurrentSession
-    except ImportError:
-        print("Библиотека opentele не установлена.")
-        print("Установите: pip install opentele")
+    except (ImportError, BaseException) as e:
+        print("\n[ОШИБКА] Не удалось загрузить opentele.")
+        print("Причина: opentele несовместима с telethon >= 1.25")
+        print("\nРешение — переустановить telethon совместимой версии:")
+        print("  pip uninstall telethon -y")
+        print("  pip install \"telethon>=1.21,<1.25\"")
+        print("\nЛибо установить зависимости заново:")
+        print("  pip install -r requirements.txt --upgrade")
         return
 
     os.makedirs(SESSIONS_DIR, exist_ok=True)
