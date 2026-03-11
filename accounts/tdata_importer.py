@@ -8,6 +8,9 @@ def import_tdata_interactive():
     """
     Интерактивный импорт tdata папки.
     Использует opentele для конвертации tdata -> Telethon session.
+
+    ВАЖНО: opentele требует отдельной установки совместимой версии:
+        pip install opentele==1.0.5 "telethon==1.24.0"
     """
     path = input("Путь к папке tdata: ").strip()
 
@@ -19,41 +22,42 @@ def import_tdata_interactive():
         print(f"Папка не найдена: {path}")
         return
 
-    # Проверяем наличие ключевых файлов tdata
+    # Если указана родительская папка — ищем вложенную tdata
     key_data = os.path.join(path, "key_datas")
     if not os.path.exists(key_data):
-        # Возможно пользователь указал родительскую папку
         tdata_subdir = os.path.join(path, "tdata")
         if os.path.isdir(tdata_subdir):
             path = tdata_subdir
             print(f"Найдена подпапка tdata, использую: {path}")
 
+    # Пробуем импортировать opentele
     try:
         from opentele.tl import TelegramClient as OpenTeleClient
         from opentele.api import UseCurrentSession
-    except (ImportError, BaseException) as e:
+    except (ImportError, BaseException):
         print("\n[ОШИБКА] Не удалось загрузить opentele.")
-        print("Причина: opentele несовместима с telethon >= 1.25")
-        print("\nРешение — переустановить telethon совместимой версии:")
-        print("  pip uninstall telethon -y")
-        print("  pip install \"telethon>=1.21,<1.25\"")
-        print("\nЛибо установить зависимости заново:")
-        print("  pip install -r requirements.txt --upgrade")
+        print("─" * 50)
+        print("opentele конфликтует с telethon 1.42+.")
+        print("\nДля импорта tdata установи совместимые версии:")
+        print("  pip uninstall telethon opentele -y")
+        print('  pip install opentele==1.0.5 "telethon==1.24.0"')
+        print("\nПосле импорта верни обратно:")
+        print("  pip install -r requirements.txt")
+        print("─" * 50)
         return
 
     os.makedirs(SESSIONS_DIR, exist_ok=True)
+    os.makedirs(TDATA_DIR, exist_ok=True)
 
-    # Копируем tdata во временную папку для безопасности
-    account_name = input("Имя для аккаунта (например phone или id): ").strip()
+    account_name = input("Имя для аккаунта (например номер телефона): ").strip()
     if not account_name:
         account_name = os.path.basename(os.path.dirname(path)) or "imported"
 
     tdata_copy = os.path.join(TDATA_DIR, account_name)
-    os.makedirs(TDATA_DIR, exist_ok=True)
 
     if os.path.exists(tdata_copy):
-        print(f"Папка {tdata_copy} уже существует. Перезаписать? (y/n): ", end="")
-        if input().strip().lower() != "y":
+        overwrite = input(f"Папка {tdata_copy} уже существует. Перезаписать? (y/n): ").strip().lower()
+        if overwrite != "y":
             return
         shutil.rmtree(tdata_copy)
 
@@ -61,15 +65,14 @@ def import_tdata_interactive():
     shutil.copytree(path, tdata_copy)
 
     try:
-        # Конвертация tdata -> Telethon session
         session_path = os.path.join(SESSIONS_DIR, account_name)
-        client = OpenTeleClient.FromTDesktop(
+        OpenTeleClient.FromTDesktop(
             tdata_copy,
             session=session_path,
             flag=UseCurrentSession,
         )
-        print(f"Аккаунт импортирован: {session_path}.session")
-        print("Для проверки используйте пункт 'Список аккаунтов' в меню.")
+        print(f"\nАккаунт импортирован: {session_path}.session")
+        print("Проверить аккаунт можно через меню -> Управление аккаунтами -> Проверить аккаунты.")
     except Exception as e:
-        print(f"Ошибка импорта tdata: {e}")
-        print("Убедитесь что tdata содержит корректную сессию.")
+        print(f"\nОшибка импорта tdata: {e}")
+        print("Убедитесь что tdata содержит корректную сессию Telegram Desktop.")

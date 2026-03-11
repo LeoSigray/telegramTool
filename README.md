@@ -23,7 +23,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> ⚠️ **Важно:** `requirements.txt` фиксирует `telethon<1.25` — это обязательно для совместимости с `opentele` (импорт tdata). Устанавливай зависимости строго через `pip install -r requirements.txt`, не обновляй telethon отдельно.
+> ⚠️ **Импорт tdata:** `opentele` конфликтует с `telethon>=1.25`, поэтому в `requirements.txt` она **не включена**. Если нужен импорт tdata — временно установи совместимые версии:
+> ```
+> pip uninstall telethon opentele -y
+> pip install opentele==1.0.5 "telethon==1.24.0"
+> ```
+> После импорта верни основные зависимости: `pip install -r requirements.txt`
 
 ### 3. Настроить конфигурацию
 Открой `config.py` и заполни свои данные:

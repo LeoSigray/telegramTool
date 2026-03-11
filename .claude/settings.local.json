@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/pip install:*)",
+      "Bash(.venv/bin/python -c \":*)",
+      "Bash(git init:*)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)",
+      "Bash(curl -s -H \"Authorization: token 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\" https://api.github.com/user)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(''''Login:'''', d.get\\(''''login''''\\)\\)\")",
+      "Bash(curl -s -H \"Authorization: token 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\" https://api.github.com/repos/Leonardo2282/telegramTool)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(''''Exists:'''', d.get\\(''''full_name''''\\)\\); print\\(''''Private:'''', d.get\\(''''private''''\\)\\); print\\(''''Permissions:'''', d.get\\(''''permissions''''\\)\\)\")",
+      "Bash(curl -s -X POST -H \"Authorization: token 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\" -H \"Content-Type: application/json\" -d '{\"\"\"\"name\"\"\"\":\"\"\"\"telegramTool\"\"\"\",\"\"\"\"private\"\"\"\":true,\"\"\"\"description\"\"\"\":\"\"\"\"Telegram automation tool: LZT buyer, tdata import, DM/chat sender, inviter\"\"\"\"}' https://api.github.com/user/repos)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(''''Created:'''', d.get\\(''''full_name''''\\)\\); print\\(''''URL:'''', d.get\\(''''html_url''''\\)\\)\")",
+      "Bash(curl -s -X POST -H \"Authorization: token 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\" -H \"Content-Type: application/json\" -d '{\"\"\"\"name\"\"\"\":\"\"\"\"telegramTool\"\"\"\",\"\"\"\"private\"\"\"\":true}' https://api.github.com/user/repos)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d, indent=2\\)\\)\")",
+      "Bash(curl -s -X POST -H \"Authorization: token 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\" -H \"Content-Type: application/json\" -d '{\"\"\"\"name\"\"\"\":\"\"\"\"telegramTool\"\"\"\",\"\"\"\"private\"\"\"\":true}' https://api.github.com/user/repos)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(''''Result:'''', d.get\\(''''full_name''''\\) or d.get\\(''''message''''\\)\\)\")",
+      "Bash(python3 -c \"import json,sys; print\\(json.dumps\\(json.load\\(sys.stdin\\), indent=2\\)\\)\")",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"Add README with setup instructions:*)",
+      "Bash(git commit -m \"Fix opentele compatibility: pin telethon<1.25, improve error handling:*)"
+    ]
+  }
+}
