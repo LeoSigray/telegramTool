@@ -1,10 +1,74 @@
 import os
 import glob
+import sqlite3
 
 from telethon import TelegramClient
 
 from config import CONFIG, SESSIONS_DIR
 from proxy_manager import get_telethon_proxy
+
+
+def fix_session_version(session_path: str) -> bool:
+    """
+    Исправляет версию .session файла до 7 (Telethon CURRENT_VERSION).
+    Нужно если сессия была создана со старой версией — Telethon падал с
+    'table update_state already exists' при апгрейде.
+    Возвращает True если была произведена правка.
+    """
+    try:
+        db = sqlite3.connect(session_path)
+        row = db.execute("SELECT version FROM version LIMIT 1").fetchone()
+        if row and row[0] < 7:
+            # Дорастим схему вручную до версии 7
+            old = row[0]
+            c = db.cursor()
+            if old <= 2:
+                try:
+                    c.execute("DROP TABLE IF EXISTS sent_files")
+                    c.execute("""CREATE TABLE sent_files (
+                        md5_digest blob, file_size integer, type integer,
+                        id integer, hash integer,
+                        primary key(md5_digest, file_size, type))""")
+                except Exception:
+                    pass
+            if old <= 3:
+                try:
+                    c.execute("""CREATE TABLE IF NOT EXISTS update_state (
+                        id integer primary key, pts integer, qts integer,
+                        date integer, seq integer)""")
+                except Exception:
+                    pass
+            if old <= 4:
+                try:
+                    c.execute("ALTER TABLE sessions ADD COLUMN takeout_id integer")
+                except Exception:
+                    pass
+            if old <= 5:
+                try:
+                    c.execute("DELETE FROM entities")
+                except Exception:
+                    pass
+            if old <= 6:
+                try:
+                    c.execute("ALTER TABLE entities ADD COLUMN date integer")
+                except Exception:
+                    pass
+            c.execute("UPDATE version SET version = 7")
+            db.commit()
+            db.close()
+            return True
+        db.close()
+    except Exception:
+        pass
+    return False
+
+
+def migrate_all_sessions():
+    """Проверяет и исправляет все .session файлы в папке sessions/."""
+    for path in get_session_files():
+        if fix_session_version(path):
+            name = os.path.splitext(os.path.basename(path))[0]
+            print(f"  [migrate] Обновлена сессия: {name}")
 
 
 def get_session_files():

@@ -2,7 +2,7 @@ import asyncio
 import os
 
 from config import load_proxy, save_proxy, SESSIONS_DIR
-from accounts.manager import list_accounts, check_account, get_session_files
+from accounts.manager import list_accounts, check_account, get_session_files, migrate_all_sessions
 from accounts.lzt_buyer import buy_accounts_interactive
 from accounts.tdata_importer import import_tdata_interactive
 from messaging.dm_sender import run_dm_sending
@@ -171,4 +171,5 @@ def main():
 
 
 if __name__ == "__main__":
+    migrate_all_sessions()  # автоматически фиксим старые сессии при старте
     main()
