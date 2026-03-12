@@ -148,7 +148,10 @@ def _col_idx(headers: list, names: list):
 
 
 def log_action(sheet_name, account, target, status, error=""):
-    """Записывает лог действия в соответствующий лист."""
+    """
+    Записывает лог действия в соответствующий лист.
+    Если файл занят другой программой — сохраняет во временный файл рядом.
+    """
     _ensure_excel()
     wb = load_workbook(EXCEL_FILE)
     ws = wb[sheet_name]
@@ -159,8 +162,44 @@ def log_action(sheet_name, account, target, status, error=""):
         status,
         str(error) if error else "",
     ])
-    wb.save(EXCEL_FILE)
+
+    # Пробуем сохранить напрямую
+    try:
+        wb.save(EXCEL_FILE)
+        wb.close()
+        return
+    except PermissionError:
+        pass
+
+    # Файл занят (открыт в Excel/PyCharm) — сохраняем рядом как log_pending.xlsx
     wb.close()
+    pending = os.path.join(os.path.dirname(EXCEL_FILE), "log_pending.xlsx")
+    try:
+        if os.path.exists(pending):
+            # Объединяем с уже накопленным pending файлом
+            existing = load_workbook(pending)
+            if sheet_name in existing.sheetnames:
+                ex_ws = existing[sheet_name]
+            else:
+                ex_ws = existing.create_sheet(sheet_name)
+                ex_ws.append(["timestamp", "account", "target", "status", "error"])
+            ex_ws.append([
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                str(account), str(target), status, str(error) if error else "",
+            ])
+            existing.save(pending)
+            existing.close()
+        else:
+            wb2 = load_workbook(EXCEL_FILE)
+            wb2[sheet_name].append([
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                str(account), str(target), status, str(error) if error else "",
+            ])
+            wb2.save(pending)
+            wb2.close()
+        print(f"  [лог] targets.xlsx занят — запись сохранена в log_pending.xlsx")
+    except Exception as e:
+        print(f"  [лог] Не удалось записать лог: {e}")
 
 
 def log_dm(account, target, status, error=""):
