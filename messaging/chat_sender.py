@@ -15,11 +15,25 @@ from accounts.manager import get_session_files, create_client
 from data.excel_manager import load_chats, log_chat
 
 
-async def send_to_chat(client, session_name, target, message):
-    """Отправляет сообщение в чат/группу/канал. Возвращает (success, error)."""
+def _resolve_chat(target: dict):
+    """Возвращает идентификатор чата для Telethon: int или '@username'."""
     chat_id = target.get("chat_id")
     username = target.get("username")
-    recipient = chat_id or username
+    if chat_id:
+        return int(chat_id)
+    if username:
+        return f"@{username}" if not username.startswith("@") else username
+    return None
+
+
+async def send_to_chat(client, session_name, target, message):
+    """Отправляет сообщение в чат/группу/канал. Возвращает (success, error)."""
+    recipient = _resolve_chat(target)
+    username = target.get("username")
+    chat_id = target.get("chat_id")
+
+    if not recipient:
+        return True, "no_target"
 
     try:
         entity = await client.get_entity(recipient)

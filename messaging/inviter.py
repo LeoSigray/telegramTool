@@ -24,8 +24,9 @@ async def invite_user(client, session_name, target, target_entity, is_megagroup)
     username = target.get("username")
     target_str = username or str(user_id)
 
+    recipient = int(user_id) if user_id else (f"@{username}" if username and not username.startswith("@") else username)
     try:
-        user_entity = await client.get_entity(user_id or username)
+        user_entity = await client.get_entity(recipient)
 
         if is_megagroup:
             await client(InviteToChannelRequest(target_entity, [user_entity]))

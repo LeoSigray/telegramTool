@@ -19,7 +19,12 @@
       "Bash(python3 -c \"import json,sys; print\\(json.dumps\\(json.load\\(sys.stdin\\), indent=2\\)\\)\")",
       "Bash(git add:*)",
       "Bash(git commit -m \"Add README with setup instructions:*)",
-      "Bash(git commit -m \"Fix opentele compatibility: pin telethon<1.25, improve error handling:*)"
+      "Bash(git commit -m \"Fix opentele compatibility: pin telethon<1.25, improve error handling:*)",
+      "Bash(git commit -m \"Fix deps: remove opentele from main requirements, add clear tdata install instructions:*)",
+      "Read(//Users/sergey/Downloads/**)",
+      "Bash(unzip -l \"tdata\\(3\\).zip\")",
+      "Bash(git commit -m \"Rework tdata importer: support zip archives and multi-account structure:*)",
+      "Bash(python3 -c \":*)"
     ]
   }
 }

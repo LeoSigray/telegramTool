@@ -105,12 +105,14 @@ def _parse_mtp_auth(data: bytes):
 # ─────────────────────────── Создание Telethon сессии ────────────────────────
 
 def _make_telethon_session(session_path: str, dc_id: int, auth_key: bytes, user_id: int):
-    """Создаёт .session файл в формате Telethon (SQLite)."""
+    """Создаёт .session файл в формате Telethon (SQLite), version=7."""
     full_path = f"{session_path}.session"
     if os.path.exists(full_path):
         os.remove(full_path)
 
     db = sqlite3.connect(full_path)
+    # Создаём схему, соответствующую Telethon CURRENT_VERSION=7
+    # чтобы _upgrade_database не пытался пересоздавать таблицы
     db.executescript("""
         CREATE TABLE version (version integer primary key);
         CREATE TABLE sessions (
@@ -129,7 +131,7 @@ def _make_telethon_session(session_path: str, dc_id: int, auth_key: bytes, user_
             date integer
         );
         CREATE TABLE sent_files (
-            md5_digest text,
+            md5_digest blob,
             file_size integer,
             type integer,
             id integer,
@@ -143,7 +145,7 @@ def _make_telethon_session(session_path: str, dc_id: int, auth_key: bytes, user_
             date integer,
             seq integer
         );
-        INSERT INTO version VALUES (1);
+        INSERT INTO version VALUES (7);
     """)
 
     ip = DC_IPS.get(dc_id, DC_IPS[2])

@@ -14,11 +14,25 @@ from accounts.manager import get_session_files, create_client
 from data.excel_manager import load_users, log_dm
 
 
-async def send_dm_to_user(client, session_name, target, message):
-    """Отправляет ЛС одному пользователю. Возвращает (success, error)."""
+def _resolve_recipient(target: dict):
+    """Возвращает получателя для Telethon get_entity: int или '@username'."""
     user_id = target.get("user_id")
     username = target.get("username")
-    recipient = user_id or username
+    if user_id:
+        return int(user_id)
+    if username:
+        return f"@{username}" if not username.startswith("@") else username
+    return None
+
+
+async def send_dm_to_user(client, session_name, target, message):
+    """Отправляет ЛС одному пользователю. Возвращает (success, error)."""
+    recipient = _resolve_recipient(target)
+    username = target.get("username")
+    user_id = target.get("user_id")
+
+    if not recipient:
+        return True, "no_target"
 
     try:
         entity = await client.get_entity(recipient)
