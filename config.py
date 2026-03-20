@@ -37,6 +37,11 @@ INVITE_LIMIT_PER_ACCOUNT = 40
 PARSE_DELAY_MIN = 2
 PARSE_DELAY_MAX = 5
 
+# Рассылка по чатам с вступлением
+JOIN_DELAY_MIN = 30       # задержка между вступлениями в чаты (сек)
+JOIN_DELAY_MAX = 90
+JOIN_LIMIT_PER_ACCOUNT = 5  # сколько чатов вступить + написать за сессию на 1 аккаунт
+
 # --- ПРОКСИ ---
 
 PROXY_FILE = "proxy.txt"

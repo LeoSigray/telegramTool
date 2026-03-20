@@ -12,12 +12,12 @@ from accounts.manager import (
 from accounts.lzt_buyer import buy_accounts_interactive
 from accounts.tdata_importer import import_tdata_interactive
 from messaging.dm_sender import run_dm_sending
-from messaging.chat_sender import run_chat_sending
+from messaging.chat_sender import run_chat_sending, run_category_sending
 from messaging.inviter import run_inviting
 from parsing.folder_parser import parse_all_folders
 from parsing.zip_parser import parse_zip_file
 from data.excel_manager import (
-    get_category_stats, get_category_names,
+    get_category_stats, get_category_names, load_chats_by_category,
     export_categories_to_chats, import_from_parsed_excel,
 )
 
@@ -102,7 +102,84 @@ def handle_dm_sending():
 
 def handle_chat_sending():
     print("\n--- Рассылка по чатам ---")
-    print(f"Чаты из {EXCEL_FILE} (лист 'Chats')")
+    print("  1. По категориям (вступление + отправка)")
+    print("  2. По листу 'Chats' (без вступления)")
+    print("  0. Назад")
+
+    choice = input("\nВыбор: ").strip()
+    if choice == "0":
+        return
+
+    if choice == "1":
+        _handle_category_sending()
+    elif choice == "2":
+        _handle_simple_chat_sending()
+
+
+def _handle_category_sending():
+    """Рассылка по категориям: выбор категории -> вступление -> отправка."""
+    categories = get_category_names()
+    if not categories:
+        print("Нет категорий. Сначала запусти парсинг (пункт 5).")
+        return
+
+    stats = get_category_stats()
+    print("\nКатегории:")
+    for i, cat in enumerate(categories, 1):
+        count = stats.get(cat, 0)
+        print(f"  {i}. {cat} ({count})")
+
+    print(f"\n  0 = все категории")
+    sel = input("\nНомера через запятую (или 0): ").strip()
+    if not sel:
+        return
+
+    if sel == "0":
+        selected = categories
+    else:
+        selected = []
+        for part in sel.split(","):
+            try:
+                idx = int(part.strip()) - 1
+                if 0 <= idx < len(categories):
+                    selected.append(categories[idx])
+            except ValueError:
+                pass
+
+    if not selected:
+        print("Ничего не выбрано.")
+        return
+
+    chats = load_chats_by_category(selected)
+    if not chats:
+        print("В выбранных категориях нет чатов с username.")
+        return
+
+    print(f"\nКатегории: {', '.join(selected)}")
+    print(f"Чатов для рассылки: {len(chats)}")
+
+    message = input("\nТекст сообщения:\n> ").strip()
+    if not message:
+        print("Пустое сообщение. Отмена.")
+        return
+
+    sessions = get_session_files()
+    from config import JOIN_LIMIT_PER_ACCOUNT
+    max_chats = len(sessions) * JOIN_LIMIT_PER_ACCOUNT
+    print(f"\nАккаунтов: {len(sessions)}, лимит: {JOIN_LIMIT_PER_ACCOUNT} чатов/акк")
+    print(f"Будет обработано до {min(len(chats), max_chats)} чатов")
+    print(f"Сообщение: '{message[:60]}...'")
+    print("Начать? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    asyncio.run(run_category_sending(message, chats))
+
+
+def _handle_simple_chat_sending():
+    """Простая рассылка по листу Chats (без вступления)."""
+    print(f"\nЧаты из {EXCEL_FILE} (лист 'Chats')")
     message = input("\nТекст сообщения:\n> ").strip()
     if not message:
         print("Пустое сообщение. Отмена.")

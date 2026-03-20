@@ -345,6 +345,51 @@ def get_category_stats() -> dict[str, int]:
     return stats
 
 
+def load_chats_by_category(categories: list[str]) -> list[dict]:
+    """
+    Загружает чаты из указанных листов-категорий.
+    Возвращает list of dict с ключами: username, link, category.
+    """
+    wb = _open_workbook(read_only=True)
+    chats = []
+    seen = set()
+
+    for cat_name in categories:
+        if cat_name not in wb.sheetnames:
+            continue
+        ws = wb[cat_name]
+
+        headers = [str(c.value).strip() if c.value else "" for c in next(ws.iter_rows(min_row=1, max_row=1))]
+        uname_idx = None
+        link_idx = None
+        for i, h in enumerate(headers):
+            if h == "Username":
+                uname_idx = i
+            elif h == "Ссылка":
+                link_idx = i
+
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            username = None
+            link = ""
+
+            if uname_idx is not None and len(row) > uname_idx and row[uname_idx]:
+                username = str(row[uname_idx]).strip().lstrip("@")
+            if link_idx is not None and len(row) > link_idx and row[link_idx]:
+                link = str(row[link_idx]).strip()
+
+            # Если нет username — пробуем извлечь из ссылки
+            if not username and link:
+                username = _extract_username_from_link(link)
+
+            if not username or username.lower() in seen:
+                continue
+            seen.add(username.lower())
+            chats.append({"username": username, "link": link, "category": cat_name})
+
+    wb.close()
+    return chats
+
+
 def get_category_names() -> list[str]:
     """Возвращает список названий категорий (листов)."""
     wb = _open_workbook(read_only=True)
