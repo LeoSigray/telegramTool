@@ -41,6 +41,38 @@ INVITE_LIMIT_PER_ACCOUNT = 40
 PARSE_DELAY_MIN = 2
 PARSE_DELAY_MAX = 5
 
+# --- ССЫЛКИ НА ПАПКИ ДЛЯ ПАРСИНГА ---
+
+FOLDER_LINKS = [
+    "https://t.me/addlist/GDxktYsKECgxYjFi",
+    "https://t.me/addlist/7SRkA_ZeuNYxYTJi",
+    "https://t.me/addlist/QbpoS6GQy341MTUy",
+    "https://t.me/addlist/CIJZP1TKibA2YjFi",
+    "https://t.me/addlist/Cy9mxOdsD1c4N2Ni",
+    "https://t.me/addlist/hu7q4rCf5_E5Nzhi",
+    "https://t.me/addlist/89-S9H3rdzBiNzc6",
+    "https://t.me/addlist/LNAyCCxwo9o2ZGRi",
+    "https://t.me/addlist/E_0zJ6x_FiE2ZDYy",
+    "https://t.me/addlist/BIAQrBGVzxRkYmRi",
+    "https://t.me/addlist/wGfKMPdqDpFjYzli",
+    "https://t.me/addlist/T_kiJCIWLJthNzFi",
+    "https://t.me/addlist/Cf9sMIrpYNBiNjEy",
+    "https://t.me/addlist/BBXQUuPabHBhZTMy",
+    "https://t.me/addlist/-93JGPptAts1Yzky",
+    "https://t.me/addlist/_5zSdoKd03ZmNGYy",
+    "https://t.me/addlist/zrpAGZAEMKM3N2I0",
+    "https://t.me/addlist/g9oXCI68K2E4NzZh",
+    "https://t.me/addlist/jr-0rOLtuN1jMWYx",
+    "https://t.me/addlist/sbMdJaq7YddmNzg5",
+    "https://t.me/addlist/-M9G29hlBGBhOGNi",
+    "https://t.me/addlist/5IBqZlVwN-IwOTI0",
+    "https://t.me/addlist/oMyjv-CXaxQ5MjIy",
+    "https://t.me/addlist/q9njwlpSIOVlZGVi",
+    "https://t.me/addlist/uVUqwOEcoSA1YWNi",
+    "https://t.me/addlist/wU3T0T-TibxjNjRi",
+    "https://t.me/addlist/NM1K-GlAGtI2NjRi",
+]
+
 # --- ПРОКСИ ---
 
 PROXY_FILE = "proxy.txt"

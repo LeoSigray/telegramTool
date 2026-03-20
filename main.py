@@ -1,7 +1,10 @@
 import asyncio
 import os
 
-from config import load_proxy, save_proxy, SESSIONS_DIR, PARSED_EXCEL_FILE, PARSE_DELAY_MIN, PARSE_DELAY_MAX
+from config import (
+    load_proxy, save_proxy, SESSIONS_DIR, PARSED_EXCEL_FILE,
+    PARSE_DELAY_MIN, PARSE_DELAY_MAX, FOLDER_LINKS,
+)
 from accounts.manager import (
     list_accounts, check_account, get_session_files, create_client, migrate_all_sessions,
 )
@@ -150,20 +153,45 @@ def handle_parse_folders():
         return
 
     print("\n--- Парсинг папок ---")
-    print("Введите ссылки на папки (по одной на строку, пустая строка = конец):")
+    print(f"  Сохраненных ссылок в config.py: {len(FOLDER_LINKS)}")
+    print("  1. Парсить сохраненные ссылки из config.py")
+    print("  2. Ввести ссылки вручную")
+    print("  3. Сохраненные + ввести дополнительные")
+    print("  0. Назад")
+
+    choice = input("\nВыбор: ").strip()
+    if choice == "0":
+        return
+
     folder_links = []
-    while True:
-        line = input("> ").strip()
-        if not line:
-            break
-        if "t.me/addlist/" in line:
-            folder_links.append(line)
-        else:
-            print(f"  Пропущено (не addlist ссылка): {line}")
+
+    if choice in ("1", "3"):
+        folder_links.extend(FOLDER_LINKS)
+        print(f"  Загружено из config: {len(FOLDER_LINKS)} ссылок")
+
+    if choice in ("2", "3"):
+        print("Введите ссылки (по одной на строку, пустая строка = конец):")
+        while True:
+            line = input("> ").strip()
+            if not line:
+                break
+            if "t.me/addlist/" in line:
+                folder_links.append(line)
+            else:
+                print(f"  Пропущено (не addlist ссылка): {line}")
 
     if not folder_links:
         print("Нет ссылок для парсинга.")
         return
+
+    # Убираем дубли, сохраняя порядок
+    seen = set()
+    unique = []
+    for link in folder_links:
+        if link not in seen:
+            seen.add(link)
+            unique.append(link)
+    folder_links = unique
 
     print(f"\nСсылок для парсинга: {len(folder_links)}")
     print(f"Аккаунт: {os.path.basename(sessions[0])}")
