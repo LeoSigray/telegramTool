@@ -343,3 +343,165 @@ def get_category_stats() -> dict[str, int]:
             stats[name] = count
     wb.close()
     return stats
+
+
+def get_category_names() -> list[str]:
+    """Возвращает список названий категорий (листов)."""
+    wb = _open_workbook(read_only=True)
+    names = [n for n in wb.sheetnames if n not in _SYSTEM_SHEETS]
+    wb.close()
+    return names
+
+
+# ========================================================================
+#  Перенос чатов из категорий в лист Chats (для рассылки)
+# ========================================================================
+
+def _extract_username_from_link(link: str) -> str | None:
+    """Извлекает username из ссылки https://t.me/username."""
+    if not link:
+        return None
+    link = str(link).strip()
+    # https://t.me/username или https://t.me/+invite
+    if link.startswith("https://t.me/"):
+        tail = link[len("https://t.me/"):]
+        # Пропускаем приватные и invite-ссылки
+        if tail.startswith("+") or tail.startswith("joinchat/"):
+            return None
+        # Убираем параметры
+        tail = tail.split("?")[0].split("/")[0]
+        return tail if tail else None
+    return None
+
+
+def export_categories_to_chats(categories: list[str] | None = None) -> int:
+    """
+    Переносит чаты из листов-категорий в лист 'Chats' для рассылки.
+    Извлекает username из ссылки. Дедупликация по username.
+
+    categories: список категорий для экспорта, или None = все.
+    Возвращает кол-во добавленных.
+    """
+    wb = _open_workbook()
+    ws_chats = wb["Chats"]
+
+    # Определяем порядок колонок в Chats
+    headers = [str(c.value).strip().lower() if c.value else "" for c in ws_chats[1]]
+    uname_col = _col_idx(headers, ["username", "юзернейм", "chat"])
+    cid_col = _col_idx(headers, ["chat_id", "id", "chatid"])
+    comment_col = _col_idx(headers, ["comment", "комментарий"])
+    num_cols = len(headers)
+
+    # Собираем существующие username
+    existing = set()
+    if uname_col is not None:
+        for row in ws_chats.iter_rows(min_row=2, values_only=True):
+            val = row[uname_col] if len(row) > uname_col else None
+            if val:
+                existing.add(str(val).strip().lower())
+
+    if categories is None:
+        categories = [n for n in wb.sheetnames if n not in _SYSTEM_SHEETS]
+
+    added = 0
+    for cat_name in categories:
+        if cat_name not in wb.sheetnames:
+            continue
+        ws = wb[cat_name]
+
+        cat_headers = [str(c.value).strip() if c.value else "" for c in ws[1]]
+        src_uname_idx = None
+        src_link_idx = None
+        for i, h in enumerate(cat_headers):
+            if h == "Username":
+                src_uname_idx = i
+            elif h == "Ссылка":
+                src_link_idx = i
+
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            username = None
+            if src_uname_idx is not None and len(row) > src_uname_idx:
+                username = _normalize_username(row[src_uname_idx])
+            if not username and src_link_idx is not None and len(row) > src_link_idx:
+                username = _extract_username_from_link(row[src_link_idx])
+            if not username or username.lower() in existing:
+                continue
+
+            existing.add(username.lower())
+
+            # Пишем в правильные колонки
+            new_row = [""] * num_cols
+            if uname_col is not None:
+                new_row[uname_col] = username
+            if comment_col is not None:
+                new_row[comment_col] = cat_name
+            ws_chats.append(new_row)
+            added += 1
+
+    wb.save(EXCEL_FILE)
+    wb.close()
+    return added
+
+
+def import_from_parsed_excel(parsed_file: str) -> dict[str, int]:
+    """
+    Импортирует данные из отдельного parsed_chats.xlsx в targets.xlsx.
+    Возвращает {категория: кол-во добавленных}.
+    """
+    if not os.path.exists(parsed_file):
+        raise FileNotFoundError(f"Файл не найден: {parsed_file}")
+
+    src_wb = load_workbook(parsed_file, read_only=True)
+    stats = {}
+
+    for sheet_name in src_wb.sheetnames:
+        ws_src = src_wb[sheet_name]
+        src_headers = [str(c.value).strip() if c.value else "" for c in next(ws_src.iter_rows(min_row=1, max_row=1))]
+
+        # Проверяем что это лист-категория (есть колонка Ссылка)
+        if "Ссылка" not in src_headers:
+            continue
+
+        # Находим индексы колонок в исходном файле
+        idx_map = {h: i for i, h in enumerate(src_headers)}
+
+        chats = []
+        for row in ws_src.iter_rows(min_row=2, values_only=True):
+            chat = {}
+            for col_name in PARSED_COLUMNS:
+                idx = idx_map.get(col_name)
+                if idx is not None and len(row) > idx:
+                    chat[col_name] = row[idx]
+                else:
+                    chat[col_name] = ""
+            if chat.get("Ссылка"):
+                chats.append(chat)
+
+        if not chats:
+            continue
+
+        # Пишем в targets.xlsx
+        wb = _open_workbook()
+        ws = _get_or_create_category_sheet(wb, sheet_name)
+        existing = _read_existing_links(ws)
+        added = 0
+
+        for chat in chats:
+            link = str(chat.get("Ссылка", "")).strip()
+            if link in existing:
+                continue
+            existing.add(link)
+            ws.append([chat.get(c, "") for c in PARSED_COLUMNS])
+            added += 1
+
+        if added > 0:
+            _sort_sheet_by_subscribers(ws)
+
+        wb.save(EXCEL_FILE)
+        wb.close()
+
+        if added > 0:
+            stats[sheet_name] = added
+
+    src_wb.close()
+    return stats

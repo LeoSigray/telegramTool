@@ -16,7 +16,10 @@ from messaging.chat_sender import run_chat_sending
 from messaging.inviter import run_inviting
 from parsing.folder_parser import parse_all_folders
 from parsing.zip_parser import parse_zip_file
-from data.excel_manager import get_category_stats
+from data.excel_manager import (
+    get_category_stats, get_category_names,
+    export_categories_to_chats, import_from_parsed_excel,
+)
 
 
 # ========================================================================
@@ -136,7 +139,6 @@ def handle_inviting():
 
 def handle_parsing():
     while True:
-        # Показываем статистику
         stats = get_category_stats()
         total_chats = sum(stats.values())
 
@@ -146,8 +148,10 @@ def handle_parsing():
             print(f"  Категорий: {len(stats)}, чатов: {total_chats}")
         print("  1. Парсинг папок (addlist)")
         print("  2. Парсинг ZIP-архива")
-        print("  3. Всё сразу")
-        print("  4. Статистика по категориям")
+        print("  3. Всё сразу (папки + ZIP)")
+        print("  4. Экспорт категорий в 'Chats' (для рассылки)")
+        print("  5. Импорт из parsed_chats.xlsx")
+        print("  6. Статистика по категориям")
         print("  0. Назад")
 
         choice = input("\nВыбор: ").strip()
@@ -160,6 +164,10 @@ def handle_parsing():
             handle_parse_folders()
             handle_parse_zip()
         elif choice == "4":
+            handle_export_to_chats()
+        elif choice == "5":
+            handle_import_parsed()
+        elif choice == "6":
             _show_category_stats()
         elif choice == "0":
             break
@@ -272,6 +280,76 @@ def handle_parse_zip():
             print("\nПо категориям:")
             for cat, count in sorted(stats['by_category'].items(), key=lambda x: -x[1]):
                 print(f"  {cat}: +{count}")
+    except Exception as e:
+        print(f"Ошибка: {e}")
+
+
+def handle_export_to_chats():
+    """Экспорт чатов из категорий в лист Chats для рассылки."""
+    categories = get_category_names()
+    if not categories:
+        print("Нет категорий. Сначала запусти парсинг.")
+        return
+
+    stats = get_category_stats()
+    print("\n--- Экспорт в лист 'Chats' ---")
+    print("Доступные категории:")
+    for i, cat in enumerate(categories, 1):
+        count = stats.get(cat, 0)
+        print(f"  {i}. {cat} ({count})")
+
+    print(f"\n  0. Все категории")
+    print(f"  q. Отмена")
+
+    choice = input("\nВыбор (номера через запятую или 0=все): ").strip()
+    if choice.lower() == "q":
+        return
+
+    if choice == "0":
+        selected = None  # все
+        print("Экспорт всех категорий...")
+    else:
+        selected = []
+        for part in choice.split(","):
+            part = part.strip()
+            try:
+                idx = int(part) - 1
+                if 0 <= idx < len(categories):
+                    selected.append(categories[idx])
+            except ValueError:
+                pass
+        if not selected:
+            print("Ничего не выбрано.")
+            return
+        print(f"Экспорт: {', '.join(selected)}")
+
+    added = export_categories_to_chats(selected)
+    print(f"Добавлено в 'Chats': {added} чатов")
+    if added > 0:
+        print("Теперь можно делать рассылку через пункт 3!")
+
+
+def handle_import_parsed():
+    """Импорт данных из отдельного parsed_chats.xlsx."""
+    parsed_path = os.path.join("data", "parsed_chats.xlsx")
+
+    if not os.path.exists(parsed_path):
+        parsed_path = input("Путь к parsed_chats.xlsx: ").strip().strip('"')
+        if not parsed_path or not os.path.exists(parsed_path):
+            print(f"Файл не найден: {parsed_path}")
+            return
+
+    print(f"Импорт из: {parsed_path}")
+    try:
+        stats = import_from_parsed_excel(parsed_path)
+        if stats:
+            total = sum(stats.values())
+            print(f"\nИмпортировано: {total} чатов")
+            for cat, count in sorted(stats.items(), key=lambda x: -x[1]):
+                print(f"  {cat}: +{count}")
+            print("\nТеперь используй 'Экспорт в Chats' для рассылки.")
+        else:
+            print("Новых чатов не найдено (всё уже импортировано).")
     except Exception as e:
         print(f"Ошибка: {e}")
 
