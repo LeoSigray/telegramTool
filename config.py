@@ -18,6 +18,7 @@ SESSIONS_DIR = "sessions"
 TDATA_DIR = "tdata_accounts"
 DATA_DIR = "data"
 EXCEL_FILE = os.path.join(DATA_DIR, "targets.xlsx")
+PARSED_EXCEL_FILE = os.path.join(DATA_DIR, "parsed_chats.xlsx")
 
 # --- ЛИМИТЫ TELEGRAM (анти-бан) ---
 
@@ -35,6 +36,10 @@ INVITE_DELAY_MAX = 15
 DM_LIMIT_PER_ACCOUNT = 20
 CHAT_LIMIT_PER_ACCOUNT = 10
 INVITE_LIMIT_PER_ACCOUNT = 40
+
+# Задержки для парсинга папок (секунды, между запросами к API)
+PARSE_DELAY_MIN = 2
+PARSE_DELAY_MAX = 5
 
 # --- ПРОКСИ ---
 

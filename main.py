@@ -1,13 +1,18 @@
 import asyncio
 import os
 
-from config import load_proxy, save_proxy, SESSIONS_DIR
-from accounts.manager import list_accounts, check_account, get_session_files, migrate_all_sessions
+from config import load_proxy, save_proxy, SESSIONS_DIR, PARSED_EXCEL_FILE, PARSE_DELAY_MIN, PARSE_DELAY_MAX
+from accounts.manager import (
+    list_accounts, check_account, get_session_files, create_client, migrate_all_sessions,
+)
 from accounts.lzt_buyer import buy_accounts_interactive
 from accounts.tdata_importer import import_tdata_interactive
 from messaging.dm_sender import run_dm_sending
 from messaging.chat_sender import run_chat_sending
 from messaging.inviter import run_inviting
+from parsing.excel_writer import ParsingExcelWriter
+from parsing.folder_parser import parse_all_folders
+from parsing.zip_parser import parse_zip_file
 
 
 def show_menu():
@@ -24,7 +29,8 @@ def show_menu():
     print("  2. Рассылка в ЛС")
     print("  3. Рассылка по чатам")
     print("  4. Инвайтинг в группу")
-    print("  5. Настройки прокси")
+    print("  5. Парсинг чатов")
+    print("  6. Настройки прокси")
     print("  0. Выход")
     print("-" * 50)
 
@@ -114,6 +120,112 @@ def handle_inviting():
     asyncio.run(run_inviting(target))
 
 
+def handle_parsing():
+    while True:
+        print("\n--- Парсинг чатов ---")
+        print(f"  Результаты: {PARSED_EXCEL_FILE}")
+        print("  1. Парсинг папок (addlist ссылки)")
+        print("  2. Парсинг ZIP-архива")
+        print("  3. Всё сразу (папки + ZIP)")
+        print("  0. Назад")
+
+        choice = input("\nВыбор: ").strip()
+
+        if choice == "1":
+            handle_parse_folders()
+        elif choice == "2":
+            handle_parse_zip()
+        elif choice == "3":
+            handle_parse_folders()
+            handle_parse_zip()
+        elif choice == "0":
+            break
+
+
+def handle_parse_folders():
+    """Парсинг папок Telegram по ссылкам addlist."""
+    sessions = get_session_files()
+    if not sessions:
+        print("Нет аккаунтов. Добавьте хотя бы один в 'Управление аккаунтами'.")
+        return
+
+    print("\n--- Парсинг папок ---")
+    print("Введите ссылки на папки (по одной на строку, пустая строка = конец):")
+    folder_links = []
+    while True:
+        line = input("> ").strip()
+        if not line:
+            break
+        if "t.me/addlist/" in line:
+            folder_links.append(line)
+        else:
+            print(f"  Пропущено (не addlist ссылка): {line}")
+
+    if not folder_links:
+        print("Нет ссылок для парсинга.")
+        return
+
+    print(f"\nСсылок для парсинга: {len(folder_links)}")
+    print(f"Аккаунт: {os.path.basename(sessions[0])}")
+    print("Начать? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    async def _run():
+        client = create_client(sessions[0])
+        await client.connect()
+
+        if not await client.is_user_authorized():
+            print("Аккаунт не авторизован!")
+            await client.disconnect()
+            return
+
+        writer = ParsingExcelWriter(PARSED_EXCEL_FILE)
+        print("\nПарсинг папок...")
+        stats = await parse_all_folders(
+            client, folder_links, writer,
+            delay_min=PARSE_DELAY_MIN, delay_max=PARSE_DELAY_MAX,
+        )
+        writer.save()
+        await client.disconnect()
+
+        print(f"\nГотово! Спарсено: {stats['total_parsed']}, добавлено новых: {stats['total_added']}")
+        print(f"Файл: {PARSED_EXCEL_FILE}")
+
+    asyncio.run(_run())
+
+
+def handle_parse_zip():
+    """Парсинг ZIP-архива с чатами."""
+    print("\n--- Парсинг ZIP-архива ---")
+    zip_path = input("Путь к ZIP-файлу: ").strip().strip('"')
+
+    if not zip_path or not os.path.exists(zip_path):
+        print(f"Файл не найден: {zip_path}")
+        return
+
+    print(f"Парсинг: {zip_path}")
+    writer = ParsingExcelWriter(PARSED_EXCEL_FILE)
+
+    try:
+        stats = parse_zip_file(zip_path, writer)
+        writer.save()
+
+        print(f"\nГотово!")
+        print(f"  Файлов обработано: {stats['total_files']}")
+        print(f"  Ссылок найдено: {stats['total_links']}")
+        print(f"  Добавлено новых: {stats['total_added']}")
+        print(f"  Файл: {PARSED_EXCEL_FILE}")
+
+        if stats['by_category']:
+            print("\nПо категориям:")
+            for cat, count in sorted(stats['by_category'].items(), key=lambda x: -x[1]):
+                print(f"  {cat}: +{count}")
+    except Exception as e:
+        print(f"Ошибка: {e}")
+
+
 def handle_proxy():
     print("\n--- Настройки прокси ---")
     current = load_proxy()
@@ -162,6 +274,8 @@ def main():
         elif choice == "4":
             handle_inviting()
         elif choice == "5":
+            handle_parsing()
+        elif choice == "6":
             handle_proxy()
         elif choice == "0":
             print("Выход.")
