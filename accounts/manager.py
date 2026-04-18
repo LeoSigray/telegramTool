@@ -109,6 +109,39 @@ def create_client(session_path):
     return client
 
 
+async def update_bio(bio: str) -> dict:
+    """
+    Устанавливает описание профиля (about) на всех аккаунтах.
+    Возвращает {session_name: "ok"/"error: ..."}.
+    """
+    from telethon.tl.functions.account import UpdateProfileRequest
+
+    sessions = get_session_files()
+    if not sessions:
+        return {}
+
+    results = {}
+    for session_path in sessions:
+        session_name = os.path.splitext(os.path.basename(session_path))[0]
+        client = create_client(session_path)
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                results[session_name] = "error: не авторизован"
+                continue
+            await client(UpdateProfileRequest(about=bio))
+            results[session_name] = "ok"
+        except Exception as e:
+            results[session_name] = f"error: {e}"
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    return results
+
+
 async def check_account(session_path):
     """Проверяет работоспособность аккаунта. Возвращает (ok, info)."""
     client = create_client(session_path)

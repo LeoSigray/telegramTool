@@ -13,8 +13,9 @@ tdata_accounts/
 # Proxy config (содержит приватные данные)
 proxy.txt
 
-# Excel данные
+# Excel данные и рантайм
 data/targets.xlsx
+data/daily_usage.json
 
 # Python cache
 __pycache__/

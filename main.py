@@ -8,11 +8,12 @@ from config import (
 )
 from accounts.manager import (
     list_accounts, check_account, get_session_files, create_client, migrate_all_sessions,
+    update_bio,
 )
 from accounts.lzt_buyer import buy_accounts_interactive
 from accounts.tdata_importer import import_tdata_interactive
 from messaging.dm_sender import run_dm_sending
-from messaging.chat_sender import run_chat_sending, run_category_sending
+from messaging.chat_sender import run_chat_sending
 from messaging.inviter import run_inviting
 from parsing.folder_parser import parse_all_folders
 from parsing.zip_parser import parse_zip_file
@@ -47,6 +48,23 @@ def show_menu():
 
 
 # ========================================================================
+#  Хелперы
+# ========================================================================
+
+def input_multiline(prompt: str) -> str:
+    """Ввод многострочного текста. Пустая строка = конец ввода."""
+    print(prompt)
+    print("(пустая строка = завершить ввод)")
+    lines = []
+    while True:
+        line = input()
+        if line == "" and lines:
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+# ========================================================================
 #  Аккаунты
 # ========================================================================
 
@@ -57,6 +75,7 @@ def handle_accounts():
         print("  2. Импортировать tdata")
         print("  3. Список аккаунтов")
         print("  4. Проверить аккаунты")
+        print("  5. Изменить описание профиля (bio)")
         print("  0. Назад")
 
         choice = input("\nВыбор: ").strip()
@@ -78,8 +97,34 @@ def handle_accounts():
                 ok, info = asyncio.run(check_account(s))
                 status = "OK" if ok else "FAIL"
                 print(f"  [{status}] {name}: {info}")
+        elif choice == "5":
+            _handle_update_bio()
         elif choice == "0":
             break
+
+
+def _handle_update_bio():
+    sessions = get_session_files()
+    if not sessions:
+        print("Нет аккаунтов.")
+        return
+
+    print(f"\n--- Изменить описание профиля ---")
+    print(f"Аккаунтов: {len(sessions)}")
+    bio = input("Новое описание (пустая строка = очистить): ")
+
+    print(f"\nУстановить bio '{bio[:60]}' на {len(sessions)} аккаунтах? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    results = asyncio.run(update_bio(bio))
+    ok = sum(1 for v in results.values() if v == "ok")
+    fail = len(results) - ok
+    print(f"\nГотово: {ok} успешно, {fail} ошибок")
+    for name, status in results.items():
+        if status != "ok":
+            print(f"  [{name}] {status}")
 
 
 # ========================================================================
@@ -89,11 +134,12 @@ def handle_accounts():
 def handle_dm_sending():
     print("\n--- Рассылка в ЛС ---")
     print(f"Юзеры из {EXCEL_FILE} (лист 'Users')")
-    message = input("\nТекст сообщения:\n> ").strip()
+    message = input_multiline("\nТекст сообщения:").strip()
     if not message:
         print("Пустое сообщение. Отмена.")
         return
-    print(f"\nОтправить '{message[:50]}...'? (y/n): ", end="")
+    print(f"\nСообщение:\n---\n{message}\n---")
+    print("Отправить? (y/n): ", end="")
     if input().strip().lower() != "y":
         print("Отменено.")
         return
@@ -101,94 +147,104 @@ def handle_dm_sending():
 
 
 def handle_chat_sending():
+    """
+    Единая рассылка по чатам.
+    Выбор источника: категории или лист Chats.
+    Автоматически вступает в чаты если не состоит (с лимитом).
+    """
+    from data.excel_manager import load_chats
+
     print("\n--- Рассылка по чатам ---")
-    print("  1. По категориям (вступление + отправка)")
-    print("  2. По листу 'Chats' (без вступления)")
+    print("  Источник чатов:")
+    print("  1. Категории (парсинг)")
+    print("  2. Лист 'Chats'")
     print("  0. Назад")
 
     choice = input("\nВыбор: ").strip()
     if choice == "0":
         return
 
+    chats = []
+
     if choice == "1":
-        _handle_category_sending()
+        categories = get_category_names()
+        if not categories:
+            print("Нет категорий. Сначала запусти парсинг (пункт 5).")
+            return
+
+        stats = get_category_stats()
+        print("\nКатегории:")
+        for i, cat in enumerate(categories, 1):
+            count = stats.get(cat, 0)
+            print(f"  {i}. {cat} ({count})")
+
+        print(f"\n  0 = все категории")
+        sel = input("\nНомера через запятую (или 0): ").strip()
+        if not sel:
+            return
+
+        if sel == "0":
+            selected = categories
+        else:
+            selected = []
+            for part in sel.split(","):
+                try:
+                    idx = int(part.strip()) - 1
+                    if 0 <= idx < len(categories):
+                        selected.append(categories[idx])
+                except ValueError:
+                    pass
+
+        if not selected:
+            print("Ничего не выбрано.")
+            return
+
+        chats = load_chats_by_category(selected)
+        if not chats:
+            print("В выбранных категориях нет чатов с username.")
+            return
+
+        print(f"\nКатегории: {', '.join(selected)}")
+
     elif choice == "2":
-        _handle_simple_chat_sending()
+        raw = load_chats()
+        if not raw:
+            print(f"Лист 'Chats' в {EXCEL_FILE} пуст.")
+            return
+        chats = raw
 
-
-def _handle_category_sending():
-    """Рассылка по категориям: выбор категории -> вступление -> отправка."""
-    categories = get_category_names()
-    if not categories:
-        print("Нет категорий. Сначала запусти парсинг (пункт 5).")
-        return
-
-    stats = get_category_stats()
-    print("\nКатегории:")
-    for i, cat in enumerate(categories, 1):
-        count = stats.get(cat, 0)
-        print(f"  {i}. {cat} ({count})")
-
-    print(f"\n  0 = все категории")
-    sel = input("\nНомера через запятую (или 0): ").strip()
-    if not sel:
-        return
-
-    if sel == "0":
-        selected = categories
     else:
-        selected = []
-        for part in sel.split(","):
-            try:
-                idx = int(part.strip()) - 1
-                if 0 <= idx < len(categories):
-                    selected.append(categories[idx])
-            except ValueError:
-                pass
-
-    if not selected:
-        print("Ничего не выбрано.")
         return
 
-    chats = load_chats_by_category(selected)
-    if not chats:
-        print("В выбранных категориях нет чатов с username.")
-        return
-
-    print(f"\nКатегории: {', '.join(selected)}")
     print(f"Чатов для рассылки: {len(chats)}")
 
-    message = input("\nТекст сообщения:\n> ").strip()
+    message = input_multiline("\nТекст сообщения:").strip()
     if not message:
         print("Пустое сообщение. Отмена.")
         return
 
     sessions = get_session_files()
-    from config import JOIN_LIMIT_PER_ACCOUNT
-    max_chats = len(sessions) * JOIN_LIMIT_PER_ACCOUNT
-    print(f"\nАккаунтов: {len(sessions)}, лимит: {JOIN_LIMIT_PER_ACCOUNT} чатов/акк")
-    print(f"Будет обработано до {min(len(chats), max_chats)} чатов")
-    print(f"Сообщение: '{message[:60]}...'")
+    from data.daily_limits import DAILY_JOIN_LIMIT, DAILY_SEND_LIMIT
+
+    print(f"\nАккаунтов: {len(sessions)}, чатов: {len(chats)}")
+    print(f"Дневной лимит: {DAILY_JOIN_LIMIT} вступлений, {DAILY_SEND_LIMIT} отправок/аккаунт")
+
+    parallel = 1
+    if len(sessions) > 1:
+        try:
+            p = input(f"Сколько аккаунтов параллельно? (1-{len(sessions)}, Enter=1): ").strip()
+            parallel = max(1, min(int(p), len(sessions))) if p else 1
+        except ValueError:
+            parallel = 1
+
+    print(f"\nСообщение:\n---\n{message}\n---")
+    print(f"Параллельно: {parallel} аккаунт(ов)")
     print("Начать? (y/n): ", end="")
     if input().strip().lower() != "y":
         print("Отменено.")
         return
 
-    asyncio.run(run_category_sending(message, chats))
-
-
-def _handle_simple_chat_sending():
-    """Простая рассылка по листу Chats (без вступления)."""
-    print(f"\nЧаты из {EXCEL_FILE} (лист 'Chats')")
-    message = input("\nТекст сообщения:\n> ").strip()
-    if not message:
-        print("Пустое сообщение. Отмена.")
-        return
-    print(f"\nОтправить '{message[:50]}...'? (y/n): ", end="")
-    if input().strip().lower() != "y":
-        print("Отменено.")
-        return
-    asyncio.run(run_chat_sending(message))
+    asyncio.run(run_chat_sending(message, chats, parallel=parallel))
 
 
 def handle_inviting():

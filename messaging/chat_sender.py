@@ -3,7 +3,7 @@ import random
 import os
 
 from telethon import TelegramClient
-from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.channels import JoinChannelRequest, GetParticipantRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
 from telethon.errors import (
     FloodWaitError,
@@ -16,38 +16,40 @@ from telethon.errors import (
     InviteHashInvalidError,
     ChannelsTooMuchError,
     UserBannedInChannelError,
+    UserNotParticipantError,
+    ChatAdminRequiredError,
 )
 
 from config import (
-    CHAT_DELAY_MIN, CHAT_DELAY_MAX, CHAT_LIMIT_PER_ACCOUNT,
-    JOIN_DELAY_MIN, JOIN_DELAY_MAX, JOIN_LIMIT_PER_ACCOUNT,
+    CHAT_DELAY_MIN, CHAT_DELAY_MAX,
+    JOIN_DELAY_MIN, JOIN_DELAY_MAX,
 )
 from accounts.manager import get_session_files, create_client
-from data.excel_manager import load_chats, load_chats_by_category, log_chat
+from data.excel_manager import log_chat
+from data.daily_limits import (
+    DAILY_JOIN_LIMIT, DAILY_SEND_LIMIT,
+    get_daily_joins_left, get_daily_sends_left,
+    record_join, record_send, get_account_daily_stats,
+)
 
 
 # ========================================================================
 #  Хелперы
 # ========================================================================
 
-def _resolve_chat(target: dict):
-    """Возвращает идентификатор чата для Telethon."""
-    chat_id = target.get("chat_id")
-    username = target.get("username")
-    if chat_id:
-        return int(chat_id)
-    if username:
-        return f"@{username}" if not username.startswith("@") else username
-    return None
+async def _is_member(client: TelegramClient, entity) -> bool:
+    try:
+        me = await client.get_me()
+        await client(GetParticipantRequest(entity, me.id))
+        return True
+    except (UserNotParticipantError, ChatAdminRequiredError):
+        return False
+    except Exception:
+        return False
 
 
 async def _join_chat(client: TelegramClient, username: str) -> tuple[bool, str]:
-    """
-    Вступает в чат по username.
-    Возвращает (success, error).
-    """
     try:
-        # Если это invite-ссылка (t.me/+hash или t.me/joinchat/hash)
         if username.startswith("+"):
             await client(ImportChatInviteRequest(username[1:]))
         else:
@@ -55,7 +57,7 @@ async def _join_chat(client: TelegramClient, username: str) -> tuple[bool, str]:
             await client(JoinChannelRequest(entity))
         return True, ""
     except UserAlreadyParticipantError:
-        return True, ""  # уже в чате — ОК
+        return True, ""
     except (InviteHashExpiredError, InviteHashInvalidError):
         return False, "invite_expired"
     except ChannelPrivateError:
@@ -72,10 +74,8 @@ async def _join_chat(client: TelegramClient, username: str) -> tuple[bool, str]:
         return False, str(e)
 
 
-async def _send_message(client: TelegramClient, username: str, message: str) -> tuple[bool, str]:
-    """Отправляет сообщение в чат. Возвращает (success, error)."""
+async def _send_message(client: TelegramClient, entity, message: str) -> tuple[bool, str]:
     try:
-        entity = await client.get_entity(f"@{username}")
         await client.send_message(entity, message)
         return True, ""
     except FloodWaitError as e:
@@ -92,15 +92,175 @@ async def _send_message(client: TelegramClient, username: str, message: str) -> 
         return False, str(e)
 
 
+def _is_fatal(error: str) -> bool:
+    return "FloodWait" in error or error in ("PeerFlood", "too_many_channels")
+
+
 # ========================================================================
-#  Рассылка по категориям (вступление + отправка)
+#  Воркер одного аккаунта
 # ========================================================================
 
-async def run_category_sending(message: str, chats: list[dict]):
+async def _account_worker(
+    session_path: str,
+    queue: asyncio.Queue,
+    message: str,
+    sent_counter: list,
+    print_lock: asyncio.Lock,
+) -> int:
     """
-    Рассылка по чатам из категорий.
-    Для каждого чата: вступить -> подождать -> написать.
-    Лимит JOIN_LIMIT_PER_ACCOUNT чатов на аккаунт.
+    Обрабатывает один аккаунт: тянет чаты из общей очереди до исчерпания
+    дневных лимитов или фатальной ошибки. Непрочитанные чаты возвращает в очередь.
+    Возвращает кол-во отправленных сообщений.
+    """
+    session_name = os.path.splitext(os.path.basename(session_path))[0]
+
+    daily = get_account_daily_stats(session_name)
+    if daily["joins_left"] <= 0 and daily["sends_left"] <= 0:
+        async with print_lock:
+            print(f"[{session_name}] Дневной лимит исчерпан — пропуск")
+        return 0
+
+    client = create_client(session_path)
+    try:
+        await client.start()
+        async with print_lock:
+            print(f"[{session_name}] Подключен (сегодня: {daily['joins']} вступлений, {daily['sends']} отправок)")
+    except Exception as e:
+        async with print_lock:
+            print(f"[{session_name}] Не удалось подключиться: {e}")
+        return 0
+
+    sent = 0
+
+    try:
+        while True:
+            # Берём чат из очереди
+            try:
+                chat = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+            uname = chat.get("username") or ""
+            chat_id = chat.get("chat_id")
+            cat = chat.get("category", "")
+            target_str = uname or str(chat_id)
+
+            # Дневной лимит отправок
+            if get_daily_sends_left(session_name) <= 0:
+                async with print_lock:
+                    print(f"  [{session_name}] Дневной лимит отправок — передаю следующему")
+                queue.put_nowait(chat)  # вернуть в очередь
+                break
+
+            # Резолвим entity
+            try:
+                if chat_id:
+                    entity = await client.get_entity(int(chat_id))
+                elif uname:
+                    entity = await client.get_entity(f"@{uname}")
+                else:
+                    continue
+            except ChannelPrivateError:
+                async with print_lock:
+                    print(f"  [{session_name}] @{target_str} — приватный, пропуск")
+                log_chat(session_name, target_str, "skipped", "private")
+                continue
+            except FloodWaitError as e:
+                async with print_lock:
+                    print(f"  [{session_name}] FloodWait {e.seconds}s — передаю следующему")
+                log_chat(session_name, target_str, "failed", f"FloodWait {e.seconds}s")
+                queue.put_nowait(chat)
+                break
+            except Exception as e:
+                async with print_lock:
+                    print(f"  [{session_name}] @{target_str} не найден: {e}")
+                log_chat(session_name, target_str, "skipped", str(e))
+                continue
+
+            # Членство
+            member = await _is_member(client, entity)
+
+            if not member:
+                if get_daily_joins_left(session_name) <= 0:
+                    async with print_lock:
+                        print(f"  [{session_name}] Дневной лимит вступлений ({DAILY_JOIN_LIMIT}) — передаю следующему")
+                    queue.put_nowait(chat)
+                    break
+
+                async with print_lock:
+                    print(f"  [{session_name}] Вступаю в @{target_str}...")
+                join_ok, join_err = await _join_chat(client, uname or str(chat_id))
+
+                if not join_ok:
+                    if _is_fatal(join_err):
+                        async with print_lock:
+                            print(f"  [{session_name}] {join_err} — передаю следующему")
+                        log_chat(session_name, target_str, "failed", f"join: {join_err}")
+                        queue.put_nowait(chat)
+                        break
+                    else:
+                        async with print_lock:
+                            print(f"  [{session_name}] @{target_str}: {join_err}")
+                        log_chat(session_name, target_str, "skipped", f"join: {join_err}")
+                        continue
+
+                record_join(session_name)
+                daily_joins = get_account_daily_stats(session_name)["joins"]
+                delay = random.uniform(JOIN_DELAY_MIN, JOIN_DELAY_MAX)
+                async with print_lock:
+                    print(f"  [{session_name}] Вступил (за день: {daily_joins}/{DAILY_JOIN_LIMIT}). Жду {delay:.0f}с...")
+                await asyncio.sleep(delay)
+
+            # Отправляем
+            send_ok, send_err = await _send_message(client, entity, message)
+
+            if send_ok:
+                record_send(session_name)
+                label = f"@{target_str}" + (f" [{cat}]" if cat else "")
+                async with print_lock:
+                    print(f"  [{session_name}] Отправлено → {label}")
+                log_chat(session_name, target_str, "sent")
+                sent += 1
+                sent_counter[0] += 1
+            else:
+                if _is_fatal(send_err):
+                    async with print_lock:
+                        print(f"  [{session_name}] {send_err} — передаю следующему")
+                    log_chat(session_name, target_str, "failed", send_err)
+                    queue.put_nowait(chat)
+                    break
+                else:
+                    async with print_lock:
+                        print(f"  [{session_name}] @{target_str}: {send_err}")
+                    log_chat(session_name, target_str, "skipped", send_err)
+
+            delay = random.uniform(CHAT_DELAY_MIN, CHAT_DELAY_MAX)
+            await asyncio.sleep(delay)
+
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+    daily_final = get_account_daily_stats(session_name)
+    async with print_lock:
+        print(f"[{session_name}] Готово: {sent} отправок "
+              f"(день: {daily_final['joins']}/{DAILY_JOIN_LIMIT} вступлений, "
+              f"{daily_final['sends']}/{DAILY_SEND_LIMIT} отправок)\n")
+    return sent
+
+
+# ========================================================================
+#  Основная функция рассылки
+# ========================================================================
+
+async def run_chat_sending(message: str, chats: list[dict], parallel: int = 1):
+    """
+    Рассылка по чатам с параллельными аккаунтами.
+
+    parallel — сколько аккаунтов работают одновременно.
+    Когда аккаунт исчерпывает лимит, следующий из пула подхватывает очередь.
     """
     if not chats:
         print("Список чатов пуст.")
@@ -112,186 +272,46 @@ async def run_category_sending(message: str, chats: list[dict]):
         return
 
     total = len(chats)
-    limit = JOIN_LIMIT_PER_ACCOUNT
+    parallel = min(parallel, len(sessions))
 
-    print(f"\nРассылка: {total} чатов, {len(sessions)} аккаунтов")
-    print(f"Лимит: {limit} чатов/аккаунт")
-    print(f"Задержка вступления: {JOIN_DELAY_MIN}-{JOIN_DELAY_MAX} сек")
-    print(f"Задержка отправки: {CHAT_DELAY_MIN}-{CHAT_DELAY_MAX} сек\n")
+    print(f"\nРассылка: {total} чатов | {len(sessions)} аккаунтов | {parallel} параллельно")
+    print(f"Дневной лимит: {DAILY_JOIN_LIMIT} вступлений, {DAILY_SEND_LIMIT} отправок/аккаунт")
+    print(f"Задержка: {CHAT_DELAY_MIN}-{CHAT_DELAY_MAX} сек\n")
 
-    remaining = list(chats)
-    total_sent = 0
+    # Общая очередь чатов
+    queue: asyncio.Queue = asyncio.Queue()
+    for chat in chats:
+        await queue.put(chat)
 
-    for session_path in sessions:
-        if not remaining:
-            break
+    sent_counter = [0]
+    print_lock = asyncio.Lock()
 
-        session_name = os.path.splitext(os.path.basename(session_path))[0]
-        client = create_client(session_path)
+    # Пул сессий — каждый воркер берёт следующую сессию когда готов
+    session_idx = 0
+    session_lock = asyncio.Lock()
 
-        try:
-            await client.start()
-            print(f"[{session_name}] Подключен")
-        except Exception as e:
-            print(f"[{session_name}] Не удалось подключиться: {e}")
-            continue
+    async def next_session() -> str | None:
+        nonlocal session_idx
+        async with session_lock:
+            if session_idx >= len(sessions):
+                return None
+            s = sessions[session_idx]
+            session_idx += 1
+            return s
 
-        sent = 0
-        stop_account = False
-        batch = remaining[:limit]
+    async def worker():
+        """Воркер берёт сессии одну за другой пока есть чаты в очереди."""
+        while not queue.empty():
+            session_path = await next_session()
+            if session_path is None:
+                return  # сессии закончились
+            await _account_worker(session_path, queue, message, sent_counter, print_lock)
 
-        for chat in batch:
-            if stop_account:
-                break
+    # Запускаем parallel воркеров одновременно
+    tasks = [asyncio.create_task(worker()) for _ in range(parallel)]
+    await asyncio.gather(*tasks)
 
-            uname = chat["username"]
-            cat = chat.get("category", "")
-
-            # 1. Вступаем
-            print(f"  [{session_name}] Вступаю в @{uname}...")
-            join_ok, join_err = await _join_chat(client, uname)
-
-            if not join_ok:
-                if "FloodWait" in join_err or join_err == "PeerFlood" or join_err == "too_many_channels":
-                    print(f"  [{session_name}] {join_err} — переключаю аккаунт")
-                    log_chat(session_name, uname, "failed", f"join: {join_err}")
-                    stop_account = True
-                    break
-                else:
-                    print(f"  [{session_name}] Не удалось вступить в @{uname}: {join_err}")
-                    log_chat(session_name, uname, "skipped", f"join: {join_err}")
-                    remaining.remove(chat)
-                    continue
-
-            # Задержка после вступления
-            delay = random.uniform(JOIN_DELAY_MIN, JOIN_DELAY_MAX)
-            print(f"  [{session_name}] Вступил. Жду {delay:.0f} сек...")
-            await asyncio.sleep(delay)
-
-            # 2. Отправляем сообщение
-            send_ok, send_err = await _send_message(client, uname, message)
-
-            if send_ok:
-                print(f"  [{session_name}] Отправлено в @{uname} [{cat}]")
-                log_chat(session_name, uname, "sent")
-                sent += 1
-                total_sent += 1
-                remaining.remove(chat)
-            else:
-                if "FloodWait" in send_err or send_err == "PeerFlood":
-                    print(f"  [{session_name}] {send_err} — переключаю аккаунт")
-                    log_chat(session_name, uname, "failed", send_err)
-                    stop_account = True
-                    break
-                else:
-                    print(f"  [{session_name}] Ошибка @{uname}: {send_err}")
-                    log_chat(session_name, uname, "skipped", send_err)
-                    remaining.remove(chat)
-
-            # Задержка между чатами
-            if not stop_account:
-                delay = random.uniform(CHAT_DELAY_MIN, CHAT_DELAY_MAX)
-                print(f"  Задержка {delay:.0f} сек...")
-                await asyncio.sleep(delay)
-
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
-
-        print(f"[{session_name}] Готово: {sent}/{limit}\n")
-
-    print(f"\nИтого: отправлено {total_sent}/{total}")
+    remaining = queue.qsize()
+    print(f"\nИтого отправлено: {sent_counter[0]}/{total}")
     if remaining:
-        print(f"Осталось: {len(remaining)} (не хватило аккаунтов)")
-
-
-# ========================================================================
-#  Старая рассылка (по листу Chats, без вступления)
-# ========================================================================
-
-async def run_chat_sending(message):
-    """Рассылка по чатам из листа Chats (без вступления, для уже вступленных)."""
-    chats = load_chats()
-    if not chats:
-        print("Список чатов пуст. Заполните лист 'Chats' в data/targets.xlsx")
-        return
-
-    sessions = get_session_files()
-    if not sessions:
-        print("Нет аккаунтов в sessions/")
-        return
-
-    print(f"\nРассылка: {len(chats)} чатов, {len(sessions)} аккаунтов")
-    print(f"Лимит: {CHAT_LIMIT_PER_ACCOUNT} сообщ./аккаунт, задержка: {CHAT_DELAY_MIN}-{CHAT_DELAY_MAX} сек\n")
-
-    remaining = list(chats)
-
-    for session_path in sessions:
-        if not remaining:
-            break
-
-        session_name = os.path.splitext(os.path.basename(session_path))[0]
-        client = create_client(session_path)
-
-        try:
-            await client.start()
-            print(f"[{session_name}] Подключен")
-        except Exception as e:
-            print(f"[{session_name}] Не удалось подключиться: {e}")
-            continue
-
-        sent_count = 0
-        skip_account = False
-
-        for target in remaining[:CHAT_LIMIT_PER_ACCOUNT]:
-            if skip_account:
-                break
-
-            recipient = _resolve_chat(target)
-            target_str = target.get("username") or str(target.get("chat_id"))
-
-            if not recipient:
-                remaining.remove(target)
-                continue
-
-            try:
-                entity = await client.get_entity(recipient)
-                await client.send_message(entity, message)
-                print(f"  [{session_name}] Отправлено в {target_str}")
-                log_chat(session_name, target_str, "sent")
-                sent_count += 1
-                remaining.remove(target)
-            except FloodWaitError as e:
-                print(f"  [{session_name}] FloodWait: {e.seconds} сек.")
-                log_chat(session_name, target_str, "failed", f"FloodWait {e.seconds}s")
-                skip_account = True
-                break
-            except PeerFloodError:
-                print(f"  [{session_name}] PeerFlood — ограничен.")
-                log_chat(session_name, target_str, "failed", "PeerFlood")
-                skip_account = True
-                break
-            except (ChatWriteForbiddenError, ChannelPrivateError, SlowModeWaitError) as e:
-                err = type(e).__name__
-                print(f"  [{session_name}] {err} -> {target_str}")
-                log_chat(session_name, target_str, "skipped", err)
-                remaining.remove(target)
-            except Exception as e:
-                print(f"  [{session_name}] Ошибка -> {target_str}: {e}")
-                log_chat(session_name, target_str, "skipped", str(e))
-                remaining.remove(target)
-
-            delay = random.uniform(CHAT_DELAY_MIN, CHAT_DELAY_MAX)
-            print(f"  Задержка {delay:.0f} сек...")
-            await asyncio.sleep(delay)
-
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
-
-        print(f"[{session_name}] Отправлено: {sent_count}\n")
-
-    total_sent = len(chats) - len(remaining)
-    print(f"\nИтого: {total_sent}/{len(chats)}")
+        print(f"Не обработано: {remaining} (не хватило аккаунтов с лимитом)")
