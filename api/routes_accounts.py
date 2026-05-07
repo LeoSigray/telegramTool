@@ -5,6 +5,7 @@ import tempfile
 import zipfile
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from accounts.manager import check_account, get_session_files
@@ -149,3 +150,86 @@ async def send_via_account(name: str, body: SendIn) -> dict:
         "message_id": str(msg.id),
         "sent_at": (msg.date.isoformat() if msg.date else None),
     }
+
+
+@router.get("/{name}/avatar/{user_id}")
+async def get_avatar(name: str, user_id: int):
+    client = pool.get(name)
+    if client is None:
+        raise HTTPException(status_code=404, detail="account not in pool")
+
+    cache_dir = os.path.join("avatars_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    dest = os.path.join(cache_dir, f"{name}_{user_id}.jpg")
+    if os.path.exists(dest) and os.path.getsize(dest) > 0:
+        return FileResponse(dest, media_type="image/jpeg")
+
+    try:
+        entity = await client.get_entity(user_id)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"resolve: {e}")
+    path = await client.download_profile_photo(entity, file=dest)
+    if path and os.path.exists(path):
+        return FileResponse(path, media_type="image/jpeg")
+    return Response(status_code=204)
+
+
+class DeleteMessagesIn(BaseModel):
+    chat_id: str
+    message_ids: list[str]
+
+
+class EditMessageIn(BaseModel):
+    chat_id: str
+    message_id: str
+    text: str
+
+
+@router.delete("/{name}/messages")
+async def delete_messages(name: str, body: DeleteMessagesIn) -> dict:
+    client = pool.get(name)
+    if client is None:
+        raise HTTPException(status_code=404, detail="account not in pool")
+    try:
+        peer = int(body.chat_id)
+        ids = [int(m) for m in body.message_ids]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="chat_id and message_ids must be ints")
+    try:
+        await client.delete_messages(peer, ids, revoke=True)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"delete failed: {e}")
+    return {"ok": True}
+
+
+@router.patch("/{name}/messages")
+async def edit_message_endpoint(name: str, body: EditMessageIn) -> dict:
+    client = pool.get(name)
+    if client is None:
+        raise HTTPException(status_code=404, detail="account not in pool")
+    try:
+        peer = int(body.chat_id)
+        mid = int(body.message_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="chat_id and message_id must be ints")
+    try:
+        await client.edit_message(peer, mid, body.text)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"edit failed: {e}")
+    return {"ok": True}
+
+
+@router.delete("/{name}/dialogs/{chat_id}")
+async def delete_dialog_endpoint(name: str, chat_id: str) -> dict:
+    client = pool.get(name)
+    if client is None:
+        raise HTTPException(status_code=404, detail="account not in pool")
+    try:
+        peer = int(chat_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="chat_id must be int")
+    try:
+        await client.delete_dialog(peer)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"delete dialog failed: {e}")
+    return {"ok": True}

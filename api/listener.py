@@ -74,11 +74,60 @@ async def _on_incoming(event):
         log.exception("webhook post failed")
 
 
+async def _post_webhook(path: str, payload: dict) -> None:
+    if not WEBHOOK_URL:
+        return
+    base = WEBHOOK_URL.rsplit("/", 1)[0] if WEBHOOK_URL.endswith("/incoming") else WEBHOOK_URL
+    full_url = base + path
+    try:
+        global _http
+        if _http is None:
+            _http = httpx.AsyncClient(timeout=10.0)
+        headers = {"Authorization": f"Bearer {WEBHOOK_TOKEN}"} if WEBHOOK_TOKEN else {}
+        r = await _http.post(full_url, json=payload, headers=headers)
+        if r.status_code >= 400:
+            log.warning("webhook %s -> %s %s", full_url, r.status_code, r.text[:200])
+    except Exception:  # noqa: BLE001
+        log.exception("webhook post failed")
+
+
+async def _on_edited(event):
+    session_name = _which_session(event.client)
+    if session_name is None:
+        return
+    try:
+        chat = await event.get_chat()
+    except Exception:  # noqa: BLE001
+        return
+    if not isinstance(chat, TgUser) or chat.bot:
+        return
+    await _post_webhook("/message-edited", {
+        "account_name": session_name,
+        "chat_id": str(chat.id),
+        "message_id": str(event.message.id),
+        "text": event.message.message or None,
+    })
+
+
+async def _on_deleted(event):
+    session_name = _which_session(event.client)
+    if session_name is None:
+        return
+    chat_id_val = event.chat_id
+    await _post_webhook("/message-deleted", {
+        "account_name": session_name,
+        "chat_id": (str(chat_id_val) if chat_id_val is not None else None),
+        "message_ids": [str(i) for i in event.deleted_ids],
+    })
+
+
 def setup() -> None:
     """Регистрирует listener в пуле. Зовётся ОДИН раз при старте."""
     pool.attach_handler(_on_incoming, events.NewMessage(incoming=True))
+    pool.attach_handler(_on_edited, events.MessageEdited())
+    pool.attach_handler(_on_deleted, events.MessageDeleted())
     if WEBHOOK_URL:
-        log.info("[listener] webhook → %s", WEBHOOK_URL)
+        log.info("[listener] webhook → %s (incoming, edited, deleted)", WEBHOOK_URL)
     else:
         log.warning("[listener] CRM_WEBHOOK_URL не задан — события только логируются")
 
