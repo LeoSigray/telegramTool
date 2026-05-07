@@ -5,12 +5,14 @@ import tempfile
 import zipfile
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from accounts.manager import check_account, get_session_files
 from accounts.tdata_importer import convert_tdata, find_tdata_dirs, has_tgcrypto
 from config import SESSIONS_DIR
 
 from .auth import require_token
+from .client_pool import pool
 
 router = APIRouter(prefix="/accounts", tags=["accounts"], dependencies=[Depends(require_token)])
 
@@ -116,3 +118,34 @@ async def import_tdata_zip(file: UploadFile = File(...)) -> dict:
         }
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+class SendIn(BaseModel):
+    chat_id: str   # telegram user/chat id (число строкой)
+    text: str
+
+
+@router.post("/{name}/send")
+async def send_via_account(name: str, body: SendIn) -> dict:
+    """Отправить сообщение через указанный tool-аккаунт (использует pool-клиент).
+    Используется CRM'ом для reply-through по диалогам с tool-shadow аккаунтов.
+    """
+    client = pool.get(name)
+    if client is None:
+        raise HTTPException(status_code=404, detail=f"account '{name}' is not active in pool")
+
+    try:
+        peer = int(body.chat_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="chat_id must be integer (telegram user id)")
+
+    try:
+        msg = await client.send_message(peer, body.text)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"send failed: {e}")
+
+    return {
+        "ok": True,
+        "message_id": str(msg.id),
+        "sent_at": (msg.date.isoformat() if msg.date else None),
+    }
