@@ -11,7 +11,8 @@ from telethon.errors import (
 )
 from datetime import datetime, timezone
 
-from accounts.manager import create_client, get_session_files
+from accounts.manager import get_session_files
+from .client_pool import pool
 from config import DM_DELAY_MAX, DM_DELAY_MIN, DM_LIMIT_PER_ACCOUNT
 
 from .jobs import Job, TargetState
@@ -55,11 +56,9 @@ def _mark(job: Job, t: TargetState, status: str, error: str | None, account: str
 async def _account_worker(*, job: Job, session_path: str, queue: "asyncio.Queue[TargetState]") -> None:
     session_name = os.path.splitext(os.path.basename(session_path))[0]
 
-    client = create_client(session_path)
-    try:
-        await client.start()
-    except Exception as e:  # noqa: BLE001
-        job.add_log(event="account_failed", account=session_name, error=str(e))
+    client = pool.get(session_name)
+    if client is None:
+        job.add_log(event="account_failed", account=session_name, error="not in pool (unauthorized?)")
         return
 
     job.add_log(event="account_started", account=session_name)
@@ -102,10 +101,8 @@ async def _account_worker(*, job: Job, session_path: str, queue: "asyncio.Queue[
 
             await asyncio.sleep(random.uniform(DM_DELAY_MIN, DM_DELAY_MAX))
     finally:
-        try:
-            await client.disconnect()
-        except Exception:  # noqa: BLE001
-            pass
+        # клиент остаётся в пуле — listener продолжит ловить ответы
+        pass
 
     job.add_log(event="account_finished", account=session_name, sent_in_session=sent_in_account)
 

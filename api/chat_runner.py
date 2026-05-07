@@ -25,7 +25,8 @@ from telethon.errors import (
 from telethon.tl.functions.channels import GetParticipantRequest, JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
 
-from accounts.manager import create_client, get_session_files
+from accounts.manager import get_session_files
+from .client_pool import pool
 from config import (
     CHAT_DELAY_MAX,
     CHAT_DELAY_MIN,
@@ -152,11 +153,9 @@ async def _account_worker(
         job.add_log(event="account_skip", account=session_name, reason="daily_limit")
         return
 
-    client = create_client(session_path)
-    try:
-        await client.start()
-    except Exception as e:  # noqa: BLE001
-        job.add_log(event="account_failed", account=session_name, error=str(e))
+    client = pool.get(session_name)
+    if client is None:
+        job.add_log(event="account_failed", account=session_name, error="not in pool (unauthorized?)")
         return
 
     job.add_log(event="account_started", account=session_name,
@@ -243,10 +242,8 @@ async def _account_worker(
 
             await asyncio.sleep(random.uniform(CHAT_DELAY_MIN, CHAT_DELAY_MAX))
     finally:
-        try:
-            await client.disconnect()
-        except Exception:  # noqa: BLE001
-            pass
+        # клиент НЕ отключаем — он принадлежит пулу и продолжает слушать
+        pass
 
     final = get_account_daily_stats(session_name)
     job.add_log(event="account_finished", account=session_name,
