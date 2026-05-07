@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from .auth import require_token
 from .chat_runner import run_chat_job
+from .dm_runner import run_dm_job
 from .jobs import jobs
 
 router = APIRouter(prefix="/broadcast", tags=["broadcast"], dependencies=[Depends(require_token)])
@@ -16,21 +17,37 @@ class StartChatJobIn(BaseModel):
     parallel: int = Field(default=1, ge=1, le=20)
 
 
-@router.post("/chat/start")
-async def start_chat_job(body: StartChatJobIn) -> dict:
-    # дедуп + чистка
+def _clean_targets(raw: list[str]) -> list[str]:
     seen: list[str] = []
     seen_set: set[str] = set()
-    for t in body.targets:
+    for t in raw:
         s = t.strip()
         if s and s not in seen_set:
             seen_set.add(s)
             seen.append(s)
-    if not seen:
+    return seen
+
+
+@router.post("/chat/start")
+async def start_chat_job(body: StartChatJobIn) -> dict:
+    targets = _clean_targets(body.targets)
+    if not targets:
         raise HTTPException(status_code=400, detail="targets is empty after cleanup")
 
-    job = jobs.create(kind="chat", message=body.message, targets=seen, parallel=body.parallel)
+    job = jobs.create(kind="chat", message=body.message, targets=targets, parallel=body.parallel)
     job.task = asyncio.create_task(run_chat_job(job))
+    return job.to_dict()
+
+
+@router.post("/dm/start")
+async def start_dm_job(body: StartChatJobIn) -> dict:
+    """Рассылка в личные сообщения. targets: @username | t.me/foo | user_id | +phone."""
+    targets = _clean_targets(body.targets)
+    if not targets:
+        raise HTTPException(status_code=400, detail="targets is empty after cleanup")
+
+    job = jobs.create(kind="dm", message=body.message, targets=targets, parallel=body.parallel)
+    job.task = asyncio.create_task(run_dm_job(job))
     return job.to_dict()
 
 
