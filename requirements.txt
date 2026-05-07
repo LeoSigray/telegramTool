@@ -3,3 +3,8 @@ requests>=2.31.0
 openpyxl>=3.1.0
 pysocks>=1.7.1
 tgcrypto>=1.2.5
+
+# HTTP API (опционально, нужны только для api/server.py)
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.10.0
