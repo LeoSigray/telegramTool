@@ -233,3 +233,112 @@ async def delete_dialog_endpoint(name: str, chat_id: str) -> dict:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"delete dialog failed: {e}")
     return {"ok": True}
+
+
+# ─────────────────────────── Profile editing ────────────────────────────────
+
+
+class ProfileIn(BaseModel):
+    first_name: str | None = None
+    last_name: str | None = None
+    about: str | None = None
+
+
+async def _apply_profile(client, body: ProfileIn) -> dict:
+    """Применяет UpdateProfileRequest на клиенте. Поля None — не трогаем."""
+    from telethon.tl.functions.account import UpdateProfileRequest
+    kwargs = {}
+    if body.first_name is not None:
+        kwargs["first_name"] = body.first_name
+    if body.last_name is not None:
+        kwargs["last_name"] = body.last_name
+    if body.about is not None:
+        kwargs["about"] = body.about
+    if not kwargs:
+        return {"ok": True, "noop": True}
+    await client(UpdateProfileRequest(**kwargs))
+    me = await client.get_me()
+    return {
+        "ok": True,
+        "first_name": me.first_name,
+        "last_name": me.last_name,
+    }
+
+
+@router.get("/{name}/profile")
+async def get_profile(name: str) -> dict:
+    client = pool.get(name)
+    if client is None:
+        raise HTTPException(status_code=404, detail="account not in pool")
+    from telethon.tl.functions.users import GetFullUserRequest
+    me = await client.get_me()
+    full = await client(GetFullUserRequest("me"))
+    about = ""
+    if hasattr(full, "full_user") and getattr(full.full_user, "about", None):
+        about = full.full_user.about or ""
+    return {
+        "name": name,
+        "first_name": me.first_name or "",
+        "last_name": me.last_name or "",
+        "username": me.username,
+        "phone": me.phone,
+        "about": about,
+    }
+
+
+@router.patch("/{name}/profile")
+async def patch_profile(name: str, body: ProfileIn) -> dict:
+    client = pool.get(name)
+    if client is None:
+        raise HTTPException(status_code=404, detail="account not in pool")
+    try:
+        return await _apply_profile(client, body)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/{name}/avatar")
+async def upload_avatar(name: str, file: UploadFile = File(...)) -> dict:
+    client = pool.get(name)
+    if client is None:
+        raise HTTPException(status_code=404, detail="account not in pool")
+    if not (file.filename or "").lower().endswith((".jpg", ".jpeg", ".png")):
+        raise HTTPException(status_code=400, detail="only .jpg/.png supported")
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename or ".jpg")[1])
+    try:
+        tmp.write(await file.read())
+        tmp.flush()
+        tmp.close()
+        from telethon.tl.functions.photos import UploadProfilePhotoRequest
+        uploaded = await client.upload_file(tmp.name)
+        await client(UploadProfilePhotoRequest(file=uploaded))
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+    # сбрасываем кеш аватарки
+    cache_dir = "avatars_cache"
+    if os.path.isdir(cache_dir):
+        for fname in os.listdir(cache_dir):
+            if fname.startswith(name + "_") or fname == f"{name}_self.jpg":
+                try: os.unlink(os.path.join(cache_dir, fname))
+                except OSError: pass
+    return {"ok": True}
+
+
+@router.delete("/{name}/avatar")
+async def delete_avatar(name: str) -> dict:
+    client = pool.get(name)
+    if client is None:
+        raise HTTPException(status_code=404, detail="account not in pool")
+    from telethon.tl.functions.photos import DeletePhotosRequest
+    from telethon.tl.types import InputPhoto
+    to_delete: list = []
+    async for p in client.iter_profile_photos("me", limit=1):
+        to_delete.append(InputPhoto(id=p.id, access_hash=p.access_hash, file_reference=p.file_reference))
+    if to_delete:
+        await client(DeletePhotosRequest(id=to_delete))
+    return {"ok": True, "deleted": len(to_delete)}

@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from accounts.manager import migrate_all_sessions
 
-from . import listener, routes_accounts, routes_broadcast
+from . import listener, routes_accounts, routes_broadcast, routes_bulk
 from .client_pool import pool
 
 log = logging.getLogger(__name__)
@@ -53,6 +53,7 @@ app.add_middleware(
 )
 
 app.include_router(routes_accounts.router)
+app.include_router(routes_bulk.router)
 app.include_router(routes_broadcast.router)
 
 
