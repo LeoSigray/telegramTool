@@ -3,11 +3,11 @@ import os
 # --- ОСНОВНАЯ КОНФИГУРАЦИЯ ---
 
 CONFIG = {
-    "LZT_TOKEN": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzUxMiJ9.eyJzdWIiOjUzODI2MTksImlzcyI6Imx6dCIsImlhdCI6MTc2NDI0MTYzOSwianRpIjoiODg3NjY2Iiwic2NvcGUiOiJiYXNpYyByZWFkIHBvc3QgY29udmVyc2F0ZSBwYXltZW50IGludm9pY2UgY2hhdGJveCBtYXJrZXQiLCJleHAiOjE5MjE5MjE2Mzl9.C1rARs5slMCMZ4nbc4qFqnJnNvVb0bWDaOGmqIXRrjiRslUNygLeWc7QBxTMs8mJ-EUH2szpo5JNmoyXsE7SeVtwyx5KW6h-BZPEGNVZCk36jRoBkwott0vaf8_RGJOizAVoMd7cJs_JSBgGv64sXQSFBZSgjpTLqwo3kjy0WDI",
+    "LZT_TOKEN": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzUxMiJ9.eyJzdWIiOjEwMTc1OTU5LCJpc3MiOiJsenQiLCJpYXQiOjE3Nzg1NTM0MjMsImp0aSI6Ijk3NDIwMyIsInNjb3BlIjoiYmFzaWMgcmVhZCBwb3N0IGNvbnZlcnNhdGUgcGF5bWVudCBpbnZvaWNlIGNoYXRib3ggbWFya2V0IiwiZXhwIjoxOTM2MjMzNDIzfQ.nNSimLof9BbAwfcS20g-KlKtN-XWo9Ky2uNXygxJg4m1G5EelAligUfmrn0fB36Hj1apHV7wyhknd-R3le-MtYN8FF9fWeFzVKhp1hcewEy_-pCHD8b5k1z7_Cp4nfeXbbhQJc8cw3ukT7_LwVUJeySMZng5MFAP-RgttP7v-vo",
     "LZT_MARKET_ID": 24,
     "LZT_API_BASE_URL": "https://prod-api.lzt.market",
-    "TELEGRAM_API_ID": 31955472,
-    "TELEGRAM_API_HASH": "636863cb9b1482ed12e0649d26fad94f",
+    "TELEGRAM_API_ID": 37270903,
+    "TELEGRAM_API_HASH": "1f5e3c9d7d6a04457d4bbd0350442cf2",
 }
 
 # --- ПУТИ ---

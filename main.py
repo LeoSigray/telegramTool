@@ -21,7 +21,7 @@ from data.excel_manager import (
     get_category_stats, get_category_names, load_chats_by_category,
     export_categories_to_chats, import_from_parsed_excel,
 )
-
+from accounts.convert_accounts import convert_accounts_interactive
 
 # ========================================================================
 #  Меню
@@ -76,6 +76,7 @@ def handle_accounts():
         print("  3. Список аккаунтов")
         print("  4. Проверить аккаунты")
         print("  5. Изменить описание профиля (bio)")
+        print("  6. Конвертировать accounts → sessions")  # ← НОВЫЙ ПУНКТ
         print("  0. Назад")
 
         choice = input("\nВыбор: ").strip()
@@ -99,6 +100,8 @@ def handle_accounts():
                 print(f"  [{status}] {name}: {info}")
         elif choice == "5":
             _handle_update_bio()
+        elif choice == "6":
+            convert_accounts_interactive()  # ← НОВЫЙ ПУНКТ
         elif choice == "0":
             break
 
