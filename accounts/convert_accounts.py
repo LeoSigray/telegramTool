@@ -1,11 +1,10 @@
 """
 Конвертер уже купленных аккаунтов из accounts/*.txt в sessions/*.session
 Поддерживает два формата LZT:
-  1. login = hex auth_key (512 символов), dc_id берётся из telegram_json или дефолт 2
+  1. login = hex auth_key (512 символов), dc_id = 1 (типичный для LZT)
   2. telegram_json содержит auth_key и dc_id напрямую
 
 Запуск: python convert_accounts.py
-Или через меню: пункт 1 → 6
 """
 
 import os
@@ -24,7 +23,6 @@ DC_IPS = {
 
 
 def parse_account_txt(file_path: str) -> dict:
-    """Читает accounts/XXXXX.txt и возвращает словарь полей."""
     data = {}
     with open(file_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -36,7 +34,6 @@ def parse_account_txt(file_path: str) -> dict:
 
 
 def _make_session_file(item_id: str, dc_id: int, auth_key: bytes):
-    """Создаёт Telethon .session файл (SQLite, version=7)."""
     os.makedirs(SESSIONS_DIR, exist_ok=True)
     session_path = os.path.join(SESSIONS_DIR, f"{item_id}.session")
 
@@ -72,7 +69,7 @@ def _make_session_file(item_id: str, dc_id: int, auth_key: bytes):
         );
         INSERT INTO version VALUES (7);
     """)
-    ip = DC_IPS.get(int(dc_id), DC_IPS[2])
+    ip = DC_IPS.get(int(dc_id), DC_IPS[1])
     db.execute(
         "INSERT INTO sessions VALUES (?, ?, ?, ?, ?)",
         (int(dc_id), ip, 443, auth_key, None),
@@ -83,57 +80,69 @@ def _make_session_file(item_id: str, dc_id: int, auth_key: bytes):
 
 
 def convert_account(item_id: str, account_data: dict):
-    """
-    Конвертирует один аккаунт в .session файл.
-    Поддерживает оба формата LZT.
-    """
     login = account_data.get("login", "")
     telegram_json_raw = account_data.get("telegram_json", "")
 
     auth_key = None
-    dc_id = 2  # дефолт, Telethon сам перенаправит на нужный DC
+    dc_id = None  # не ставим дефолт — ищем явно
 
-    # Парсим telegram_json для получения dc_id и возможного auth_key
+    tj = {}
     if telegram_json_raw:
         try:
             tj = json.loads(telegram_json_raw)
-            dc_id = tj.get("dc_id") or tj.get("dcId") or dc_id
-
-            # Формат 2: auth_key прямо в telegram_json
-            auth_key_hex = tj.get("auth_key") or tj.get("authKey")
-            if auth_key_hex:
-                try:
-                    auth_key = bytes.fromhex(auth_key_hex)
-                except ValueError:
-                    import base64
-                    auth_key = base64.b64decode(auth_key_hex)
-        except (json.JSONDecodeError, TypeError):
+        except Exception:
             pass
 
-    # Формат 1: login — это и есть auth_key (hex, 512 символов = 256 байт)
+    # --- auth_key из telegram_json ---
+    ak_hex = tj.get("auth_key") or tj.get("authKey") or ""
+    if ak_hex:
+        try:
+            candidate = bytes.fromhex(ak_hex)
+            if len(candidate) == 256:
+                auth_key = candidate
+        except Exception:
+            pass
+
+    # --- auth_key из поля login (512 hex символов = 256 байт) ---
     if auth_key is None and len(login) == 512:
         try:
             candidate = bytes.fromhex(login)
             if len(candidate) == 256:
                 auth_key = candidate
-        except ValueError:
+        except Exception:
             pass
 
     if auth_key is None:
         return None
 
-    if len(auth_key) != 256:
-        print(f"  [!] Неверная длина auth_key: {len(auth_key)} байт (нужно 256)")
-        return None
+    # --- DC ID: ищем во всех местах ---
+    # 1. Прямо в полях .txt файла (сохраняется новым lzt_buyer.py)
+    for key in ("dc_id", "dcId", "telegram_dc"):
+        if account_data.get(key):
+            try:
+                dc_id = int(account_data[key])
+                break
+            except Exception:
+                pass
+
+    # 2. В telegram_json
+    if not dc_id:
+        raw = tj.get("dc_id") or tj.get("dcId")
+        if raw:
+            try:
+                dc_id = int(raw)
+            except Exception:
+                pass
+
+    # 3. Дефолт для LZT — DC 1 (самый частый)
+    if not dc_id:
+        dc_id = 1
+        print(f"  [convert] DC ID не найден для {item_id}, использую dc=1")
 
     return _make_session_file(item_id, dc_id, auth_key)
 
 
 def convert_all_accounts() -> dict:
-    """
-    Сканирует accounts/*.txt и конвертирует в sessions/*.session.
-    Пропускает те, у которых уже есть .session.
-    """
     stats = {"ok": [], "skip": [], "fail": []}
 
     if not os.path.exists(ACCOUNTS_DIR):
@@ -173,7 +182,6 @@ def convert_all_accounts() -> dict:
 
 
 def convert_accounts_interactive():
-    """Интерактивный запуск конвертации из меню."""
     print("\n--- Конвертация accounts → sessions ---")
 
     txt_count = len([f for f in os.listdir(ACCOUNTS_DIR) if f.endswith(".txt")]) \

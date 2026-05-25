@@ -21,7 +21,8 @@ from data.excel_manager import (
     get_category_stats, get_category_names, load_chats_by_category,
     export_categories_to_chats, import_from_parsed_excel,
 )
-from accounts.convert_accounts import convert_accounts_interactive
+from data.users_manager import add_users_manually, parse_members_from_chat
+
 
 # ========================================================================
 #  Меню
@@ -43,6 +44,8 @@ def show_menu():
     print("  4. Инвайтинг в группу")
     print("  5. Парсинг чатов")
     print("  6. Настройки прокси")
+    print("  7. Добавить людей для рассылки")
+    print("  8. Добавить чат → спарсить участников")
     print("  0. Выход")
     print("-" * 50)
 
@@ -76,7 +79,7 @@ def handle_accounts():
         print("  3. Список аккаунтов")
         print("  4. Проверить аккаунты")
         print("  5. Изменить описание профиля (bio)")
-        print("  6. Конвертировать accounts → sessions")  # ← НОВЫЙ ПУНКТ
+        print("  6. Скачать сессии с LZT (для уже купленных)")
         print("  0. Назад")
 
         choice = input("\nВыбор: ").strip()
@@ -101,7 +104,7 @@ def handle_accounts():
         elif choice == "5":
             _handle_update_bio()
         elif choice == "6":
-            convert_accounts_interactive()  # ← НОВЫЙ ПУНКТ
+            _handle_download_sessions_lzt()
         elif choice == "0":
             break
 
@@ -133,6 +136,100 @@ def _handle_update_bio():
 # ========================================================================
 #  Рассылка
 # ========================================================================
+
+
+def _handle_download_sessions_lzt():
+    """
+    Скачивает .session Telethon с LZT для всех аккаунтов из accounts/*.txt
+    у которых ещё нет рабочей сессии в sessions/.
+    """
+    from accounts.lzt_buyer import LZTMarketAPI
+    import glob
+
+    print("\n--- Скачать сессии с LZT ---")
+
+    accounts_dir = "accounts"
+    if not os.path.exists(accounts_dir):
+        print("Папка accounts/ не найдена.")
+        return
+
+    txt_files = sorted([
+        f for f in os.listdir(accounts_dir) if f.endswith(".txt")
+    ])
+    if not txt_files:
+        print("Нет .txt файлов в accounts/.")
+        return
+
+    # Можно скачать конкретные ID или все
+    print(f"Найдено аккаунтов в accounts/: {len(txt_files)}")
+    for i, f in enumerate(txt_files, 1):
+        item_id = f.replace(".txt", "")
+        has_session = os.path.exists(os.path.join("sessions", f"{item_id}.session"))
+        status = "✓ сессия есть" if has_session else "✗ нет сессии"
+        print(f"  {i}. {item_id}  [{status}]")
+
+    print("\n  Enter = скачать все без сессии")
+    print("  Номера через запятую = конкретные")
+    print("  0 = отмена")
+    sel = input("\nВыбор: ").strip()
+
+    if sel == "0":
+        return
+
+    if sel == "":
+        # Все без сессии
+        targets = [
+            f.replace(".txt", "") for f in txt_files
+            if not os.path.exists(os.path.join("sessions", f.replace(".txt", "") + ".session"))
+        ]
+        if not targets:
+            print("У всех аккаунтов уже есть сессии.")
+            return
+    else:
+        targets = []
+        for part in sel.split(","):
+            try:
+                idx2 = int(part.strip()) - 1
+                if 0 <= idx2 < len(txt_files):
+                    targets.append(txt_files[idx2].replace(".txt", ""))
+            except ValueError:
+                pass
+        if not targets:
+            print("Ничего не выбрано.")
+            return
+
+    print(f"\nБудет обработано: {len(targets)} аккаунт(ов)")
+    print("Начать? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    api = LZTMarketAPI()
+    ok = fail = 0
+
+    for item_id in targets:
+        print(f"\n  [{item_id}] Получаю данные с LZT и выполняю вход...")
+        item = api.get_item(int(item_id))
+        if not item:
+            print(f"  [{item_id}] ✗ Не удалось получить данные с LZT")
+            fail += 1
+            continue
+
+        from accounts.lzt_buyer import create_session_for_item
+        session_path = create_session_for_item(item, api)
+
+        if session_path:
+            print(f"  [{item_id}] ✓ Сессия готова")
+            ok += 1
+        else:
+            print(f"  [{item_id}] ✗ Не удалось создать сессию")
+            print(f"  Скачай вручную: https://lzt.market/{item_id}")
+            fail += 1
+
+    print(f"\nГотово: {ok} успешно, {fail} ошибок")
+    if ok:
+        print("Проверь аккаунты: меню → 1 → 4")
+
 
 def handle_dm_sending():
     print("\n--- Рассылка в ЛС ---")
@@ -267,6 +364,151 @@ def handle_inviting():
         print("Отменено.")
         return
     asyncio.run(run_inviting(target))
+
+
+# ========================================================================
+#  Добавить людей вручную (пункт 7)
+# ========================================================================
+
+def handle_add_users():
+    """
+    Пункт 7 — ручное добавление пользователей в лист 'Users'.
+    Поддерживает ввод user_id или @username (по одному или пачкой).
+    Дубли пропускаются, старые записи не трогаются.
+    """
+    print("\n--- Добавить людей для рассылки ---")
+    print(f"Файл: {EXCEL_FILE}  |  Лист: Users")
+    print()
+    print("Форматы ввода (по одному на строку):")
+    print("  @username")
+    print("  123456789          (user_id)")
+    print("  123456789 клиент   (user_id + комментарий)")
+    print("  @username лид      (@username + комментарий)")
+    print("Пустая строка — завершить ввод.\n")
+
+    comment_default = input("Комментарий по умолчанию для всех (Enter = пусто): ").strip()
+
+    entries = []
+    print("\nВводи по одному (пустая строка = конец):")
+    while True:
+        line = input("> ").strip()
+        if not line:
+            if entries:
+                break
+            continue
+
+        # Разбиваем на «идентификатор» и «комментарий»
+        parts = line.split(None, 1)
+        identifier = parts[0]
+        inline_comment = parts[1] if len(parts) > 1 else ""
+        comment = inline_comment or comment_default
+
+        entry = {"user_id": "", "username": "", "comment": comment}
+        if identifier.lstrip("@").lstrip("-").isdigit():
+            entry["user_id"] = identifier.lstrip("@")
+        else:
+            entry["username"] = identifier.lstrip("@")
+        entries.append(entry)
+        print(f"  + {identifier}  [{comment or '—'}]")
+
+    if not entries:
+        print("Ничего не введено. Отмена.")
+        return
+
+    print(f"\nДобавить {len(entries)} записей в Users? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    stats = add_users_manually(entries)
+    print(f"\nГотово!")
+    print(f"  Добавлено: {stats['added']}")
+    print(f"  Пропущено (дубли): {stats['skipped']}")
+
+
+# ========================================================================
+#  Парсинг участников чата (пункт 8)
+# ========================================================================
+
+def handle_parse_chat_members():
+    """
+    Пункт 8 — ввод ссылки/username чата, парсинг участников
+    через Telethon и добавление их в лист 'Users'.
+    """
+    sessions = get_session_files()
+    if not sessions:
+        print("\nНет аккаунтов. Добавь через 'Управление аккаунтами'.")
+        return
+
+    print("\n--- Добавить чат → спарсить участников ---")
+    print(f"Файл: {EXCEL_FILE}  |  Лист: Users")
+    print()
+    print("Поддерживаемые форматы чата:")
+    print("  https://t.me/chatusername")
+    print("  @chatusername")
+    print("  -1001234567890  (числовой ID)")
+    print()
+
+    chat_link = input("Ссылка или username чата: ").strip()
+    if not chat_link:
+        print("Не указан чат. Отмена.")
+        return
+
+    comment = input(
+        "Комментарий для участников в таблице (Enter = название чата): "
+    ).strip()
+    if not comment:
+        # Используем последнюю часть ссылки как комментарий
+        comment = chat_link.rstrip("/").split("/")[-1].lstrip("@")
+
+    print(f"\nАккаунт для парсинга: {os.path.basename(sessions[0])}")
+    print(f"Чат: {chat_link}")
+    print(f"Комментарий: {comment}")
+    print(f"\nНачать парсинг? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    # Счётчик прогресса
+    _progress = {"last": 0}
+
+    def progress_cb(current, total):
+        if total:
+            pct = int(current / total * 100)
+            print(f"  Загружено: {current}/{total} ({pct}%)")
+        else:
+            print(f"  Загружено: {current}...")
+
+    async def _run():
+        client = create_client(sessions[0])
+        await client.connect()
+        if not await client.is_user_authorized():
+            print("Аккаунт не авторизован!")
+            await client.disconnect()
+            return
+
+        print("\nПарсинг участников...")
+        result = await parse_members_from_chat(
+            client,
+            chat_link=chat_link,
+            comment=comment,
+            progress_cb=progress_cb,
+        )
+        await client.disconnect()
+
+        if result["error"]:
+            print(f"\nОшибка: {result['error']}")
+            print("Проверь: правильная ли ссылка, доступен ли чат аккаунту.")
+            return
+
+        print(f"\nГотово!")
+        print(f"  Участников в чате: {result['parsed']}")
+        print(f"  Добавлено в Users: {result['added']}")
+        print(f"  Пропущено (дубли): {result['skipped']}")
+        if result["added"] > 0:
+            print(f"\nМожно запускать рассылку: пункт 2 (ЛС) или пункт 4 (инвайтинг).")
+
+    asyncio.run(_run())
 
 
 # ========================================================================
@@ -564,6 +806,10 @@ def main():
             handle_parsing()
         elif choice == "6":
             handle_proxy()
+        elif choice == "7":
+            handle_add_users()
+        elif choice == "8":
+            handle_parse_chat_members()
         elif choice == "0":
             print("Выход.")
             break
