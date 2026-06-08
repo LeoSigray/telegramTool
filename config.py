@@ -37,6 +37,11 @@ INVITE_LIMIT_PER_ACCOUNT = 40
 PARSE_DELAY_MIN = 2
 PARSE_DELAY_MAX = 5
 
+# Нейрокомментинг
+COMMENT_DELAY_MIN = 45     # между комментариями одного аккаунта (сек)
+COMMENT_DELAY_MAX = 120
+COMMENT_LIMIT_PER_ACCOUNT = 15  # максимум комментариев за сессию на аккаунт
+
 # Рассылка по чатам с вступлением
 JOIN_DELAY_MIN = 30       # задержка между вступлениями в чаты (сек)
 JOIN_DELAY_MAX = 90

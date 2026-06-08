@@ -22,6 +22,45 @@ def _strip_code_fence(s: str) -> str:
     return s.strip()
 
 
+async def generate_comment(post_text: str, style_prompt: str) -> str:
+    """
+    Генерирует осмысленный живой комментарий под пост на основе стиль-промта.
+    Возвращает строку — текст комментария.
+    """
+    if not API_KEY:
+        raise RuntimeError("GEMINI_API_KEY не задан в .env")
+    if not post_text or not post_text.strip():
+        raise RuntimeError("Пустой текст поста")
+
+    # Обрезаем очень длинные посты чтобы не тратить токены
+    post_preview = post_text.strip()[:1500]
+
+    full_prompt = (
+        "Ты пишешь комментарий в Telegram под пост в канале.\n\n"
+        f"Инструкция по стилю и задаче:\n{style_prompt}\n\n"
+        f"Текст поста:\n{post_preview}\n\n"
+        "Требования к комментарию:\n"
+        "- Отвечай ТОЛЬКО текстом комментария, без кавычек, без пояснений\n"
+        "- Комментарий должен быть осмысленным и релевантным посту\n"
+        "- 1-3 предложения, живой разговорный язык\n"
+        "- Без хэштегов, без ссылок\n"
+        "- Не раскрывай что ты ИИ\n"
+        "- Соответствуй указанному стилю и задаче"
+    )
+
+    try:
+        from google import genai as _genai
+    except ImportError:
+        raise RuntimeError("установи google-genai: pip install google-genai")
+
+    client = _genai.Client(api_key=API_KEY)
+    response = client.models.generate_content(model=MODEL, contents=full_prompt)
+    text = (response.text or "").strip()
+    if not text:
+        raise RuntimeError("Gemini вернул пустой ответ")
+    return text
+
+
 async def generate_names(prompt: str, count: int, fields: list[str]) -> list[dict]:
     """
     Возвращает список из count словарей с ключами из fields (first_name/last_name).

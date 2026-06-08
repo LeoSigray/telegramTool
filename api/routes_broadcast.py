@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field  # noqa: F401  Field used in StartInviteJo
 
 from .auth import require_token
 from .chat_runner import run_chat_job
+from .comment_runner import run_comment_job
 from .dm_runner import run_dm_job
 from .invite_runner import run_invite_job
 from .jobs import jobs
@@ -66,6 +67,33 @@ async def start_dm_job(body: StartChatJobIn) -> dict:
 
     job = jobs.create(kind="dm", message=body.message, targets=targets, parallel=body.parallel)
     job.task = asyncio.create_task(run_dm_job(job))
+    return job.to_dict()
+
+
+class StartCommentJobIn(BaseModel):
+    style_prompt: str = Field(min_length=10, description="Инструкция для Gemini: стиль и задача комментирования")
+    keywords: list[str] = Field(min_length=1, description="Ключевые слова для поиска каналов")
+    min_subs: int = Field(default=500, ge=0, description="Минимум подписчиков у канала")
+    posts_per_channel: int = Field(default=2, ge=1, le=10, description="Сколько постов комментировать в канале")
+    parallel: int = Field(default=1, ge=1, le=10)
+
+
+@router.post("/comment/start")
+async def start_comment_job(body: StartCommentJobIn) -> dict:
+    """Нейрокомментинг: поиск каналов по ключевым словам + Gemini-комментарии под постами."""
+    keywords = _clean_targets(body.keywords)
+    if not keywords:
+        raise HTTPException(status_code=400, detail="keywords is empty after cleanup")
+
+    job = jobs.create(
+        kind="comment",
+        message=body.style_prompt,
+        targets=[],  # будут заполнены runner-ом после поиска каналов
+        parallel=body.parallel,
+    )
+    job.task = asyncio.create_task(
+        run_comment_job(job, keywords, body.min_subs, body.posts_per_channel)
+    )
     return job.to_dict()
 
 
