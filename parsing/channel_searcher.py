@@ -57,23 +57,31 @@ async def search_channels(
         if not chat.username:
             continue
 
-        # Получаем полные данные: подписчики + linked_chat_id
-        try:
-            full = await client(GetFullChannelRequest(chat))
-            subs = full.full_chat.participants_count or 0
-            linked_chat_id = getattr(full.full_chat, "linked_chat_id", None)
-        except FloodWaitError as e:
-            log.warning("FloodWait GetFullChannel @%s: %ds", chat.username, e.seconds)
-            await asyncio.sleep(e.seconds)
-            continue
-        except Exception as e:
-            log.debug("Ошибка GetFullChannel @%s: %s", chat.username, e)
+        # Быстрая проверка подписчиков — participants_count есть в базовом объекте
+        quick_subs = getattr(chat, "participants_count", 0) or 0
+        if quick_subs < min_subs:
             continue
 
-        if subs < min_subs:
-            continue
-        if require_comments and not linked_chat_id:
-            continue
+        # GetFullChannelRequest только для каналов прошедших фильтр — нужен linked_chat_id
+        linked_chat_id = None
+        if require_comments:
+            try:
+                full = await client(GetFullChannelRequest(chat))
+                linked_chat_id = getattr(full.full_chat, "linked_chat_id", None)
+                subs = full.full_chat.participants_count or quick_subs
+            except FloodWaitError as e:
+                log.warning("FloodWait GetFullChannel @%s: %ds", chat.username, e.seconds)
+                await asyncio.sleep(e.seconds)
+                continue
+            except Exception as e:
+                log.debug("Ошибка GetFullChannel @%s: %s", chat.username, e)
+                continue
+
+            if not linked_chat_id:
+                continue
+            await asyncio.sleep(0.4)  # анти-флуд только для каналов прошедших фильтр
+        else:
+            subs = quick_subs
 
         channels.append(FoundChannel(
             channel_id=chat.id,
@@ -83,9 +91,6 @@ async def search_channels(
             subscribers=subs,
             linked_chat_id=linked_chat_id,
         ))
-
-        # Анти-флуд между GetFullChannelRequest
-        await asyncio.sleep(0.8)
 
     return channels
 
