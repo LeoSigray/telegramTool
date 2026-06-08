@@ -20,9 +20,9 @@ from config import DATA_DIR, JOIN_LIMIT_PER_ACCOUNT, DM_LIMIT_PER_ACCOUNT
 USAGE_FILE = os.path.join(DATA_DIR, "daily_usage.json")
 
 # Дневные лимиты (безопасные значения для Telegram)
-DAILY_JOIN_LIMIT = 20    # вступлений в чаты за день
-DAILY_SEND_LIMIT = 40    # сообщений в чаты за день
-DAILY_DM_LIMIT = 30      # ЛС за день
+DAILY_JOIN_LIMIT = 35    # вступлений в чаты за день
+DAILY_SEND_LIMIT = 800   # сообщений в чаты за день
+DAILY_DM_LIMIT = 39      # ЛС за день
 
 
 def _load() -> dict:

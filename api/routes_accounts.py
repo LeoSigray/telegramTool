@@ -329,6 +329,25 @@ async def upload_avatar(name: str, file: UploadFile = File(...)) -> dict:
     return {"ok": True}
 
 
+@router.get("/{name}/me-avatar")
+async def get_self_avatar(name: str):
+    """Возвращает текущую аватарку самого аккаунта (не контакта)."""
+    client = pool.get(name)
+    if client is None:
+        raise HTTPException(status_code=404, detail="account not in pool")
+
+    cache_dir = "avatars_cache"
+    os.makedirs(cache_dir, exist_ok=True)
+    me = await client.get_me()
+    dest = os.path.join(cache_dir, f"{name}_self_{me.id}.jpg")
+    if os.path.exists(dest) and os.path.getsize(dest) > 0:
+        return FileResponse(dest, media_type="image/jpeg")
+    path = await client.download_profile_photo("me", file=dest)
+    if path and os.path.exists(path):
+        return FileResponse(path, media_type="image/jpeg")
+    return Response(status_code=204)
+
+
 @router.delete("/{name}/avatar")
 async def delete_avatar(name: str) -> dict:
     client = pool.get(name)

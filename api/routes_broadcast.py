@@ -1,11 +1,12 @@
 import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field  # noqa: F401  Field used in StartInviteJobIn
 
 from .auth import require_token
 from .chat_runner import run_chat_job
 from .dm_runner import run_dm_job
+from .invite_runner import run_invite_job
 from .jobs import jobs
 
 router = APIRouter(prefix="/broadcast", tags=["broadcast"], dependencies=[Depends(require_token)])
@@ -36,6 +37,23 @@ async def start_chat_job(body: StartChatJobIn) -> dict:
 
     job = jobs.create(kind="chat", message=body.message, targets=targets, parallel=body.parallel)
     job.task = asyncio.create_task(run_chat_job(job))
+    return job.to_dict()
+
+
+class StartInviteJobIn(BaseModel):
+    group: str = Field(min_length=1)
+    targets: list[str] = Field(min_length=1)
+    parallel: int = Field(default=1, ge=1, le=20)
+
+
+@router.post("/invite/start")
+async def start_invite_job(body: StartInviteJobIn) -> dict:
+    """Инвайт по списку юзеров в указанную группу."""
+    targets = _clean_targets(body.targets)
+    if not targets:
+        raise HTTPException(status_code=400, detail="targets is empty after cleanup")
+    job = jobs.create(kind="invite", message=body.group.strip(), targets=targets, parallel=body.parallel)
+    job.task = asyncio.create_task(run_invite_job(job, body.group.strip()))
     return job.to_dict()
 
 

@@ -11,7 +11,9 @@ from accounts.manager import (
     update_bio,
 )
 from accounts.lzt_buyer import buy_accounts_interactive
+from accounts.convert_accounts import convert_accounts_interactive
 from accounts.tdata_importer import import_tdata_interactive
+from data.users_manager import add_users_manually, parse_members_from_chat
 from messaging.dm_sender import run_dm_sending
 from messaging.chat_sender import run_chat_sending
 from messaging.inviter import run_inviting
@@ -43,6 +45,8 @@ def show_menu():
     print("  4. Инвайтинг в группу")
     print("  5. Парсинг чатов")
     print("  6. Настройки прокси")
+    print("  7. Добавить людей для рассылки")
+    print("  8. Добавить чат → спарсить участников")
     print("  0. Выход")
     print("-" * 50)
 
@@ -76,6 +80,8 @@ def handle_accounts():
         print("  3. Список аккаунтов")
         print("  4. Проверить аккаунты")
         print("  5. Изменить описание профиля (bio)")
+        print("  6. Конвертировать accounts → sessions")
+        print("  7. Скачать сессии с LZT (для уже купленных)")
         print("  0. Назад")
 
         choice = input("\nВыбор: ").strip()
@@ -99,6 +105,10 @@ def handle_accounts():
                 print(f"  [{status}] {name}: {info}")
         elif choice == "5":
             _handle_update_bio()
+        elif choice == "6":
+            convert_accounts_interactive()
+        elif choice == "7":
+            _handle_download_sessions_lzt()
         elif choice == "0":
             break
 
@@ -125,6 +135,179 @@ def _handle_update_bio():
     for name, status in results.items():
         if status != "ok":
             print(f"  [{name}] {status}")
+
+
+def _handle_download_sessions_lzt():
+    """Скачивает .session с LZT для аккаунтов из accounts/ у которых ещё нет сессии."""
+    from accounts.lzt_buyer import LZTMarketAPI, login_via_code
+
+    print("\n--- Скачать сессии с LZT ---")
+
+    accounts_dir = "accounts"
+    if not os.path.exists(accounts_dir):
+        print("Папка accounts/ не найдена.")
+        return
+
+    txt_files = sorted([f for f in os.listdir(accounts_dir) if f.endswith(".txt")])
+    if not txt_files:
+        print("Нет .txt файлов в accounts/.")
+        return
+
+    print(f"Найдено аккаунтов: {len(txt_files)}")
+    for i, f in enumerate(txt_files, 1):
+        item_id = f.replace(".txt", "")
+        has_session = os.path.exists(os.path.join("sessions", f"{item_id}.session"))
+        status = "✓ сессия есть" if has_session else "✗ нет сессии"
+        print(f"  {i}. {item_id}  [{status}]")
+
+    print("\n  Enter = скачать все без сессии  |  0 = отмена")
+    sel = input("\nВыбор: ").strip()
+    if sel == "0":
+        return
+
+    if sel == "":
+        targets = [
+            f.replace(".txt", "") for f in txt_files
+            if not os.path.exists(os.path.join("sessions", f.replace(".txt", "") + ".session"))
+        ]
+        if not targets:
+            print("У всех аккаунтов уже есть сессии.")
+            return
+    else:
+        targets = []
+        for part in sel.split(","):
+            try:
+                idx = int(part.strip()) - 1
+                if 0 <= idx < len(txt_files):
+                    targets.append(txt_files[idx].replace(".txt", ""))
+            except ValueError:
+                pass
+        if not targets:
+            print("Ничего не выбрано.")
+            return
+
+    print(f"\nБудет обработано: {len(targets)} аккаунт(ов). Начать? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    api = LZTMarketAPI()
+    ok = fail = 0
+    for item_id in targets:
+        print(f"\n  [{item_id}] Получаю данные с LZT...")
+        item = api.get_item(int(item_id))
+        if not item:
+            print(f"  [{item_id}] ✗ Не удалось получить данные")
+            fail += 1
+            continue
+        session_path = asyncio.run(login_via_code(item, api))
+        if session_path:
+            print(f"  [{item_id}] ✓ Сессия готова")
+            ok += 1
+        else:
+            print(f"  [{item_id}] ✗ Не удалось создать сессию")
+            fail += 1
+
+    print(f"\nГотово: {ok} успешно, {fail} ошибок")
+
+
+# ========================================================================
+#  Добавить людей / парсинг участников
+# ========================================================================
+
+def handle_add_users():
+    """Пункт 7 — ручное добавление пользователей в лист 'Users'."""
+    print("\n--- Добавить людей для рассылки ---")
+    print(f"Файл: {EXCEL_FILE}  |  Лист: Users")
+    print("\nФорматы: @username, 123456789, +79991234567")
+    print("Пустая строка — завершить ввод.\n")
+
+    comment_default = input("Комментарий по умолчанию (Enter = пусто): ").strip()
+
+    entries = []
+    print("\nВводи по одному (пустая строка = конец):")
+    while True:
+        line = input("> ").strip()
+        if not line:
+            if entries:
+                break
+            continue
+
+        parts = line.split(None, 1)
+        identifier = parts[0]
+        inline_comment = parts[1] if len(parts) > 1 else ""
+        comment = inline_comment or comment_default
+
+        entry = {"user_id": "", "username": "", "comment": comment}
+        if identifier.lstrip("@").lstrip("-").isdigit():
+            entry["user_id"] = identifier.lstrip("@")
+        else:
+            entry["username"] = identifier.lstrip("@")
+        entries.append(entry)
+        print(f"  + {identifier}  [{comment or '—'}]")
+
+    if not entries:
+        print("Ничего не введено.")
+        return
+
+    print(f"\nДобавить {len(entries)} записей? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    stats = add_users_manually(entries)
+    print(f"\nГотово! Добавлено: {stats['added']}, пропущено дублей: {stats['skipped']}")
+
+
+def handle_parse_members():
+    """Пункт 8 — спарсить участников чата и добавить в Users."""
+    sessions = get_session_files()
+    if not sessions:
+        print("Нет аккаунтов.")
+        return
+
+    print("\n--- Парсинг участников чата ---")
+    chat_link = input("Ссылка или @username чата: ").strip()
+    if not chat_link:
+        return
+
+    comment = input("Метка/комментарий для записей (Enter = пусто): ").strip()
+
+    print(f"\nАккаунт для парсинга: {os.path.basename(sessions[0])}")
+    print(f"Начать? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    async def _run():
+        client = create_client(sessions[0])
+        await client.connect()
+        if not await client.is_user_authorized():
+            print("Аккаунт не авторизован!")
+            await client.disconnect()
+            return
+
+        print("Парсинг участников...")
+        last_pct = [-1]
+
+        def progress(current, total):
+            pct = int(current / total * 100) if total else 0
+            if pct != last_pct[0] and pct % 10 == 0:
+                print(f"  {pct}% ({current}/{total})")
+                last_pct[0] = pct
+
+        result = await parse_members_from_chat(client, chat_link, comment=comment, progress_cb=progress)
+        await client.disconnect()
+
+        if result["error"]:
+            print(f"Ошибка: {result['error']}")
+        else:
+            print(f"\nГотово!")
+            print(f"  Спарсено участников:  {result['parsed']}")
+            print(f"  Добавлено в Users:    {result['added']}")
+            print(f"  Пропущено (дубли):    {result['skipped']}")
+
+    asyncio.run(_run())
 
 
 # ========================================================================
@@ -561,6 +744,10 @@ def main():
             handle_parsing()
         elif choice == "6":
             handle_proxy()
+        elif choice == "7":
+            handle_add_users()
+        elif choice == "8":
+            handle_parse_members()
         elif choice == "0":
             print("Выход.")
             break
