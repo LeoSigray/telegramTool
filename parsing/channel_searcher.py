@@ -29,8 +29,9 @@ async def search_channels(
     client: TelegramClient,
     keyword: str,
     min_subs: int = 500,
-    limit: int = 50,
+    limit: int = 20,
     require_comments: bool = True,
+    max_results: int = 5,
 ) -> list[FoundChannel]:
     """
     Ищет публичные каналы по ключевому слову через нативный TG API.
@@ -49,40 +50,47 @@ async def search_channels(
     channels: list[FoundChannel] = []
 
     for chat in result.chats:
+        if len(channels) >= max_results:
+            break
         if not isinstance(chat, Channel):
             continue
-        # Только каналы (broadcast=True), не группы
         if not getattr(chat, "broadcast", False):
             continue
         if not chat.username:
             continue
 
-        # Быстрая проверка подписчиков — participants_count есть в базовом объекте
+        # Быстрая проверка подписчиков из базового объекта (без доп. запроса)
         quick_subs = getattr(chat, "participants_count", 0) or 0
-        if quick_subs < min_subs:
+        if quick_subs > 0 and quick_subs < min_subs:
             continue
 
-        # GetFullChannelRequest только для каналов прошедших фильтр — нужен linked_chat_id
+        print(f"    Проверяем @{chat.username} (~{quick_subs:,} подп.)...", flush=True)
+
+        # GetFullChannelRequest — только для получения linked_chat_id
         linked_chat_id = None
+        subs = quick_subs
         if require_comments:
             try:
                 full = await client(GetFullChannelRequest(chat))
                 linked_chat_id = getattr(full.full_chat, "linked_chat_id", None)
                 subs = full.full_chat.participants_count or quick_subs
             except FloodWaitError as e:
-                log.warning("FloodWait GetFullChannel @%s: %ds", chat.username, e.seconds)
-                await asyncio.sleep(e.seconds)
+                print(f"    FloodWait {e.seconds}s, пауза...", flush=True)
+                await asyncio.sleep(min(e.seconds, 30))
                 continue
             except Exception as e:
                 log.debug("Ошибка GetFullChannel @%s: %s", chat.username, e)
                 continue
 
             if not linked_chat_id:
+                print(f"    @{chat.username} — нет обсуждений, пропуск", flush=True)
                 continue
-            await asyncio.sleep(0.4)  # анти-флуд только для каналов прошедших фильтр
-        else:
-            subs = quick_subs
+            await asyncio.sleep(0.3)
 
+        if subs < min_subs:
+            continue
+
+        print(f"    ✓ @{chat.username} ({subs:,} подп.) — добавлен", flush=True)
         channels.append(FoundChannel(
             channel_id=chat.id,
             access_hash=chat.access_hash,
@@ -109,19 +117,22 @@ async def search_channels_multi(
     result: list[FoundChannel] = []
 
     for keyword in keywords:
-        log.info("Поиск каналов по: '%s'", keyword)
+        print(f"\n  Поиск по «{keyword}»...", flush=True)
         found = await search_channels(
             client, keyword,
             min_subs=min_subs,
             require_comments=require_comments,
+            max_results=5,
         )
+        new_count = 0
         for ch in found:
             if ch.channel_id not in seen_ids:
                 seen_ids.add(ch.channel_id)
                 result.append(ch)
-                log.info("  Найден: @%s (%d подп.)", ch.username, ch.subscribers)
+                new_count += 1
+        print(f"  Новых каналов: {new_count}", flush=True)
 
-        await asyncio.sleep(2)  # между ключевыми словами
+        await asyncio.sleep(1)
 
     result.sort(key=lambda c: c.subscribers, reverse=True)
     return result
