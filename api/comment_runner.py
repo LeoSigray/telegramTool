@@ -19,8 +19,10 @@ from telethon.errors import (
     ChannelPrivateError,
     FloodWaitError,
     PeerFloodError,
+    UserAlreadyParticipantError,
     UserBannedInChannelError,
 )
+from telethon.tl.functions.channels import JoinChannelRequest
 
 from accounts.manager import get_session_files
 from config import COMMENT_DELAY_MIN, COMMENT_DELAY_MAX, COMMENT_LIMIT_PER_ACCOUNT
@@ -155,6 +157,19 @@ async def run_comment_job(
         job.add_log(event="processing_channel", channel=ch.username, account=acc_name,
                     subscribers=ch.subscribers)
 
+        # Вступаем в linked discussion group (нужно для комментирования)
+        if ch.linked_chat_id:
+            try:
+                await client(JoinChannelRequest(ch.linked_chat_id))
+                print(f"  Вступили в группу обсуждений @{ch.username}", flush=True)
+                await asyncio.sleep(2)
+            except UserAlreadyParticipantError:
+                pass
+            except FloodWaitError as e:
+                await asyncio.sleep(min(e.seconds, 60))
+            except Exception as e:
+                job.add_log(event="join_discussion_error", channel=ch.username, error=str(e))
+
         # Собираем свежие посты с текстом
         try:
             posts = []
@@ -208,6 +223,7 @@ async def run_comment_job(
                 commented_this_channel += 1
                 account_comment_count[acc_name] = account_comment_count.get(acc_name, 0) + 1
                 job.sent += 1
+                print(f"  ✓ Комментарий в @{ch.username}: «{comment_text[:60]}»", flush=True)
                 job.add_log(
                     event="commented",
                     channel=ch.username,
@@ -228,8 +244,13 @@ async def run_comment_job(
                 job.add_log(event="comment_forbidden", channel=ch.username, error=str(e))
                 break
             except Exception as e:
+                err = str(e)
+                # Пост слишком старый — нет треда в discussion group, просто пропускаем
+                if "GetDiscussionMessageRequest" in err or "message ID" in err.lower():
+                    job.add_log(event="post_no_thread", channel=ch.username, post_id=post.id)
+                    continue
                 job.add_log(event="comment_error", channel=ch.username,
-                            post_id=post.id, error=str(e))
+                            post_id=post.id, error=err)
                 continue
 
             # Задержка между комментариями
