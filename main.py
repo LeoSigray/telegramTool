@@ -47,6 +47,7 @@ def show_menu():
     print("  6. Настройки прокси")
     print("  7. Добавить людей для рассылки")
     print("  8. Добавить чат → спарсить участников")
+    print("  9. Нейрокомментинг (Gemini)")
     print("  0. Выход")
     print("-" * 50)
 
@@ -686,6 +687,128 @@ def _show_category_stats():
 
 
 # ========================================================================
+#  Нейрокомментинг
+# ========================================================================
+
+def handle_neuro_commenting():
+    sessions = get_session_files()
+    if not sessions:
+        print("Нет аккаунтов.")
+        return
+
+    import os as _os
+    from api.gemini import is_configured
+
+    if not is_configured():
+        print("\n⚠  GEMINI_API_KEY не задан в .env")
+        print("   Получи ключ на https://aistudio.google.com/app/apikey")
+        print("   и добавь в .env: GEMINI_API_KEY=AIzaSy...")
+        return
+
+    print("\n--- Нейрокомментинг ---")
+    print("Gemini читает пост и пишет живой осмысленный комментарий.\n")
+
+    # Стиль
+    print("Стиль комментирования (промт для Gemini).")
+    print("Например: «Ты эксперт по инвестициям. Пиши коротко, задавай вопросы, делись мнением.»")
+    style_prompt = input_multiline("Промт:").strip()
+    if not style_prompt:
+        print("Пустой промт. Отмена.")
+        return
+
+    # Ключевые слова
+    print("\nКлючевые слова для поиска каналов (по одному на строку, пустая строка = конец):")
+    keywords = []
+    while True:
+        kw = input("> ").strip()
+        if not kw:
+            if keywords:
+                break
+            continue
+        keywords.append(kw)
+        print(f"  + {kw}")
+
+    if not keywords:
+        print("Нет ключевых слов. Отмена.")
+        return
+
+    # Настройки
+    try:
+        min_subs = int(input("\nМинимум подписчиков у канала (Enter = 1000): ").strip() or "1000")
+    except ValueError:
+        min_subs = 1000
+
+    try:
+        posts_per_channel = int(input("Постов комментировать на канал (Enter = 2): ").strip() or "2")
+        posts_per_channel = max(1, min(posts_per_channel, 5))
+    except ValueError:
+        posts_per_channel = 2
+
+    print(f"\nНастройки:")
+    print(f"  Ключевых слов:  {len(keywords)}: {', '.join(keywords)}")
+    print(f"  Мин. подписчики: {min_subs}")
+    print(f"  Постов на канал: {posts_per_channel}")
+    print(f"  Аккаунтов:      {len(sessions)}")
+    print("\nЗапустить? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    async def _run():
+        from api.comment_runner import run_comment_job
+        from api.jobs import jobs as job_manager
+        from api.client_pool import pool
+
+        # Поднимаем пул клиентов
+        print("\nПодключаем аккаунты...")
+        await pool.start_all()
+        active = pool.list_active()
+        if not active:
+            print("Ни один аккаунт не авторизован.")
+            return
+        print(f"Активных: {len(active)}")
+
+        job = job_manager.create(
+            kind="comment",
+            message=style_prompt,
+            targets=[],
+            parallel=1,
+        )
+
+        print(f"\n[job {job.id}] Ищем каналы по: {', '.join(keywords)}...")
+        print("(Ctrl+C для остановки)\n")
+
+        try:
+            await run_comment_job(job, keywords, min_subs, posts_per_channel)
+        except KeyboardInterrupt:
+            job.cancel.set()
+            print("\nОстановка...")
+
+        print(f"\n{'='*40}")
+        print(f"Статус:         {job.status}")
+        print(f"Каналов найдено:{job.total}")
+        print(f"Комментариев:   {job.sent}")
+        print(f"Пропущено:      {job.skipped}")
+        print(f"Ошибок:         {job.failed}")
+
+        # Лог последних событий
+        if job.log:
+            print("\nПоследние события:")
+            for entry in list(job.log)[-10:]:
+                ev = entry.get("event", "")
+                if ev == "commented":
+                    print(f"  ✓ @{entry.get('channel')} — «{entry.get('comment_preview', '')[:60]}»")
+                elif ev == "channels_found":
+                    print(f"  🔍 Найдено каналов: {entry.get('count')}")
+                elif ev in ("gemini_error", "comment_error", "flood_wait"):
+                    print(f"  ✗ {ev}: {entry.get('error') or entry.get('channel')}")
+
+        await pool.shutdown()
+
+    asyncio.run(_run())
+
+
+# ========================================================================
 #  Прокси
 # ========================================================================
 
@@ -748,6 +871,8 @@ def main():
             handle_add_users()
         elif choice == "8":
             handle_parse_members()
+        elif choice == "9":
+            handle_neuro_commenting()
         elif choice == "0":
             print("Выход.")
             break
