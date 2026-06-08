@@ -1,6 +1,13 @@
 import asyncio
 import os
 
+# Загружаем .env до всех остальных импортов
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from config import (
     load_proxy, save_proxy, SESSIONS_DIR, EXCEL_FILE,
     PARSE_DELAY_MIN, PARSE_DELAY_MAX,
