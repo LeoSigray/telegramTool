@@ -196,16 +196,21 @@ def _find_tdata_dirs(root: str):
 
 # ─────────────────────────── Конвертация одного аккаунта ────────────────────
 
-def _convert_tdata(account_name: str, tdata_path: str) -> bool:
-    """Конвертирует tdata -> .session. Возвращает True при успехе."""
+def convert_tdata(account_name: str, tdata_path: str, sessions_dir: str | None = None) -> tuple[bool, str | None, dict]:
+    """Конвертирует tdata -> .session. Возвращает (ok, error, info).
+
+    info: {"user_id": int, "dc_id": int, "session_file": str} при успехе.
+    """
+    if not _TGCRYPTO_OK:
+        return False, "tgcrypto не установлен", {}
+
+    sd = sessions_dir or SESSIONS_DIR
     try:
-        # 1. Читаем local key
         raw = _parse_tdf_raw(os.path.join(tdata_path, "key_datas"))
         salt, pos = _qt_read_bytes(raw, 0)
         key_enc, _ = _qt_read_bytes(raw, pos)
         local_key = _decrypt_local(key_enc, _create_local_key(b"", salt))[:256]
 
-        # 2. Ищем файл сессии (имя из 16 hex-символов + 's')
         session_file = None
         for fname in os.listdir(tdata_path):
             if len(fname) == 17 and fname.endswith("s") and fname[:-1].isalnum():
@@ -213,36 +218,49 @@ def _convert_tdata(account_name: str, tdata_path: str) -> bool:
                 break
 
         if not session_file:
-            print(f"  [{account_name}] Файл сессии не найден в {tdata_path}")
-            return False
+            return False, "Файл сессии не найден (нет файла из 16 hex + 's')", {}
 
-        # 3. Расшифровываем сессию
         raw2 = _parse_tdf_raw(session_file)
         enc_blob, _ = _qt_read_bytes(raw2, 0)
         sess_data = _decrypt_local(enc_blob, local_key)
         mtp_data, _ = _qt_read_bytes(sess_data, 4)
 
-        # 4. Извлекаем auth_key, dc_id, user_id
         user_id, dc_id, keys = _parse_mtp_auth(mtp_data)
 
         if not keys:
-            print(f"  [{account_name}] Нет ключей в MtpAuthorization")
-            return False
+            return False, "Нет ключей в MtpAuthorization", {}
 
-        # Берём ключ для основного DC
         auth_key = next((k for dc, k in keys if dc == dc_id), keys[0][1])
 
-        # 5. Создаём Telethon сессию
-        os.makedirs(SESSIONS_DIR, exist_ok=True)
-        session_path = os.path.join(SESSIONS_DIR, account_name)
+        os.makedirs(sd, exist_ok=True)
+        session_path = os.path.join(sd, account_name)
         _make_telethon_session(session_path, dc_id, auth_key, user_id)
+        return True, None, {
+            "user_id": user_id,
+            "dc_id": dc_id,
+            "session_file": f"{session_path}.session",
+        }
+    except Exception as e:  # noqa: BLE001
+        return False, str(e), {}
 
-        print(f"  [{account_name}] OK — user_id={user_id}, dc={dc_id} -> sessions/{account_name}.session")
-        return True
 
-    except Exception as e:
-        print(f"  [{account_name}] Ошибка: {e}")
-        return False
+def _convert_tdata(account_name: str, tdata_path: str) -> bool:
+    """Старая печатающая обёртка для CLI — оставлена ради обратной совместимости."""
+    ok, err, info = convert_tdata(account_name, tdata_path)
+    if ok:
+        print(f"  [{account_name}] OK — user_id={info['user_id']}, dc={info['dc_id']} -> {info['session_file']}")
+    else:
+        print(f"  [{account_name}] Ошибка: {err}")
+    return ok
+
+
+def find_tdata_dirs(root: str):
+    """Публичный алиас на _find_tdata_dirs — для использования из API."""
+    return _find_tdata_dirs(root)
+
+
+def has_tgcrypto() -> bool:
+    return _TGCRYPTO_OK
 
 
 # ─────────────────────────── Публичная функция ──────────────────────────────

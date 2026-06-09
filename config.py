@@ -37,40 +37,40 @@ INVITE_LIMIT_PER_ACCOUNT = 40
 PARSE_DELAY_MIN = 2
 PARSE_DELAY_MAX = 5
 
+# Нейрокомментинг
+COMMENT_DELAY_MIN = 45       # между комментариями одного аккаунта (сек)
+COMMENT_DELAY_MAX = 120
+COMMENT_LIMIT_PER_ACCOUNT = 15   # максимум комментариев на аккаунт за один раунд
+COMMENT_ROUND_DELAY = 1800       # пауза между раундами в continuous-режиме (30 мин)
+
 # Рассылка по чатам с вступлением
 JOIN_DELAY_MIN = 30       # задержка между вступлениями в чаты (сек)
 JOIN_DELAY_MAX = 90
 JOIN_LIMIT_PER_ACCOUNT = 5  # сколько чатов вступить + написать за сессию на 1 аккаунт
 
 # --- ПРОКСИ ---
-
-PROXY_FILE = "proxy.txt"
-
-
-def load_proxy():
-    if not os.path.exists(PROXY_FILE):
-        return None
-    with open(PROXY_FILE, "r") as f:
-        line = f.read().strip()
-    return line or None
+# Прокси и folder_links теперь хранятся в data/database.db (data/db.py).
+# Функции ниже являются фасадом для обратной совместимости.
 
 
-def save_proxy(proxy_string):
-    with open(PROXY_FILE, "w") as f:
-        f.write(proxy_string.strip())
+def load_proxy() -> str | None:
+    from data.db import get_proxy
+    return get_proxy()
+
+
+def save_proxy(proxy_string: str) -> None:
+    from data.db import set_proxy
+    set_proxy(proxy_string.strip())
 
 
 def load_folder_links() -> list[str]:
-    """Загружает ссылки на папки из data/folder_links.txt (по одной на строку)."""
-    if not os.path.exists(FOLDER_LINKS_FILE):
-        return []
-    with open(FOLDER_LINKS_FILE, "r", encoding="utf-8") as f:
-        lines = f.read().strip().splitlines()
-    return [l.strip() for l in lines if l.strip() and "t.me/addlist/" in l]
+    """Загружает ссылки на папки из БД."""
+    from data.db import get_folder_links
+    links = get_folder_links()
+    return [l for l in links if "t.me/addlist/" in l]
 
 
-def save_folder_links(links: list[str]):
-    """Сохраняет ссылки на папки в data/folder_links.txt."""
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(FOLDER_LINKS_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(links) + "\n")
+def save_folder_links(links: list[str]) -> None:
+    """Сохраняет ссылки на папки в БД."""
+    from data.db import save_folder_links as _save
+    _save(links)

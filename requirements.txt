@@ -1,5 +1,17 @@
 telethon>=1.42.0
+Pillow>=10.0.0
 requests>=2.31.0
 openpyxl>=3.1.0
 pysocks>=1.7.1
 tgcrypto>=1.2.5
+gspread>=6.0.0
+google-auth>=2.0.0
+pandas>=2.0.0
+
+# HTTP API (опционально, нужны только для api/server.py)
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.10.0
+python-multipart>=0.0.18
+httpx>=0.27.0
+google-genai>=0.8.0

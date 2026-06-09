@@ -1,16 +1,20 @@
 # Virtual environment
 .venv/
 
-# Telethon sessions (содержат авторизацию — не коммитить!)
+# Telethon sessions — рабочая директория (кэш из БД, не коммитить)
 *.session
 *.session-journal
-
-# Account credentials (данные аккаунтов — не коммитить!)
-accounts/*.txt
 sessions/
 tdata_accounts/
 
-# Proxy config (содержит приватные данные)
+# Account credentials
+accounts/*.txt
+
+# БД с аккаунтами, прокси и настройками (приватные данные — не коммитить!)
+# Для переноса на новую машину скопируй вручную: data/database.db
+data/database.db
+
+# Прокси (теперь в БД, файл оставлен для обратной совместимости)
 proxy.txt
 
 # Excel данные и рантайм
@@ -28,3 +32,9 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# API token
+.env
+
+# avatar cache (runtime)
+avatars_cache/
