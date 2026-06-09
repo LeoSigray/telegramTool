@@ -76,6 +76,7 @@ class StartCommentJobIn(BaseModel):
     min_subs: int = Field(default=500, ge=0, description="Минимум подписчиков у канала")
     posts_per_channel: int = Field(default=2, ge=1, le=10, description="Сколько постов комментировать в канале")
     parallel: int = Field(default=1, ge=1, le=10)
+    continuous: bool = Field(default=False, description="Непрерывный режим: искать новые каналы каждые 30 мин пока не стопнут")
 
 
 @router.post("/comment/start")
@@ -91,8 +92,10 @@ async def start_comment_job(body: StartCommentJobIn) -> dict:
         targets=[],  # будут заполнены runner-ом после поиска каналов
         parallel=body.parallel,
     )
+    job.continuous = body.continuous
     job.task = asyncio.create_task(
-        run_comment_job(job, keywords, body.min_subs, body.posts_per_channel)
+        run_comment_job(job, keywords, body.min_subs, body.posts_per_channel,
+                        continuous=body.continuous)
     )
     return job.to_dict()
 

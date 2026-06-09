@@ -32,6 +32,8 @@ class Job:
     skipped: int = 0
     log: deque = field(default_factory=lambda: deque(maxlen=500))
     error: str | None = None
+    continuous: bool = False    # крутиться вечно, пока не остановят
+    current_round: int = 0      # номер текущего раунда (только для continuous)
 
     cancel: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task | None = None
@@ -59,6 +61,8 @@ class Job:
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "error": self.error,
+            "continuous": self.continuous,
+            "current_round": self.current_round,
         }
         if include_targets:
             d["targets"] = [

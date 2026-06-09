@@ -1,5 +1,5 @@
 """Async-runner для рассылки в личные сообщения. Использует существующий
-messaging.dm_sender как образец, но с поддержкой отмены и событий."""
+DM-рассылка с поддержкой job/cancel/событий."""
 import asyncio
 import os
 import random

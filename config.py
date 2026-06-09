@@ -38,9 +38,10 @@ PARSE_DELAY_MIN = 2
 PARSE_DELAY_MAX = 5
 
 # Нейрокомментинг
-COMMENT_DELAY_MIN = 45     # между комментариями одного аккаунта (сек)
+COMMENT_DELAY_MIN = 45       # между комментариями одного аккаунта (сек)
 COMMENT_DELAY_MAX = 120
-COMMENT_LIMIT_PER_ACCOUNT = 15  # максимум комментариев за сессию на аккаунт
+COMMENT_LIMIT_PER_ACCOUNT = 15   # максимум комментариев на аккаунт за один раунд
+COMMENT_ROUND_DELAY = 1800       # пауза между раундами в continuous-режиме (30 мин)
 
 # Рассылка по чатам с вступлением
 JOIN_DELAY_MIN = 30       # задержка между вступлениями в чаты (сек)

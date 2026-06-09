@@ -1,7 +1,7 @@
 """
 parsing/categories.py
 Логика определения категорий и городов для чатов Telegram.
-Используется в folder_parser.py, zip_parser.py и gsheets_manager.py.
+Используется в folder_parser.py и zip_parser.py.
 """
 
 import re
