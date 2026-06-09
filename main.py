@@ -80,14 +80,15 @@ def handle_accounts():
         print("\n--- Управление аккаунтами ---")
         print("  1. Купить аккаунты (LZT.market)")
         print("  2. Импортировать tdata")
-        print("  3. Список аккаунтов")
-        print("  4. Проверить аккаунты")
-        print("  5. Изменить описание профиля (bio)")
-        print("  6. Сменить аватарки (ZIP)")
-        print("  7. Сгенерировать имена/фамилии (Gemini)")
-        print("  8. Привязать личный канал к профилю")
-        print("  9. Конвертировать accounts → sessions")
-        print(" 10. Скачать сессии с LZT (для уже купленных)")
+        print("  3. Импортировать .session файлы")
+        print("  4. Список аккаунтов")
+        print("  5. Проверить аккаунты")
+        print("  6. Изменить описание профиля (bio)")
+        print("  7. Сменить аватарки (ZIP)")
+        print("  8. Сгенерировать имена/фамилии (Gemini)")
+        print("  9. Привязать личный канал к профилю")
+        print(" 10. Конвертировать accounts → sessions")
+        print(" 11. Скачать сессии с LZT (для уже купленных)")
         print("  0. Назад")
 
         choice = input("\nВыбор: ").strip()
@@ -97,8 +98,10 @@ def handle_accounts():
         elif choice == "2":
             import_tdata_interactive()
         elif choice == "3":
-            list_accounts()
+            _handle_import_sessions()
         elif choice == "4":
+            list_accounts()
+        elif choice == "5":
             sessions = get_session_files()
             if not sessions:
                 print("Нет аккаунтов.")
@@ -109,20 +112,115 @@ def handle_accounts():
                 ok, info = asyncio.run(check_account(s))
                 status = "OK" if ok else "FAIL"
                 print(f"  [{status}] {name}: {info}")
-        elif choice == "5":
-            _handle_update_bio()
         elif choice == "6":
-            _handle_bulk_avatars_zip()
+            _handle_update_bio()
         elif choice == "7":
-            _handle_generate_names()
+            _handle_bulk_avatars_zip()
         elif choice == "8":
-            _handle_set_personal_channel()
+            _handle_generate_names()
         elif choice == "9":
-            convert_accounts_interactive()
+            _handle_set_personal_channel()
         elif choice == "10":
+            convert_accounts_interactive()
+        elif choice == "11":
             _handle_download_sessions_lzt()
         elif choice == "0":
             break
+
+
+def _handle_import_sessions():
+    """Импортировать .session файлы — из файла, папки или ZIP."""
+    import shutil
+    import zipfile
+    import tempfile
+
+    print("\n--- Импортировать .session файлы ---")
+    print("Можно указать:")
+    print("  • путь к одному .session файлу")
+    print("  • путь к папке с .session файлами")
+    print("  • путь к ZIP-архиву с .session файлами")
+    print("  • несколько путей через Enter (пустая строка = конец)\n")
+
+    # Собираем пути
+    raw_paths = []
+    while True:
+        p = input("Путь: ").strip().strip('"').strip("'")
+        if not p:
+            if raw_paths:
+                break
+            continue
+        raw_paths.append(p)
+
+    if not raw_paths:
+        return
+
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    found: list[str] = []   # все .session файлы из всех источников
+    tmp_dirs: list[str] = []
+
+    for raw in raw_paths:
+        if not os.path.exists(raw):
+            print(f"  ✗ Не найден: {raw}")
+            continue
+
+        # ZIP-архив
+        if raw.lower().endswith(".zip") and zipfile.is_zipfile(raw):
+            tmp = tempfile.mkdtemp(prefix="sess_import_")
+            tmp_dirs.append(tmp)
+            with zipfile.ZipFile(raw) as zf:
+                for member in zf.namelist():
+                    if member.lower().endswith(".session") and not os.path.basename(member).startswith("__"):
+                        zf.extract(member, tmp)
+                        found.append(os.path.join(tmp, member))
+            continue
+
+        # Папка
+        if os.path.isdir(raw):
+            for fn in os.listdir(raw):
+                if fn.lower().endswith(".session"):
+                    found.append(os.path.join(raw, fn))
+            continue
+
+        # Одиночный файл
+        if raw.lower().endswith(".session"):
+            found.append(raw)
+        else:
+            print(f"  ✗ Не .session файл: {os.path.basename(raw)}")
+
+    if not found:
+        print("Не найдено ни одного .session файла.")
+        for t in tmp_dirs:
+            shutil.rmtree(t, ignore_errors=True)
+        return
+
+    # Показываем что нашли
+    print(f"\nНайдено .session файлов: {len(found)}")
+    for f in found:
+        print(f"  • {os.path.basename(f)}")
+
+    print(f"\nСкопировать в {SESSIONS_DIR}/? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        for t in tmp_dirs:
+            shutil.rmtree(t, ignore_errors=True)
+        return
+
+    copied = skipped = 0
+    for src in found:
+        dst = os.path.join(SESSIONS_DIR, os.path.basename(src))
+        if os.path.exists(dst):
+            print(f"  ~ {os.path.basename(src)} — уже существует, пропущен")
+            skipped += 1
+        else:
+            shutil.copy2(src, dst)
+            print(f"  ✓ {os.path.basename(src)}")
+            copied += 1
+
+    for t in tmp_dirs:
+        shutil.rmtree(t, ignore_errors=True)
+
+    print(f"\nГотово: {copied} скопировано, {skipped} пропущено")
+    print(f"Итого аккаунтов в sessions/: {len(get_session_files())}")
 
 
 def _handle_update_bio():
