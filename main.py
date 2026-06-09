@@ -34,30 +34,30 @@ from data.excel_manager import (
 #  Утилиты
 # ========================================================================
 
-def _ensure_min_photo_size(img_path: str, min_side: int = 512) -> str:
+def _ensure_min_photo_size(img_path: str, min_side: int = 800) -> str:
     """
-    Если картинка меньше min_side×min_side — ресайзит через Pillow и
-    возвращает путь к временному файлу. Иначе возвращает исходный путь.
-    Telegram требует минимум ~512×512 для аватарок.
+    Гарантирует минимум min_side×min_side и конвертирует в JPEG.
+    Telegram принимает аватарки от 800×800 (меньше — 'Photo is too small').
+    Всегда возвращает путь к JPEG-файлу (tmp или оригинал если уже подходит).
     """
-    try:
-        from PIL import Image
-        import tempfile
-        with Image.open(img_path) as img:
-            w, h = img.size
-            if w >= min_side and h >= min_side:
-                return img_path  # уже достаточно большая
-            # Масштабируем сохраняя пропорции (по меньшей стороне)
+    from PIL import Image
+    import tempfile
+
+    with Image.open(img_path) as img:
+        # Конвертируем в RGB: убирает alpha-канал, поддерживает JPEG
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+
+        w, h = img.size
+        if w < min_side or h < min_side:
             scale = min_side / min(w, h)
             new_w, new_h = int(w * scale), int(h * scale)
-            resized = img.resize((new_w, new_h), Image.LANCZOS)
-            # Сохраняем в tmp файл того же формата
-            suffix = os.path.splitext(img_path)[1] or ".jpg"
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-            resized.save(tmp.name)
-            return tmp.name
-    except Exception:
-        return img_path  # если что-то пошло не так — отдаём оригинал
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            print(f"    [resize] {w}×{h} → {new_w}×{new_h}", flush=True)
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+        img.save(tmp.name, "JPEG", quality=95)
+        return tmp.name
 
 
 # ========================================================================
