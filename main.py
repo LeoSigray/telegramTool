@@ -235,7 +235,8 @@ def _handle_import_sessions():
             shutil.rmtree(t, ignore_errors=True)
         return
 
-    copied = skipped = 0
+    from data.db import save_session_from_file as _db_save
+    copied = skipped = db_saved = 0
     for src in found:
         dst = os.path.join(SESSIONS_DIR, os.path.basename(src))
         if os.path.exists(dst):
@@ -245,11 +246,15 @@ def _handle_import_sessions():
             shutil.copy2(src, dst)
             print(f"  ✓ {os.path.basename(src)}")
             copied += 1
+        # Сохраняем / обновляем в БД в любом случае
+        if _db_save(dst):
+            db_saved += 1
 
     for t in tmp_dirs:
         shutil.rmtree(t, ignore_errors=True)
 
     print(f"\nГотово: {copied} скопировано, {skipped} пропущено")
+    print(f"Сохранено в БД: {db_saved}")
     print(f"Итого аккаунтов в sessions/: {len(get_session_files())}")
 
 
@@ -1337,11 +1342,9 @@ def handle_proxy():
         save_proxy(proxy)
         print(f"Сохранен: {proxy}")
     elif choice == "2":
-        if os.path.exists("proxy.txt"):
-            os.remove("proxy.txt")
-            print("Удален.")
-        else:
-            print("Не был установлен.")
+        from data.db import clear_proxy
+        clear_proxy()
+        print("Удален.")
 
 
 # ========================================================================
@@ -1375,5 +1378,12 @@ def main():
 
 
 if __name__ == "__main__":
+    import atexit
+    from data.db import init_db, migrate_from_files, sync_all_to_db
+    # Инициализируем БД; при первом запуске переносим sessions/, proxy.txt → БД
+    init_db()
+    migrate_from_files(SESSIONS_DIR, DATA_DIR)
+    # При выходе синхронизируем обновлённые сессии обратно в БД
+    atexit.register(lambda: sync_all_to_db(SESSIONS_DIR))
     migrate_all_sessions()
     main()

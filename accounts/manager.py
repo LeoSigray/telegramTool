@@ -72,8 +72,17 @@ def migrate_all_sessions():
 
 
 def get_session_files():
-    """Возвращает список .session файлов из папки sessions/."""
+    """
+    Возвращает список .session файлов из папки sessions/.
+    Перед этим выгружает свежие сессии из БД (data/database.db) на диск,
+    чтобы новые аккаунты, добавленные с другой машины, стали доступны.
+    """
     os.makedirs(SESSIONS_DIR, exist_ok=True)
+    try:
+        from data.db import load_sessions_to_disk
+        load_sessions_to_disk(SESSIONS_DIR)
+    except Exception as e:
+        print(f"[db] Предупреждение: не удалось загрузить сессии из БД: {e}")
     pattern = os.path.join(SESSIONS_DIR, "*.session")
     return sorted(glob.glob(pattern))
 

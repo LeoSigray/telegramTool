@@ -19,6 +19,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from accounts.manager import migrate_all_sessions
+from config import SESSIONS_DIR, DATA_DIR
+from data.db import init_db, migrate_from_files, sync_all_to_db
 
 from . import listener, routes_accounts, routes_broadcast, routes_bulk
 from .client_pool import pool
@@ -28,11 +30,14 @@ log = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. чиним старые версии sessions
+    # 1. инициализируем БД и мигрируем старые файлы (если нужно)
+    init_db()
+    migrate_from_files(SESSIONS_DIR, DATA_DIR)
+    # 2. чиним старые версии sessions
     migrate_all_sessions()
-    # 2. поднимаем все клиенты в пул
+    # 3. поднимаем все клиенты в пул (get_session_files внутри уже читает из БД)
     await pool.start_all()
-    # 3. вешаем listener (передаст входящие в CRM-webhook если он настроен)
+    # 4. вешаем listener (передаст входящие в CRM-webhook если он настроен)
     listener.setup()
     log.info("ready: %d active accounts in pool", len(pool.clients))
     try:
@@ -40,6 +45,10 @@ async def lifespan(app: FastAPI):
     finally:
         await listener.shutdown()
         await pool.shutdown()
+        # синхронизируем обновлённые сессии обратно в БД
+        synced = sync_all_to_db(SESSIONS_DIR)
+        if synced:
+            log.info("synced %d sessions back to DB", synced)
 
 
 app = FastAPI(title="telegramTool API", version="0.2.0", lifespan=lifespan)
