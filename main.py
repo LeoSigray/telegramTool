@@ -31,6 +31,36 @@ from data.excel_manager import (
 
 
 # ========================================================================
+#  Утилиты
+# ========================================================================
+
+def _ensure_min_photo_size(img_path: str, min_side: int = 512) -> str:
+    """
+    Если картинка меньше min_side×min_side — ресайзит через Pillow и
+    возвращает путь к временному файлу. Иначе возвращает исходный путь.
+    Telegram требует минимум ~512×512 для аватарок.
+    """
+    try:
+        from PIL import Image
+        import tempfile
+        with Image.open(img_path) as img:
+            w, h = img.size
+            if w >= min_side and h >= min_side:
+                return img_path  # уже достаточно большая
+            # Масштабируем сохраняя пропорции (по меньшей стороне)
+            scale = min_side / min(w, h)
+            new_w, new_h = int(w * scale), int(h * scale)
+            resized = img.resize((new_w, new_h), Image.LANCZOS)
+            # Сохраняем в tmp файл того же формата
+            suffix = os.path.splitext(img_path)[1] or ".jpg"
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+            resized.save(tmp.name)
+            return tmp.name
+    except Exception:
+        return img_path  # если что-то пошло не так — отдаём оригинал
+
+
+# ========================================================================
 #  Меню
 # ========================================================================
 
@@ -311,10 +341,14 @@ def _handle_bulk_avatars_zip():
             for acc_name, client in pool.clients.items():
                 img_path = random.choice(images)
                 try:
-                    uploaded = await client.upload_file(img_path)
+                    upload_path = _ensure_min_photo_size(img_path)
+                    uploaded = await client.upload_file(upload_path)
                     await client(UploadProfilePhotoRequest(file=uploaded))
                     print(f"  ✓ {acc_name} ← {os.path.basename(img_path)}")
                     ok += 1
+                    # удаляем временный ресайзнутый файл если он создавался
+                    if upload_path != img_path and os.path.exists(upload_path):
+                        os.unlink(upload_path)
                 except Exception as e:
                     print(f"  ✗ {acc_name}: {e}")
                     fail += 1
