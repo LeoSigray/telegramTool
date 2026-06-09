@@ -9,7 +9,7 @@ except ImportError:
     pass
 
 from config import (
-    load_proxy, save_proxy, SESSIONS_DIR, EXCEL_FILE,
+    load_proxy, save_proxy, SESSIONS_DIR, DATA_DIR, EXCEL_FILE,
     PARSE_DELAY_MIN, PARSE_DELAY_MAX,
     load_folder_links, save_folder_links,
 )
