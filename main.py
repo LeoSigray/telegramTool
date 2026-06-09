@@ -500,18 +500,6 @@ def _handle_set_personal_channel():
             await pool.shutdown()
             return
 
-        # Резолвим entity канала один раз через первый аккаунт
-        channel_entity = None
-        if not clear_mode:
-            first_client = next(iter(pool.clients.values()))
-            try:
-                channel_entity = await first_client.get_input_entity(channel_input)
-                print(f"Канал найден: @{channel_input}\n")
-            except Exception as e:
-                print(f"Не удалось найти канал @{channel_input}: {e}")
-                await pool.shutdown()
-                return
-
         ok = fail = 0
         for acc_name, client in pool.clients.items():
             try:
@@ -519,11 +507,21 @@ def _handle_set_personal_channel():
                     await client(UpdatePersonalChannelRequest(channel=InputChannelEmpty()))
                     print(f"  ✓ {acc_name} — канал отвязан")
                 else:
-                    await client(UpdatePersonalChannelRequest(channel=channel_entity))
+                    # Каждый аккаунт резолвит entity самостоятельно —
+                    # access_hash у каждого свой, нельзя использовать чужой.
+                    # Важно: аккаунт должен быть владельцем/администратором канала.
+                    ch_entity = await client.get_input_entity(channel_input)
+                    await client(UpdatePersonalChannelRequest(channel=ch_entity))
                     print(f"  ✓ {acc_name} → @{channel_input}")
                 ok += 1
             except Exception as e:
-                print(f"  ✗ {acc_name}: {e}")
+                err = str(e)
+                if "CHAT_WRITE_FORBIDDEN" in err or "can't write" in err.lower():
+                    print(f"  ✗ {acc_name}: аккаунт не является администратором @{channel_input}")
+                elif "CHANNEL_INVALID" in err or "Invalid channel" in err:
+                    print(f"  ✗ {acc_name}: канал не найден или аккаунт не подписан")
+                else:
+                    print(f"  ✗ {acc_name}: {e}")
                 fail += 1
 
         await pool.shutdown()
