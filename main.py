@@ -85,8 +85,9 @@ def handle_accounts():
         print("  5. Изменить описание профиля (bio)")
         print("  6. Сменить аватарки (ZIP)")
         print("  7. Сгенерировать имена/фамилии (Gemini)")
-        print("  8. Конвертировать accounts → sessions")
-        print("  9. Скачать сессии с LZT (для уже купленных)")
+        print("  8. Привязать личный канал к профилю")
+        print("  9. Конвертировать accounts → sessions")
+        print(" 10. Скачать сессии с LZT (для уже купленных)")
         print("  0. Назад")
 
         choice = input("\nВыбор: ").strip()
@@ -115,8 +116,10 @@ def handle_accounts():
         elif choice == "7":
             _handle_generate_names()
         elif choice == "8":
-            convert_accounts_interactive()
+            _handle_set_personal_channel()
         elif choice == "9":
+            convert_accounts_interactive()
+        elif choice == "10":
             _handle_download_sessions_lzt()
         elif choice == "0":
             break
@@ -301,6 +304,81 @@ def _handle_generate_names():
                 await _apply_profile(client, profile)
                 display = " ".join(p for p in [fn or "", ln or ""] if p)
                 print(f"  ✓ {acc_name} → {display}")
+                ok += 1
+            except Exception as e:
+                print(f"  ✗ {acc_name}: {e}")
+                fail += 1
+
+        await pool.shutdown()
+        print(f"\nГотово: {ok} успешно, {fail} ошибок")
+
+    asyncio.run(_run())
+
+
+def _handle_set_personal_channel():
+    """Привязать личный канал к профилям всех аккаунтов."""
+    sessions = get_session_files()
+    if not sessions:
+        print("Нет аккаунтов.")
+        return
+
+    print("\n--- Привязать личный канал к профилю ---")
+    print("Канал будет отображаться в профиле как «Личный канал».")
+    print("Введите 0 чтобы отвязать канал от всех аккаунтов.\n")
+
+    channel_input = input("@username или ссылка на канал (0 = отвязать): ").strip()
+    if not channel_input:
+        return
+
+    clear_mode = channel_input == "0"
+
+    if not clear_mode:
+        # Нормализуем: убираем https://t.me/, @
+        if channel_input.startswith("https://t.me/"):
+            channel_input = channel_input.split("t.me/")[-1].split("/")[0]
+        channel_input = channel_input.lstrip("@")
+
+    action = "отвязать канал" if clear_mode else f"привязать @{channel_input}"
+    print(f"\nДействие: {action}")
+    print(f"Аккаунтов: {len(sessions)}")
+    print("Применить ко всем? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    async def _run():
+        from telethon.tl.functions.account import UpdatePersonalChannelRequest
+        from telethon.tl.types import InputChannelEmpty
+        from api.client_pool import pool
+
+        print("\nПодключаем аккаунты...")
+        await pool.start_all()
+        if not pool.list_active():
+            print("Ни один аккаунт не авторизован.")
+            await pool.shutdown()
+            return
+
+        # Резолвим entity канала один раз через первый аккаунт
+        channel_entity = None
+        if not clear_mode:
+            first_client = next(iter(pool.clients.values()))
+            try:
+                channel_entity = await first_client.get_input_entity(channel_input)
+                print(f"Канал найден: @{channel_input}\n")
+            except Exception as e:
+                print(f"Не удалось найти канал @{channel_input}: {e}")
+                await pool.shutdown()
+                return
+
+        ok = fail = 0
+        for acc_name, client in pool.clients.items():
+            try:
+                if clear_mode:
+                    await client(UpdatePersonalChannelRequest(channel=InputChannelEmpty()))
+                    print(f"  ✓ {acc_name} — канал отвязан")
+                else:
+                    await client(UpdatePersonalChannelRequest(channel=channel_entity))
+                    print(f"  ✓ {acc_name} → @{channel_input}")
                 ok += 1
             except Exception as e:
                 print(f"  ✗ {acc_name}: {e}")
