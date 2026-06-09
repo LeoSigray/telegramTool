@@ -83,8 +83,10 @@ def handle_accounts():
         print("  3. Список аккаунтов")
         print("  4. Проверить аккаунты")
         print("  5. Изменить описание профиля (bio)")
-        print("  6. Конвертировать accounts → sessions")
-        print("  7. Скачать сессии с LZT (для уже купленных)")
+        print("  6. Сменить аватарки (ZIP)")
+        print("  7. Сгенерировать имена/фамилии (Gemini)")
+        print("  8. Конвертировать accounts → sessions")
+        print("  9. Скачать сессии с LZT (для уже купленных)")
         print("  0. Назад")
 
         choice = input("\nВыбор: ").strip()
@@ -109,8 +111,12 @@ def handle_accounts():
         elif choice == "5":
             _handle_update_bio()
         elif choice == "6":
-            convert_accounts_interactive()
+            _handle_bulk_avatars_zip()
         elif choice == "7":
+            _handle_generate_names()
+        elif choice == "8":
+            convert_accounts_interactive()
+        elif choice == "9":
             _handle_download_sessions_lzt()
         elif choice == "0":
             break
@@ -138,6 +144,172 @@ def _handle_update_bio():
     for name, status in results.items():
         if status != "ok":
             print(f"  [{name}] {status}")
+
+
+def _handle_bulk_avatars_zip():
+    """Сменить аватарки всем аккаунтам из ZIP-архива с картинками."""
+    import random
+    import shutil
+    import tempfile
+    import zipfile
+    from telethon.tl.functions.photos import UploadProfilePhotoRequest
+
+    sessions = get_session_files()
+    if not sessions:
+        print("Нет аккаунтов.")
+        return
+
+    print("\n--- Сменить аватарки (ZIP) ---")
+    print("ZIP должен содержать .jpg/.jpeg/.png файлы.")
+    zip_path = input("Путь к ZIP-файлу: ").strip().strip('"')
+
+    if not zip_path or not os.path.exists(zip_path):
+        print(f"Файл не найден: {zip_path}")
+        return
+    if not zipfile.is_zipfile(zip_path):
+        print("Это не ZIP-архив.")
+        return
+
+    # Распаковываем во временную папку
+    tmp_dir = tempfile.mkdtemp(prefix="avatars_")
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(tmp_dir)
+
+        images = []
+        for root, _, files in os.walk(tmp_dir):
+            for fn in files:
+                if fn.lower().endswith((".jpg", ".jpeg", ".png")):
+                    images.append(os.path.join(root, fn))
+
+        if not images:
+            print("В архиве нет .jpg/.png файлов.")
+            return
+
+        print(f"\nКартинок в архиве: {len(images)}")
+        print(f"Аккаунтов:         {len(sessions)}")
+        if len(images) < len(sessions):
+            print(f"  (картинок меньше — некоторые аккаунты получат одинаковые)")
+        print("Начать? (y/n): ", end="")
+        if input().strip().lower() != "y":
+            return
+
+        async def _run():
+            from api.client_pool import pool
+            print("\nПодключаем аккаунты...")
+            await pool.start_all()
+            active = pool.list_active()
+            if not active:
+                print("Ни один аккаунт не авторизован.")
+                await pool.shutdown()
+                return
+            print(f"Активных: {len(active)}\n")
+
+            random.shuffle(images)
+            ok = fail = 0
+            for acc_name, client in pool.clients.items():
+                img_path = random.choice(images)
+                try:
+                    uploaded = await client.upload_file(img_path)
+                    await client(UploadProfilePhotoRequest(file=uploaded))
+                    print(f"  ✓ {acc_name} ← {os.path.basename(img_path)}")
+                    ok += 1
+                except Exception as e:
+                    print(f"  ✗ {acc_name}: {e}")
+                    fail += 1
+
+            await pool.shutdown()
+            print(f"\nГотово: {ok} успешно, {fail} ошибок")
+
+        asyncio.run(_run())
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _handle_generate_names():
+    """Сгенерировать имена/фамилии через Gemini и применить ко всем аккаунтам."""
+    from api.gemini import is_configured, generate_names
+
+    sessions = get_session_files()
+    if not sessions:
+        print("Нет аккаунтов.")
+        return
+
+    if not is_configured():
+        print("\n⚠  GEMINI_API_KEY не задан в .env")
+        return
+
+    print("\n--- Сгенерировать имена/фамилии (Gemini) ---")
+    print(f"Аккаунтов: {len(sessions)}\n")
+
+    print("Какие поля генерировать?")
+    print("  1. Имя и фамилия")
+    print("  2. Только имя")
+    print("  3. Только фамилия")
+    field_choice = input("Выбор (Enter = 1): ").strip() or "1"
+    if field_choice == "2":
+        fields = ["first_name"]
+    elif field_choice == "3":
+        fields = ["last_name"]
+    else:
+        fields = ["first_name", "last_name"]
+
+    print("\nПромт для Gemini (описание стиля имён).")
+    print("Например: «русские мужские», «западные женские, 25-35 лет», «нейтральные»")
+    prompt = input("Промт (Enter = без уточнений): ").strip()
+
+    print(f"\nГенерирую {len(sessions)} вариантов... ", end="", flush=True)
+
+    async def _run():
+        from api.client_pool import pool
+        from api.routes_accounts import ProfileIn, _apply_profile
+
+        # Генерируем имена (не нужен пул — только Gemini)
+        try:
+            generated = await generate_names(prompt, count=len(sessions), fields=fields)
+        except Exception as e:
+            print(f"✗\nОшибка Gemini: {e}")
+            return
+
+        print(f"✓ ({len(generated)} вариантов)\n")
+
+        # Показываем что получилось
+        for i, names in enumerate(generated, 1):
+            parts = [names.get("first_name", ""), names.get("last_name", "")]
+            print(f"  {i:>2}. {' '.join(p for p in parts if p)}")
+
+        print(f"\nПрименить ко всем {len(sessions)} аккаунтам? (y/n): ", end="")
+        if input().strip().lower() != "y":
+            print("Отменено.")
+            return
+
+        print("\nПодключаем аккаунты...")
+        await pool.start_all()
+        active = pool.list_active()
+        if not active:
+            print("Ни один аккаунт не авторизован.")
+            await pool.shutdown()
+            return
+        print(f"Активных: {len(active)}\n")
+
+        ok = fail = 0
+        for (acc_name, client), names in zip(pool.clients.items(), generated):
+            fn = names.get("first_name")
+            ln = names.get("last_name")
+            profile = ProfileIn(first_name=fn, last_name=ln)
+            try:
+                await _apply_profile(client, profile)
+                display = " ".join(p for p in [fn or "", ln or ""] if p)
+                print(f"  ✓ {acc_name} → {display}")
+                ok += 1
+            except Exception as e:
+                print(f"  ✗ {acc_name}: {e}")
+                fail += 1
+
+        await pool.shutdown()
+        print(f"\nГотово: {ok} успешно, {fail} ошибок")
+
+    asyncio.run(_run())
 
 
 def _handle_download_sessions_lzt():
