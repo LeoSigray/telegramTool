@@ -314,8 +314,13 @@ def _handle_bulk_avatars_zip():
 
         images = []
         for root, _, files in os.walk(tmp_dir):
+            # Пропускаем служебные папки macOS (__MACOSX) и скрытые файлы (._*)
+            if "__MACOSX" in root:
+                continue
             for fn in files:
-                if fn.lower().endswith((".jpg", ".jpeg", ".png")):
+                if fn.startswith("._"):
+                    continue  # resource fork macOS
+                if fn.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
                     images.append(os.path.join(root, fn))
 
         if not images:
