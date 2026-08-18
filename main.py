@@ -801,24 +801,115 @@ def handle_dm_sending():
         return
 
     print(f"Найдено: {len(users)} контактов")
-    message = input_multiline("\nТекст сообщения:").strip()
-    if not message:
-        print("Пустое сообщение. Отмена.")
-        return
+    targets = [f"@{u['username']}" if u.get("username") else str(u["user_id"]) for u in users]
 
-    print(f"\nСообщение:\n---\n{message}\n---")
-    print(f"Отправить {len(users)} контактам? (y/n): ", end="")
-    if input().strip().lower() != "y":
-        print("Отменено.")
-        return
+    niche = input("\nНиша (Enter — без оптимизатора, разовое сообщение вручную): ").strip()
+
+    if niche:
+        message, plan = _prepare_niche_dm(niche, targets)
+        if plan is None:
+            return
+        optimize = True
+        targets = plan["targets"]["targets"]
+        if not targets:
+            print("После чистки списка (дубли/стоп-лист/уже писали) отправлять некому.")
+            return
+    else:
+        message = input_multiline("\nТекст сообщения:").strip()
+        if not message:
+            print("Пустое сообщение. Отмена.")
+            return
+        print(f"\nСообщение:\n---\n{message}\n---")
+        print(f"Отправить {len(targets)} контактам? (y/n): ", end="")
+        if input().strip().lower() != "y":
+            print("Отменено.")
+            return
+        optimize = False
+        plan = None
 
     from api.dm_runner import run_dm_job
     from api.jobs import jobs as job_manager
 
-    # Конвертируем в строки для job.targets
-    targets = [f"@{u['username']}" if u.get("username") else str(u["user_id"]) for u in users]
-    job = job_manager.create(kind="dm", message=message, targets=targets, parallel=1)
+    job = job_manager.create(kind="dm", message=message, targets=targets, parallel=1,
+                             niche=niche or None, optimize=optimize, plan=plan)
     _run_job_console(job, run_dm_job(job))
+
+
+def _prepare_niche_dm(niche: str, raw_targets: list[str]):
+    """
+    Ниша → существующие шаблоны или генерация через Gemini → план (чистка списка,
+    ёмкость аккаунтов на сегодня). Возвращает (message_fallback, plan) или (None, None)
+    при отмене. message_fallback используется только как job.message для старых
+    kind, сама рассылка идёт вариантами из БД через optimizer.bandit.
+    """
+    from data import analytics as an
+    from optimizer import planner
+
+    existing = an.get_templates(niche)
+    if existing:
+        print(f"\nДля ниши '{niche}' уже есть {len(existing)} шаблон(ов):")
+        for t in existing:
+            print(f"  [{t['variant']}] {t['text'][:80]}")
+        if input("Сгенерировать ещё варианты? (y/n): ").strip().lower() == "y":
+            existing = existing + _generate_dm_templates_console(niche)
+    else:
+        print(f"\nДля ниши '{niche}' шаблонов ещё нет.")
+        existing = _generate_dm_templates_console(niche)
+
+    if not existing:
+        print("Нет ни одного шаблона — отправлять нечем. Отмена.")
+        return None, None
+
+    plan = planner.build_plan(raw_targets, niche=niche)
+    print(f"\n--- План ---")
+    print(f"  Контактов на входе: {plan['targets']['input']}")
+    r = plan["targets"]["removed"]
+    if any(r.values()):
+        print(f"  Отсеяно: дублей={r['duplicates']}, стоп-лист={r['suppressed']}, "
+              f"уже писали={r['already_contacted']}")
+    print(f"  К отправке сегодня: {plan['wave']['size']} ({plan['wave']['reason']})")
+    for w in plan["warnings"]:
+        print(f"  ⚠ {w}")
+
+    if input(f"\nЗапустить рассылку? (y/n): ").strip().lower() != "y":
+        print("Отменено.")
+        return None, None
+
+    return existing[0]["text"], plan
+
+
+def _generate_dm_templates_console(niche: str) -> list[dict]:
+    """Генерирует варианты через Gemini, даёт посмотреть и подтвердить перед сохранением."""
+    from data import analytics as an
+    from api import gemini
+
+    if not gemini.is_configured():
+        print("GEMINI_API_KEY не задан в .env — нейрогенерация недоступна.")
+        text = input_multiline("Введите текст шаблона вручную:").strip()
+        if not text:
+            return []
+        return [an.get_template(an.add_template(niche, text))]
+
+    info = input("Доп. инфо про нишу/оффер (Enter — пропустить): ").strip()
+    count_raw = input("Сколько вариантов сгенерировать (по умолчанию 2): ").strip()
+    count = int(count_raw) if count_raw.isdigit() else 2
+
+    print("Генерирую через Gemini...")
+    try:
+        variants = asyncio.run(gemini.generate_dm_variants(niche, info, count))
+    except Exception as e:  # noqa: BLE001
+        print(f"Ошибка генерации: {e}")
+        return []
+
+    print(f"\nСгенерировано {len(variants)} вариантов:")
+    for i, v in enumerate(variants, 1):
+        print(f"\n  [{i}] {v}")
+
+    if input("\nСохранить все и использовать в рассылке? (y/n): ").strip().lower() != "y":
+        print("Отменено — шаблоны не сохранены.")
+        return []
+
+    return [an.get_template(an.add_template(niche, v)) for v in variants]
 
 
 def handle_chat_sending():
@@ -1382,9 +1473,11 @@ def main():
 
 if __name__ == "__main__":
     import atexit
+    from data.analytics import init_analytics
     from data.db import init_db, migrate_from_files, sync_all_to_db
     # Инициализируем БД; при первом запуске переносим sessions/, proxy.txt → БД
     init_db()
+    init_analytics()  # таблицы sends/templates/account_meta и т.д. — без них оптимизатор не работает
     migrate_from_files(SESSIONS_DIR, DATA_DIR)
     # При выходе синхронизируем обновлённые сессии обратно в БД
     atexit.register(lambda: sync_all_to_db(SESSIONS_DIR))

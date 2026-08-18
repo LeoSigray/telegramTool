@@ -106,6 +106,36 @@ def create_template(body: TemplateIn) -> dict:
     return {"ok": True, "template": an.get_template(tid)}
 
 
+class GenerateTemplatesIn(BaseModel):
+    niche: str = Field(min_length=1, description="Ниша/индустрия клиента")
+    info: str = Field(default="", description="Доп. контекст: оффер, тон, что за бизнес")
+    count: int = Field(default=2, ge=1, le=5, description="Сколько РАЗНЫХ вариантов сгенерировать")
+
+
+@router.post("/templates/generate")
+async def generate_templates(body: GenerateTemplatesIn) -> dict:
+    """
+    Ниша + инфо → нейронка пишет N разных вариантов первого сообщения →
+    сразу сохраняются как шаблоны этой ниши, готовые для бандита.
+
+    Если для ниши уже есть активные шаблоны — новые добавятся вариантами
+    C/D/... и бандит начнёт сравнивать их наравне со старыми (со скидкой
+    на то, что у старых уже есть история, а у новых её пока нет — см.
+    MIN_SAMPLES в optimizer/bandit.py).
+    """
+    from . import gemini
+    if not gemini.is_configured():
+        raise HTTPException(status_code=503, detail="GEMINI_API_KEY не задан в .env")
+
+    try:
+        variants = await gemini.generate_dm_variants(body.niche, body.info, body.count)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Gemini: {e}")
+
+    created = [an.get_template(an.add_template(body.niche, text)) for text in variants]
+    return {"ok": True, "niche": body.niche, "templates": created}
+
+
 @router.get("/templates")
 def list_templates(niche: str | None = None) -> dict:
     an.expire_pending()

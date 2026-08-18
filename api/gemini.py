@@ -67,6 +67,57 @@ async def generate_comment(post_text: str, style_prompt: str) -> str:
     return text
 
 
+async def generate_dm_variants(niche: str, info: str, count: int = 2) -> list[str]:
+    """
+    Генерирует N РАЗНЫХ по формулировке первых сообщений в ЛС под нишу.
+
+    Варианты должны реально отличаться (разный заход/структура), а не быть
+    перефразировкой одного и того же — иначе A/B-тест бандита бессмысленен:
+    он будет измерять шум, а не разницу в подходе.
+    """
+    if not API_KEY:
+        raise RuntimeError("GEMINI_API_KEY не задан в .env")
+    if not niche.strip():
+        raise RuntimeError("Пустая ниша")
+    count = max(1, min(count, 5))
+
+    full_prompt = (
+        "Ты пишешь ПЕРВОЕ сообщение в личку в Telegram для холодного контакта.\n\n"
+        f"Ниша: {niche}\n"
+        f"Доп. информация: {info.strip() or '—'}\n\n"
+        f"Сгенерируй {count} РАЗНЫХ по подходу вариантов первого сообщения "
+        "(разная структура/заход, не перефразировки друг друга).\n\n"
+        "Требования к каждому варианту:\n"
+        "- 2-4 предложения, живой разговорный язык, без канцелярита\n"
+        "- Без хэштегов, без ссылок, без эмодзи через одно слово\n"
+        "- Не звучать как массовая рассылка — обращение к конкретному человеку\n"
+        "- Не раскрывать что текст сгенерирован ИИ\n\n"
+        "Верни СТРОГО JSON-массив строк, без пояснений и без markdown-обёртки:\n"
+        '["вариант 1", "вариант 2", ...]'
+    )
+
+    try:
+        from google import genai as _genai
+    except ImportError:
+        raise RuntimeError("установи google-genai: pip install google-genai")
+
+    client = _genai.Client(api_key=API_KEY)
+    response = client.models.generate_content(model=MODEL, contents=full_prompt)
+    text = _strip_code_fence(response.text or "")
+    if not text:
+        raise RuntimeError("Gemini вернул пустой ответ")
+
+    try:
+        variants = json.loads(text)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"Gemini вернул не-JSON: {text[:200]}")
+
+    variants = [v.strip() for v in variants if isinstance(v, str) and v.strip()]
+    if not variants:
+        raise RuntimeError("Gemini не вернул ни одного варианта")
+    return variants
+
+
 async def generate_names(prompt: str, count: int, fields: list[str]) -> list[dict]:
     """
     Возвращает список из count словарей с ключами из fields (first_name/last_name).
