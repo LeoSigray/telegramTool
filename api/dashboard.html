@@ -89,6 +89,7 @@
       <div class="sub" style="margin-top:8px">
         <span style="color:var(--acc)">■</span> отправлено
         <span style="color:var(--ok);margin-left:12px">■</span> ответов
+        <span style="color:#7c5cff;margin-left:12px">■</span> подписок
         <span style="color:var(--bad);margin-left:12px">■</span> ошибок
       </div>
     </div>
@@ -138,9 +139,8 @@ function kpi(ov){
   const cards = [
     ['Отправлено', fmt(f.sent), f.pending+' ждут ответа'],
     ['Reply rate', pct(f.reply_rate), f.replied+' ответов'],
-    ['Лидов', fmt(f.leads), f.leads? pct(f.lead_rate)+' от отправленных' : 'CRM ещё не размечает'],
-    ['Цена лида', money(c.cpl_actual ?? c.cpl_modeled),
-      c.cpl_actual? 'фактическая' : 'модельная оценка'],
+    ['Подписки', fmt(f.subscribed), pct(f.subscribe_rate)+' от отправленных'],
+    ['Лидов', fmt(f.leads), '⚠ заглушка — размечается вручную из CRM'],
     ['Ёмкость сегодня', fmt(cap.remaining_today),
       cap.accounts_active+' активных, '+cap.accounts_resting+' отдыхают'],
     ['Цена сообщения', money(ov.cost_per_message.cost_per_message),
@@ -155,16 +155,17 @@ function kpi(ov){
 function funnel(f){
   const max = Math.max(f.attempted,1);
   const rows = [
-    ['Попыток', f.attempted, 'var(--dim)'],
-    ['Доставлено', f.sent, 'var(--acc)'],
-    ['Пропущено', f.skipped, 'var(--warn)'],
-    ['Ошибок', f.failed, 'var(--bad)'],
-    ['Ответили', f.replied, 'var(--ok)'],
-    ['Отказы', f.negative, 'var(--bad)'],
-    ['Лиды', f.leads, 'var(--ok)'],
+    ['Попыток', f.attempted, 'var(--dim)', false],
+    ['Доставлено', f.sent, 'var(--acc)', false],
+    ['Пропущено', f.skipped, 'var(--warn)', false],
+    ['Ошибок', f.failed, 'var(--bad)', false],
+    ['Ответили', f.replied, 'var(--ok)', false],
+    ['Подписались', f.subscribed, '#7c5cff', false],
+    ['Отказы', f.negative, 'var(--bad)', true],
+    ['Лиды', f.leads, 'var(--ok)', true],
   ];
-  $('#funnel').innerHTML = rows.map(([l,n,col]) =>
-    `<div class="funnel-row"><div class="lbl">${l}</div>
+  $('#funnel').innerHTML = rows.map(([l,n,col,stub]) =>
+    `<div class="funnel-row"><div class="lbl">${l}${stub?' <span class="pill warn" style="font-size:9px;padding:1px 5px">заглушка</span>':''}</div>
      <div class="bar"><span style="width:${(n/max*100).toFixed(1)}%;background:${col}"></span></div>
      <div class="num">${fmt(n)}</div></div>`).join('');
 }
@@ -179,7 +180,7 @@ function chart(series){
     g.fillText('нет данных за период',12,30); return; }
 
   const pad = {l:36,r:10,t:12,b:24};
-  const max = Math.max(1, ...series.map(d=>Math.max(d.sent||0,d.replied||0,d.failed||0)));
+  const max = Math.max(1, ...series.map(d=>Math.max(d.sent||0,d.replied||0,d.failed||0,d.subscribed||0)));
   const x = i => pad.l + i*((W-pad.l-pad.r)/Math.max(1,series.length-1));
   const y = v => H-pad.b - (v/max)*(H-pad.t-pad.b);
 
@@ -197,7 +198,7 @@ function chart(series){
     g.fillStyle=col;
     series.forEach((d,i)=>{ g.beginPath(); g.arc(x(i),y(d[key]||0),2.5,0,7); g.fill(); });
   };
-  draw('sent','#5aa9ff'); draw('replied','#3ddc97'); draw('failed','#ff6b6b');
+  draw('sent','#5aa9ff'); draw('replied','#3ddc97'); draw('subscribed','#7c5cff'); draw('failed','#ff6b6b');
 
   g.fillStyle='#8b95a5';
   series.forEach((d,i)=>{ if(i%Math.ceil(series.length/6)===0)

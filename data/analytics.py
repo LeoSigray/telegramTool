@@ -6,13 +6,19 @@ data/analytics.py — хранилище аналитики рассылок.
 Таблицы:
   • templates       — варианты текста по нишам (для A/B)
   • sends           — каждое отправленное сообщение + его исход
+  • channel_members — снимок участников целевого канала (для диффа подписок)
   • account_meta    — стоимость аккаунта, возраст, статус (active/resting/dead)
   • account_events  — журнал flood_wait / peer_flood / bans
   • suppression     — стоп-лист: кому больше НИКОГДА не писать
 
-Ключевая связка: sends.peer_id ← listener матчит входящее сообщение
-по telegram user_id и проставляет replied_at. Без этого посчитать
-reply-rate (а значит и цену лида) невозможно.
+Сейчас в воронке РЕАЛЬНО считаются два сигнала:
+  • ответы    — sends.peer_id ← listener матчит входящее по telegram user_id
+  • подписки  — sends.channel/subscribed_at ← api/channel_watch сверяет
+                участников канала со списком, кому писали
+
+"Отказ" (negative) и "лид" — пока заглушки: отказ ловится грубым поиском
+стоп-слов, лид проставляется только вручную из CRM. Их не трогаем и не
+усложняем, пока не понадобится.
 """
 
 import sqlite3
@@ -65,25 +71,34 @@ def init_analytics() -> None:
             );
 
             CREATE TABLE IF NOT EXISTS sends (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                job_id      TEXT,
-                account     TEXT NOT NULL,
-                target      TEXT NOT NULL,
-                peer_id     TEXT,
-                niche       TEXT,
-                template_id INTEGER,
-                status      TEXT NOT NULL,
-                error       TEXT,
-                sent_at     TEXT NOT NULL,
-                replied_at  TEXT,
-                reply_text  TEXT,
-                outcome     TEXT NOT NULL DEFAULT 'pending'
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id        TEXT,
+                account       TEXT NOT NULL,
+                target        TEXT NOT NULL,
+                peer_id       TEXT,
+                niche         TEXT,
+                template_id   INTEGER,
+                channel       TEXT,
+                status        TEXT NOT NULL,
+                error         TEXT,
+                sent_at       TEXT NOT NULL,
+                replied_at    TEXT,
+                reply_text    TEXT,
+                subscribed_at TEXT,
+                outcome       TEXT NOT NULL DEFAULT 'pending'
             );
             CREATE INDEX IF NOT EXISTS ix_sends_peer    ON sends(peer_id, outcome);
             CREATE INDEX IF NOT EXISTS ix_sends_sent_at ON sends(sent_at);
             CREATE INDEX IF NOT EXISTS ix_sends_account ON sends(account, sent_at);
             CREATE INDEX IF NOT EXISTS ix_sends_tpl     ON sends(template_id);
             CREATE INDEX IF NOT EXISTS ix_sends_job     ON sends(job_id);
+
+            CREATE TABLE IF NOT EXISTS channel_members (
+                channel  TEXT NOT NULL,
+                user_id  TEXT NOT NULL,
+                seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (channel, user_id)
+            );
 
             CREATE TABLE IF NOT EXISTS account_meta (
                 name           TEXT PRIMARY KEY,
@@ -112,6 +127,19 @@ def init_analytics() -> None:
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
         """)
+        # ALTER TABLE — ДО индекса по channel: на старых базах колонки ещё нет,
+        # а CREATE INDEX .. ON sends(channel) упадёт, если её не завести первой.
+        _migrate_columns(c)
+        c.execute("CREATE INDEX IF NOT EXISTS ix_sends_channel ON sends(channel, peer_id)")
+
+
+def _migrate_columns(c: sqlite3.Connection) -> None:
+    """ALTER TABLE ADD COLUMN для баз, созданных до появления channel/subscribed_at."""
+    existing = {r["name"] for r in c.execute("PRAGMA table_info(sends)")}
+    if "channel" not in existing:
+        c.execute("ALTER TABLE sends ADD COLUMN channel TEXT")
+    if "subscribed_at" not in existing:
+        c.execute("ALTER TABLE sends ADD COLUMN subscribed_at TEXT")
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -173,14 +201,19 @@ def list_niches() -> list[str]:
 
 def record_send(*, job_id: str | None, account: str, target: str,
                 peer_id: str | None, niche: str | None, template_id: int | None,
-                status: str, error: str | None = None) -> int:
-    """Пишет факт отправки. status: sent | skipped | failed."""
+                status: str, error: str | None = None, channel: str | None = None) -> int:
+    """Пишет факт отправки. status: sent | skipped | failed.
+
+    channel — какой канал этому человеку предлагали (если рассылка ведёт
+    на подписку); используется api/channel_watch для матчинга новых участников.
+    """
     outcome = "pending" if status == "sent" else status
     with _conn() as c:
         cur = c.execute(
             "INSERT INTO sends (job_id, account, target, peer_id, niche, template_id,"
-            " status, error, sent_at, outcome) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (job_id, account, target, peer_id, niche, template_id, status, error, _now(), outcome),
+            " channel, status, error, sent_at, outcome) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (job_id, account, target, peer_id, niche, template_id, channel,
+             status, error, _now(), outcome),
         )
         if status == "sent":
             c.execute(
@@ -240,6 +273,67 @@ def expire_pending() -> int:
             "UPDATE sends SET outcome='no_reply' WHERE outcome='pending'"
             " AND status='sent' AND sent_at < ?", (cutoff,))
         return cur.rowcount
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  Подписки на канал
+# ──────────────────────────────────────────────────────────────────────────
+#  Реальный, а не заглушечный сигнал в воронке — наравне с ответами.
+#  Живёт отдельно от sends.outcome (reply/negative/no_reply/lead), потому
+#  что человек может и ответить, и подписаться — это два независимых факта,
+#  а не взаимоисключающие состояния одной машины состояний.
+
+# Окно, в течение которого подписку засчитываем этой рассылке.
+# Шире, чем окно ответа — на канал подписываются не сразу, а подумав.
+SUBSCRIBE_WINDOW_DAYS = 30
+
+
+def record_subscription(peer_id: str, channel: str | None = None) -> int | None:
+    """
+    Матчит нового участника канала с последней отправкой этому человеку.
+    Возвращает id записи sends или None если подходящей отправки не было
+    (человек подписался сам по себе, не через эту рассылку).
+    """
+    cutoff = _ago(SUBSCRIBE_WINDOW_DAYS)
+    q = ("SELECT id FROM sends WHERE peer_id=? AND status='sent'"
+         " AND subscribed_at IS NULL AND sent_at >= ?")
+    args: list = [str(peer_id), cutoff]
+    if channel:
+        q += " AND (channel=? OR channel IS NULL)"
+        args.append(channel)
+    q += " ORDER BY sent_at DESC LIMIT 1"
+
+    with _conn() as c:
+        row = c.execute(q, args).fetchone()
+        if row is None:
+            return None
+        c.execute("UPDATE sends SET subscribed_at=? WHERE id=?", (_now(), row["id"]))
+        return row["id"]
+
+
+def known_channel_members(channel: str) -> set:
+    with _conn() as c:
+        return {r["user_id"] for r in
+                c.execute("SELECT user_id FROM channel_members WHERE channel=?", (channel,))}
+
+
+def remember_channel_members(channel: str, user_ids: list) -> None:
+    if not user_ids:
+        return
+    now = _now()
+    with _conn() as c:
+        c.executemany(
+            "INSERT INTO channel_members (channel, user_id, seen_at) VALUES (?,?,?) "
+            "ON CONFLICT(channel, user_id) DO NOTHING",
+            [(channel, str(uid), now) for uid in user_ids],
+        )
+
+
+def list_recent_channels(days: float = 30) -> list:
+    with _conn() as c:
+        return [r["channel"] for r in c.execute(
+            "SELECT DISTINCT channel FROM sends WHERE channel IS NOT NULL AND sent_at >= ?",
+            (_ago(days),))]
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -379,7 +473,8 @@ def funnel(days: float = 30, niche: str | None = None, job_id: str | None = None
     q += " GROUP BY status, outcome"
 
     out = {"attempted": 0, "sent": 0, "skipped": 0, "failed": 0,
-           "replied": 0, "negative": 0, "leads": 0, "pending": 0, "no_reply": 0}
+           "replied": 0, "negative": 0, "leads": 0, "pending": 0, "no_reply": 0,
+           "subscribed": 0}
     with _conn() as c:
         for r in c.execute(q, args):
             n = r["n"]
@@ -402,8 +497,20 @@ def funnel(days: float = 30, niche: str | None = None, job_id: str | None = None
             elif r["status"] == "failed":
                 out["failed"] += n
 
+        # подписки — отдельное поле, не часть outcome (см. коммент над record_subscription)
+        sub_q = "SELECT COUNT(*) n FROM sends WHERE status='sent' AND subscribed_at IS NOT NULL AND sent_at >= ?"
+        sub_args = [_ago(days)]
+        if niche:
+            sub_q += " AND niche=?"
+            sub_args.append(niche)
+        if job_id:
+            sub_q += " AND job_id=?"
+            sub_args.append(job_id)
+        out["subscribed"] = c.execute(sub_q, sub_args).fetchone()["n"] or 0
+
     out["reply_rate"] = round(out["replied"] / out["sent"], 4) if out["sent"] else 0.0
     out["lead_rate"] = round(out["leads"] / out["sent"], 4) if out["sent"] else 0.0
+    out["subscribe_rate"] = round(out["subscribed"] / out["sent"], 4) if out["sent"] else 0.0
     return out
 
 
@@ -412,7 +519,8 @@ def timeseries(days: int = 14, niche: str | None = None) -> list[dict]:
          " SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) sent,"
          " SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) failed,"
          " SUM(CASE WHEN outcome IN ('replied','lead','negative') THEN 1 ELSE 0 END) replied,"
-         " SUM(CASE WHEN outcome='lead' THEN 1 ELSE 0 END) leads"
+         " SUM(CASE WHEN outcome='lead' THEN 1 ELSE 0 END) leads,"
+         " SUM(CASE WHEN subscribed_at IS NOT NULL THEN 1 ELSE 0 END) subscribed"
          " FROM sends WHERE sent_at >= ?")
     args: list = [_ago(days)]
     if niche:
@@ -423,14 +531,20 @@ def timeseries(days: int = 14, niche: str | None = None) -> list[dict]:
 
 
 def template_stats(niche: str | None = None, days: float = 90) -> list[dict]:
-    """Успехи/провалы по каждому варианту текста — вход для бандита и для A/B-графика."""
+    """Успехи/провалы по каждому варианту текста — вход для бандита и для A/B-графика.
+
+    reply_rate/decided считаются только по ответам (см. optimizer/bandit.py) —
+    subscribed идёт отдельной информационной колонкой, в решение бандита
+    пока не подмешивается.
+    """
     q = ("SELECT t.id, t.niche, t.variant, t.text, t.active,"
          " COUNT(s.id) sent,"
          " SUM(CASE WHEN s.outcome IN ('replied','lead') THEN 1 ELSE 0 END) replies,"
          " SUM(CASE WHEN s.outcome='lead' THEN 1 ELSE 0 END) leads,"
          " SUM(CASE WHEN s.outcome='negative' THEN 1 ELSE 0 END) negatives,"
          " SUM(CASE WHEN s.outcome='no_reply' THEN 1 ELSE 0 END) no_reply,"
-         " SUM(CASE WHEN s.outcome='pending' THEN 1 ELSE 0 END) pending"
+         " SUM(CASE WHEN s.outcome='pending' THEN 1 ELSE 0 END) pending,"
+         " SUM(CASE WHEN s.subscribed_at IS NOT NULL THEN 1 ELSE 0 END) subscribed"
          " FROM templates t LEFT JOIN sends s"
          "   ON s.template_id = t.id AND s.status='sent' AND s.sent_at >= ?")
     args: list = [_ago(days)]
@@ -469,7 +583,9 @@ def totals() -> dict:
         s = c.execute(
             "SELECT COUNT(*) attempts,"
             " SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) sent,"
-            " SUM(CASE WHEN outcome='lead' THEN 1 ELSE 0 END) leads FROM sends").fetchone()
+            " SUM(CASE WHEN outcome='lead' THEN 1 ELSE 0 END) leads,"
+            " SUM(CASE WHEN subscribed_at IS NOT NULL THEN 1 ELSE 0 END) subscribed"
+            " FROM sends").fetchone()
         a = c.execute(
             "SELECT COUNT(*) n, COALESCE(SUM(cost),0) spend,"
             " SUM(CASE WHEN status='dead' THEN 1 ELSE 0 END) dead FROM account_meta").fetchone()
@@ -477,6 +593,7 @@ def totals() -> dict:
         "attempts": s["attempts"] or 0,
         "sent": s["sent"] or 0,
         "leads": s["leads"] or 0,
+        "subscribed": s["subscribed"] or 0,
         "accounts": a["n"] or 0,
         "accounts_dead": a["dead"] or 0,
         "spend": round(a["spend"] or 0, 2),

@@ -804,8 +804,10 @@ def handle_dm_sending():
     targets = [f"@{u['username']}" if u.get("username") else str(u["user_id"]) for u in users]
 
     niche = input("\nНиша (Enter — без оптимизатора, разовое сообщение вручную): ").strip()
+    target_channel = None
 
     if niche:
+        target_channel = input("Канал, на подписку в который зовём (Enter — пропустить): ").strip() or None
         message, plan = _prepare_niche_dm(niche, targets)
         if plan is None:
             return
@@ -831,7 +833,8 @@ def handle_dm_sending():
     from api.jobs import jobs as job_manager
 
     job = job_manager.create(kind="dm", message=message, targets=targets, parallel=1,
-                             niche=niche or None, optimize=optimize, plan=plan)
+                             niche=niche or None, optimize=optimize, plan=plan,
+                             target_channel=target_channel)
     _run_job_console(job, run_dm_job(job))
 
 

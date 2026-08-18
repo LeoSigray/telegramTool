@@ -72,6 +72,35 @@ def events(account: str | None = None, days: float = 14) -> list[dict]:
     return an.account_events(account=account, days=days)
 
 
+# ──────────────────────────────────────────────────────────────────────────
+#  Подписки на канал
+# ──────────────────────────────────────────────────────────────────────────
+
+class ChannelSyncIn(BaseModel):
+    channel: str = Field(min_length=1, description="@username или t.me/ссылка канала")
+
+
+@router.post("/channel/sync")
+async def sync_channel(body: ChannelSyncIn) -> dict:
+    """
+    Сверяет участников канала со списком, кому писали, проставляет
+    subscribed_at новым совпадениям. Нужен хотя бы один аккаунт-админ канала
+    в пуле — иначе Telegram отдаёт неполный список участников.
+    """
+    from . import channel_watch
+    try:
+        return await channel_watch.sync_channel(body.channel)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/channel/sync-all")
+async def sync_all_channels(days: float = 30) -> list[dict]:
+    """Синкает все каналы, встречавшиеся в рассылках за последние days дней."""
+    from . import channel_watch
+    return await channel_watch.sync_all_recent(days=days)
+
+
 class AccountCostIn(BaseModel):
     cost: float = Field(ge=0, description="Сколько стоил аккаунт")
     source: str | None = Field(default=None, description="own | lzt | tdata")

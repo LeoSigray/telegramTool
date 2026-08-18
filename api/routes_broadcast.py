@@ -66,6 +66,8 @@ class StartDmJobIn(BaseModel):
     niche: str | None = Field(default=None, description="Ниша → пул шаблонов для A/B")
     optimize: bool = Field(default=True, description="Динамические лимиты + бандит + стоп-лист")
     value_per_lead: float | None = Field(default=None, description="Для решения о докупке аккаунтов")
+    target_channel: str | None = Field(
+        default=None, description="Канал, на подписку в который зовём — для трекинга подписок в воронке")
 
 
 @router.post("/dm/start")
@@ -95,7 +97,8 @@ async def start_dm_job(body: StartDmJobIn) -> dict:
 
     job = jobs.create(kind="dm", message=body.message, targets=targets,
                       parallel=body.parallel, niche=body.niche,
-                      optimize=body.optimize, plan=plan)
+                      optimize=body.optimize, plan=plan,
+                      target_channel=body.target_channel)
     job.task = asyncio.create_task(run_dm_job(job))
     return job.to_dict()
 

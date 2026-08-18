@@ -71,6 +71,7 @@ def _mark(job: Job, t: TargetState, status: str, error: str | None, account: str
         t.send_id = an.record_send(
             job_id=job.id, account=account, target=t.target, peer_id=peer_id,
             niche=job.niche, template_id=template_id, status=status, error=error,
+            channel=job.target_channel,
         )
     except Exception as e:  # noqa: BLE001 — аналитика не должна ронять рассылку
         job.add_log(event="analytics_error", error=str(e))

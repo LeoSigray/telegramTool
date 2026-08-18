@@ -38,9 +38,10 @@ class Job:
     current_round: int = 0      # номер текущего раунда (только для continuous)
 
     # --- оптимизатор ---
-    niche: str | None = None    # ниша: определяет пул шаблонов для A/B
-    optimize: bool = True       # использовать динамические лимиты + бандит
-    plan: dict | None = None    # план, с которым джоба стартовала (для отчёта)
+    niche: str | None = None            # ниша: определяет пул шаблонов для A/B
+    optimize: bool = True               # использовать динамические лимиты + бандит
+    plan: dict | None = None            # план, с которым джоба стартовала (для отчёта)
+    target_channel: str | None = None   # канал, на подписку в который зовём (для воронки)
 
     cancel: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task | None = None
@@ -73,6 +74,7 @@ class Job:
             "niche": self.niche,
             "optimize": self.optimize,
             "plan": self.plan,
+            "target_channel": self.target_channel,
         }
         if include_targets:
             d["targets"] = [
@@ -98,7 +100,7 @@ class JobManager:
 
     def create(self, *, kind: str, message: str, targets: list[str], parallel: int,
                niche: str | None = None, optimize: bool = True,
-               plan: dict | None = None) -> Job:
+               plan: dict | None = None, target_channel: str | None = None) -> Job:
         job = Job(
             id=uuid.uuid4().hex[:12],
             kind=kind,
@@ -108,6 +110,7 @@ class JobManager:
             niche=niche,
             optimize=optimize,
             plan=plan,
+            target_channel=target_channel,
         )
         self._jobs[job.id] = job
         return job

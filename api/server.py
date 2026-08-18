@@ -25,7 +25,7 @@ from data.analytics import expire_pending, init_analytics
 from data.db import init_db, migrate_from_files, sync_all_to_db
 from optimizer import health
 
-from . import listener, routes_accounts, routes_analytics, routes_broadcast, routes_bulk
+from . import channel_watch, listener, routes_accounts, routes_analytics, routes_broadcast, routes_bulk
 from .client_pool import pool
 
 log = logging.getLogger(__name__)
@@ -44,6 +44,13 @@ async def _maintenance_loop() -> None:
             swept = health.sweep()
             log.info("[maintenance] expired=%d restored=%d throttled=%d",
                      expired, swept["restored"], swept["throttled"])
+            try:
+                synced = await channel_watch.sync_all_recent()
+                if synced:
+                    log.info("[maintenance] channel sync: %s",
+                             {r["channel"]: r.get("matched", r.get("error")) for r in synced})
+            except Exception:  # noqa: BLE001 — синк каналов не должен ронять остальное обслуживание
+                log.exception("[maintenance] channel sync failed")
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
