@@ -14,6 +14,7 @@ import httpx
 from telethon import events
 from telethon.tl.types import User as TgUser
 
+from data import analytics as an
 from .client_pool import pool
 
 log = logging.getLogger(__name__)
@@ -49,6 +50,16 @@ async def _on_incoming(event):
         return
 
     msg = event.message
+
+    # Матчим ответ с нашей отправкой — это и есть источник reply-rate.
+    # Заодно ловим отказы ("не пишите", "спам") и кладём человека в стоп-лист.
+    send_id = None
+    try:
+        send_id = an.record_reply(peer_id=str(chat.id), text=msg.message,
+                                  account=session_name)
+    except Exception:  # noqa: BLE001 — аналитика не должна ломать приём сообщений
+        log.exception("record_reply failed")
+
     payload = {
         "account_name": session_name,
         "platform_user_id": str(chat.id),
@@ -60,6 +71,9 @@ async def _on_incoming(event):
         "text": msg.message or None,
         "from_me": False,
         "sent_at": (msg.date.isoformat() if msg.date else None),
+        # send_id != None → это ответ на нашу рассылку. Верните его обратно
+        # в POST /analytics/outcome, когда контакт станет лидом.
+        "send_id": send_id,
     }
 
     try:

@@ -11,6 +11,7 @@ FastAPI-сервер для telegramTool.
 Аутентификация: заголовок `Authorization: Bearer <token>` на всех endpoints
 (кроме /health).
 """
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -20,29 +21,58 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from accounts.manager import migrate_all_sessions
 from config import SESSIONS_DIR, DATA_DIR
+from data.analytics import expire_pending, init_analytics
 from data.db import init_db, migrate_from_files, sync_all_to_db
+from optimizer import health
 
-from . import listener, routes_accounts, routes_broadcast, routes_bulk
+from . import listener, routes_accounts, routes_analytics, routes_broadcast, routes_bulk
 from .client_pool import pool
 
 log = logging.getLogger(__name__)
+
+# Как часто крутить обслуживание: закрывать «протухшие» ожидания ответа
+# и пересчитывать множители лимитов аккаунтов.
+MAINTENANCE_INTERVAL_SEC = 3600
+
+
+async def _maintenance_loop() -> None:
+    """Фоновое обслуживание оптимизатора."""
+    while True:
+        try:
+            await asyncio.sleep(MAINTENANCE_INTERVAL_SEC)
+            expired = expire_pending()
+            swept = health.sweep()
+            log.info("[maintenance] expired=%d restored=%d throttled=%d",
+                     expired, swept["restored"], swept["throttled"])
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            log.exception("[maintenance] iteration failed")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 1. инициализируем БД и мигрируем старые файлы (если нужно)
     init_db()
+    init_analytics()
     migrate_from_files(SESSIONS_DIR, DATA_DIR)
     # 2. чиним старые версии sessions
     migrate_all_sessions()
     # 3. поднимаем все клиенты в пул (get_session_files внутри уже читает из БД)
     await pool.start_all()
-    # 4. вешаем listener (передаст входящие в CRM-webhook если он настроен)
+    # 4. регистрируем аккаунты в аналитике (чтобы у каждого была карточка)
+    for name in pool.list_active():
+        from data.analytics import ensure_account
+        ensure_account(name)
+    # 5. вешаем listener (передаст входящие в CRM-webhook если он настроен)
     listener.setup()
+    # 6. фоновое обслуживание оптимизатора
+    maintenance = asyncio.create_task(_maintenance_loop())
     log.info("ready: %d active accounts in pool", len(pool.clients))
     try:
         yield
     finally:
+        maintenance.cancel()
         await listener.shutdown()
         await pool.shutdown()
         # синхронизируем обновлённые сессии обратно в БД
@@ -64,6 +94,8 @@ app.add_middleware(
 app.include_router(routes_accounts.router)
 app.include_router(routes_bulk.router)
 app.include_router(routes_broadcast.router)
+app.include_router(routes_analytics.router)
+app.include_router(routes_analytics.page_router)
 
 
 @app.get("/health")

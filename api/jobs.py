@@ -14,6 +14,8 @@ class TargetState:
     error: str | None = None
     used_account: str | None = None
     processed_at: datetime | None = None
+    template_id: int | None = None   # каким вариантом текста ушло (A/B)
+    send_id: int | None = None       # id записи в data/analytics.sends
 
 
 @dataclass
@@ -34,6 +36,11 @@ class Job:
     error: str | None = None
     continuous: bool = False    # крутиться вечно, пока не остановят
     current_round: int = 0      # номер текущего раунда (только для continuous)
+
+    # --- оптимизатор ---
+    niche: str | None = None    # ниша: определяет пул шаблонов для A/B
+    optimize: bool = True       # использовать динамические лимиты + бандит
+    plan: dict | None = None    # план, с которым джоба стартовала (для отчёта)
 
     cancel: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task | None = None
@@ -63,6 +70,9 @@ class Job:
             "error": self.error,
             "continuous": self.continuous,
             "current_round": self.current_round,
+            "niche": self.niche,
+            "optimize": self.optimize,
+            "plan": self.plan,
         }
         if include_targets:
             d["targets"] = [
@@ -72,6 +82,8 @@ class Job:
                     "error": t.error,
                     "used_account": t.used_account,
                     "processed_at": t.processed_at.isoformat() if t.processed_at else None,
+                    "template_id": t.template_id,
+                    "send_id": t.send_id,
                 }
                 for t in self.targets
             ]
@@ -84,13 +96,18 @@ class JobManager:
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
 
-    def create(self, *, kind: str, message: str, targets: list[str], parallel: int) -> Job:
+    def create(self, *, kind: str, message: str, targets: list[str], parallel: int,
+               niche: str | None = None, optimize: bool = True,
+               plan: dict | None = None) -> Job:
         job = Job(
             id=uuid.uuid4().hex[:12],
             kind=kind,
             message=message,
             parallel=parallel,
             targets=[TargetState(target=t) for t in targets],
+            niche=niche,
+            optimize=optimize,
+            plan=plan,
         )
         self._jobs[job.id] = job
         return job

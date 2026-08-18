@@ -3,6 +3,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field  # noqa: F401  Field used in StartInviteJobIn
 
+from optimizer import planner
 from .auth import require_token
 from .chat_runner import run_chat_job
 from .comment_runner import run_comment_job
@@ -58,14 +59,43 @@ async def start_invite_job(body: StartInviteJobIn) -> dict:
     return job.to_dict()
 
 
+class StartDmJobIn(BaseModel):
+    message: str = Field(default="", description="Текст. Игнорируется, если задана niche с шаблонами")
+    targets: list[str] = Field(min_length=1)
+    parallel: int = Field(default=1, ge=1, le=20)
+    niche: str | None = Field(default=None, description="Ниша → пул шаблонов для A/B")
+    optimize: bool = Field(default=True, description="Динамические лимиты + бандит + стоп-лист")
+    value_per_lead: float | None = Field(default=None, description="Для решения о докупке аккаунтов")
+
+
 @router.post("/dm/start")
-async def start_dm_job(body: StartChatJobIn) -> dict:
-    """Рассылка в личные сообщения. targets: @username | t.me/foo | user_id | +phone."""
+async def start_dm_job(body: StartDmJobIn) -> dict:
+    """
+    Рассылка в ЛС. targets: @username | t.me/foo | user_id | +phone.
+
+    При optimize=True перед стартом отрабатывает planner: чистит список
+    (дубли, стоп-лист, уже писавшиеся), считает сегодняшнюю ёмкость пула
+    и подрезает волну. Всё, что не влезло, останется на следующий запуск.
+    """
     targets = _clean_targets(body.targets)
     if not targets:
         raise HTTPException(status_code=400, detail="targets is empty after cleanup")
 
-    job = jobs.create(kind="dm", message=body.message, targets=targets, parallel=body.parallel)
+    plan = None
+    if body.optimize:
+        plan = planner.build_plan(targets, niche=body.niche,
+                                  value_per_lead=body.value_per_lead)
+        targets = plan["targets"]["targets"]
+        if not targets:
+            raise HTTPException(status_code=400,
+                                detail={"error": "после фильтрации не осталось целей",
+                                        "plan": plan})
+    if not body.niche and not body.message.strip():
+        raise HTTPException(status_code=400, detail="нужен либо message, либо niche с шаблонами")
+
+    job = jobs.create(kind="dm", message=body.message, targets=targets,
+                      parallel=body.parallel, niche=body.niche,
+                      optimize=body.optimize, plan=plan)
     job.task = asyncio.create_task(run_dm_job(job))
     return job.to_dict()
 
