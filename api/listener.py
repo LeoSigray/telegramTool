@@ -33,9 +33,10 @@ def _which_session(client) -> str | None:
 
 
 async def _on_incoming(event):
-    if not WEBHOOK_URL:
-        return  # вебхук не настроен — listener молча работает в no-op
-
+    # ВАЖНО: раньше тут был ранний return при пустом WEBHOOK_URL, из-за чего
+    # без настроенного CRM аналитика (record_reply/reply-rate/бандит) вообще
+    # не работала — учёт ответов и отправка в CRM теперь не связаны:
+    # локальная аналитика пишется всегда, вебхук на CRM — только если задан.
     session_name = _which_session(event.client)
     if session_name is None:
         return
@@ -75,6 +76,9 @@ async def _on_incoming(event):
         # в POST /analytics/outcome, когда контакт станет лидом.
         "send_id": send_id,
     }
+
+    if not WEBHOOK_URL:
+        return  # CRM не настроен — аналитика выше уже записана, просто некуда постить
 
     try:
         global _http
