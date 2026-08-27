@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>telegramTool — аналитика</title>
+<style>
+  :root{
+    --bg:#0f1216; --panel:#161a21; --line:#242a34; --tx:#e6e9ef; --dim:#8b95a5;
+    --ok:#3ddc97; --warn:#ffb454; --bad:#ff6b6b; --acc:#5aa9ff; --sub:#7c5cff;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--tx);
+       font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;
+       display:flex;flex-direction:column;overflow:hidden}
+  header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+         padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex:none}
+  h1{font-size:14px;margin:0;font-weight:600;letter-spacing:.3px;white-space:nowrap}
+  .sp{flex:1}
+  input,select,button{background:#0d1015;border:1px solid var(--line);color:var(--tx);
+       border-radius:7px;padding:6px 9px;font-size:12px;font-family:inherit}
+  button{cursor:pointer}
+  button:hover{border-color:var(--acc)}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+
+  /* сегментированный тумблер count / count-сек — то, что справа у дашборда */
+  .seg{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+  .seg button{border:none;border-radius:0;background:transparent;padding:6px 11px}
+  .seg button.active{background:var(--acc);color:#08131f;font-weight:600}
+  .seg button:hover{border-color:transparent}
+
+  .body{flex:1;display:flex;min-height:0}
+
+  /* левая панель — переключатель дашбордов */
+  nav.dash-nav{width:180px;flex:none;background:var(--panel);border-right:1px solid var(--line);
+       padding:10px;overflow-y:auto}
+  nav.dash-nav button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;
+       padding:9px 10px;margin-bottom:4px;border:1px solid transparent;background:transparent;
+       border-radius:8px;font-size:13px;color:var(--tx)}
+  nav.dash-nav button:hover{border-color:var(--line)}
+  nav.dash-nav button.active{background:#101820;border-color:var(--acc);color:var(--acc)}
+  nav.dash-nav .ic{font-size:15px;width:18px;text-align:center}
+
+  main{flex:1;overflow-y:auto;padding:18px 22px}
+  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));margin-bottom:18px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px 16px}
+  .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.7px}
+  .v{font-size:24px;font-weight:600;margin-top:6px;font-variant-numeric:tabular-nums}
+  .sub{color:var(--dim);font-size:12px;margin-top:3px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:11px;
+         padding:16px 18px;margin-bottom:18px}
+  .panel h2{font-size:13px;margin:0 0 14px;font-weight:600;color:var(--dim);
+            text-transform:uppercase;letter-spacing:.7px}
+  .two{display:grid;gap:18px;grid-template-columns:1fr 1fr}
+  @media(max-width:1000px){.two{grid-template-columns:1fr}}
+  .tbl-scroll{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;color:var(--dim);font-weight:500;font-size:11px;
+     text-transform:uppercase;letter-spacing:.5px;padding:6px 8px;border-bottom:1px solid var(--line)}
+  td{padding:7px 8px;border-bottom:1px solid #1c212a;font-variant-numeric:tabular-nums}
+  tr:last-child td{border-bottom:none}
+  .bar{height:9px;border-radius:5px;background:#0d1015;overflow:hidden}
+  .bar>span{display:block;height:100%;background:var(--acc)}
+  .funnel-row{display:grid;grid-template-columns:130px 1fr 120px;gap:10px;align-items:center;margin-bottom:9px}
+  .funnel-row .lbl{color:var(--dim);font-size:12px}
+  .funnel-row .num{text-align:right;font-variant-numeric:tabular-nums}
+  .funnel-row .num .hint{display:block;color:var(--dim);font-size:10px;font-weight:400}
+  .pill{padding:2px 8px;border-radius:20px;font-size:11px;border:1px solid var(--line)}
+  .pill.ok{color:var(--ok);border-color:#1e4d3a}
+  .pill.warn{color:var(--warn);border-color:#5c452a}
+  .pill.bad{color:var(--bad);border-color:#5c2b2b}
+  .ci{position:relative;height:18px;background:#0d1015;border-radius:4px}
+  .ci>i{position:absolute;top:4px;height:10px;background:#2b4a6b;border-radius:3px}
+  .ci>b{position:absolute;top:1px;width:2px;height:16px;background:var(--acc)}
+  .muted{color:var(--dim)}
+  .warnbox{background:#241d12;border:1px solid #5c452a;color:var(--warn);
+           padding:10px 14px;border-radius:9px;margin-bottom:14px;font-size:13px}
+  code{background:#0d1015;padding:1px 5px;border-radius:4px;font-size:12px}
+  .dash-section{display:none}
+  .dash-section.active{display:block}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>telegramTool · аналитика</h1>
+  <span id="live" class="muted"><span class="dot" style="background:var(--dim)"></span>нет данных</span>
+  <span class="sp"></span>
+  <select id="niche"><option value="">все ниши</option></select>
+  <select id="days">
+    <option value="7">7 дней</option>
+    <option value="14">14 дней</option>
+    <option value="30" selected>30 дней</option>
+    <option value="90">90 дней</option>
+  </select>
+  <!-- переключатель count / count-в-секунду — применяется только к счётчикам событий,
+       не трогает %, ₽ и коэффициенты (см. UNIT в JS) -->
+  <div class="seg" id="modeSeg">
+    <button data-mode="count" class="active">count</button>
+    <button data-mode="rate">count/сек</button>
+  </div>
+  <input id="backend" type="text" placeholder="http://127.0.0.1:9000" style="width:170px">
+  <input id="token" type="password" placeholder="API_TOKEN" style="width:150px">
+  <button id="save">Подключить</button>
+</header>
+
+<div class="body">
+  <!-- левая панель — переключатель дашбордов, рендерится из DASHBOARDS[] -->
+  <nav class="dash-nav" id="dashNav"></nav>
+
+  <main>
+    <div id="warns"></div>
+    <div id="sections"></div>
+  </main>
+</div>
+
+<script>
+/* ────────────────────────────────────────────────────────────────────
+   Конфиг дашбордов. Добавить новый дашборд = добавить объект сюда,
+   если он собран из уже существующих типов виджетов (kpi/funnel/
+   timeseries/table_templates/table_accounts) — без правки остального кода.
+   ──────────────────────────────────────────────────────────────────── */
+const DASHBOARDS = [
+  { id: 'overview', title: 'Обзор', icon: '📊',
+    widgets: [{type:'kpi_grid'}, {type:'two', left:{type:'funnel'}, right:{type:'timeseries'}}] },
+  { id: 'templates', title: 'A/B тексты', icon: '✍️',
+    widgets: [{type:'table_templates'}] },
+  { id: 'accounts', title: 'Аккаунты', icon: '👤',
+    widgets: [{type:'table_accounts'}] },
+];
+
+// какие величины — счётчики событий (тумблер count/сек их трогает),
+// остальные (%, ₽, коэффициент, снэпшот ёмкости) — нет
+const UNIT = { count: 'count', percent: 'percent', currency: 'currency', ratio: 'ratio', snapshot: 'snapshot' };
+
+const $ = s => document.querySelector(s);
+let TOKEN = localStorage.getItem('tt_token') || '';
+let BACKEND = localStorage.getItem('tt_backend') || 'http://127.0.0.1:9000';
+let MODE = 'count'; // 'count' | 'rate'
+let activeDashboard = DASHBOARDS[0].id;
+let lastOverview = null, lastSeries = null, lastTpl = null, lastAcc = null;
+
+$('#token').value = TOKEN;
+$('#backend').value = BACKEND;
+
+$('#save').onclick = () => {
+  TOKEN = $('#token').value.trim();
+  BACKEND = ($('#backend').value.trim() || 'http://127.0.0.1:9000').replace(/\/$/, '');
+  localStorage.setItem('tt_token', TOKEN);
+  localStorage.setItem('tt_backend', BACKEND);
+  refresh();
+};
+$('#niche').onchange = refresh;
+$('#days').onchange = refresh;
+
+$('#modeSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-mode]');
+  if(!b) return;
+  MODE = b.dataset.mode;
+  [...$('#modeSeg').children].forEach(x => x.classList.toggle('active', x===b));
+  renderAll(); // просто перерисовать тем же данным — новый запрос не нужен
+});
+
+async function api(path){
+  const r = await fetch(BACKEND + path, {headers:{Authorization:'Bearer '+TOKEN}});
+  if(!r.ok) throw new Error(r.status + ' ' + (await r.text()).slice(0,120));
+  return r.json();
+}
+
+const fmt = n => (n==null?'—':Number(n).toLocaleString('ru-RU'));
+const pct = n => (n==null?'—':(n*100).toFixed(1)+'%');
+const money = n => (n==null?'—':Number(n).toLocaleString('ru-RU',{maximumFractionDigits:2})+' ₽');
+
+function windowSeconds(){
+  return Number($('#days').value || 30) * 86400;
+}
+
+// value+unit → то, что реально печатается на экране, с учётом тумблера MODE
+function displayCount(raw){
+  if(raw == null) return {primary:'—', hint:''};
+  if(MODE === 'count') return {primary: fmt(raw), hint:''};
+  const perSec = raw / windowSeconds();
+  const perHour = perSec * 3600;
+  return {
+    primary: perSec.toFixed(perSec < 0.001 ? 6 : 4) + ' /сек',
+    hint: '≈ ' + perHour.toLocaleString('ru-RU',{maximumFractionDigits:2}) + ' /час',
+  };
+}
+function displayByUnit(raw, unit){
+  if(unit === UNIT.count) return displayCount(raw);
+  if(unit === UNIT.percent) return {primary: pct(raw), hint:''};
+  if(unit === UNIT.currency) return {primary: money(raw), hint:''};
+  if(unit === UNIT.ratio) return {primary: (raw==null?'—':'×'+Number(raw).toFixed(2)), hint:''};
+  return {primary: fmt(raw), hint:''}; // snapshot — как есть, тумблер не применим
+}
+
+function setLive(ok, msg){
+  $('#live').innerHTML = '<span class="dot" style="background:'+
+    (ok?'var(--ok)':'var(--bad)')+'"></span>'+msg;
+}
+
+/* ─────────────────── рендереры виджетов (WIDGET TYPE REGISTRY) ─────────────────── */
+
+function renderKpiGrid(){
+  const ov = lastOverview; if(!ov) return '';
+  const f = ov.funnel, cap = ov.capacity;
+  const cards = [
+    ['Отправлено', f.sent, UNIT.count, f.pending+' ждут ответа'],
+    ['Reply rate', f.reply_rate, UNIT.percent, f.replied+' ответов'],
+    ['Подписки', f.subscribed, UNIT.count, pct(f.subscribe_rate)+' от отправленных'],
+    ['Лидов', f.leads, UNIT.count, '⚠ заглушка — размечается вручную из CRM'],
+    ['Ёмкость сегодня', cap.remaining_today, UNIT.snapshot,
+      cap.accounts_active+' активных, '+cap.accounts_resting+' отдыхают'],
+    ['Цена сообщения', ov.cost_per_message.cost_per_message, UNIT.currency,
+      ov.cost_per_message.is_estimate? 'оценка (нет истории)' :
+      'по '+ov.cost_per_message.observations+' выбывшим'],
+  ];
+  return '<div class="grid">' + cards.map(([k,raw,unit,sub]) => {
+    const d = displayByUnit(raw, unit);
+    return `<div class="card"><div class="k">${k}</div><div class="v">${d.primary}</div>
+      <div class="sub">${d.hint ? d.hint+' · ' : ''}${sub}</div></div>`;
+  }).join('') + '</div>';
+}
+
+function renderFunnel(){
+  const f = lastOverview && lastOverview.funnel; if(!f) return '';
+  const max = Math.max(f.attempted,1);
+  const rows = [
+    ['Попыток', f.attempted, 'var(--dim)', false],
+    ['Доставлено', f.sent, 'var(--acc)', false],
+    ['Пропущено', f.skipped, 'var(--warn)', false],
+    ['Ошибок', f.failed, 'var(--bad)', false],
+    ['Ответили', f.replied, 'var(--ok)', false],
+    ['Подписались', f.subscribed, 'var(--sub)', false],
+    ['Отказы', f.negative, 'var(--bad)', true],
+    ['Лиды', f.leads, 'var(--ok)', true],
+  ];
+  const body = rows.map(([l,n,col,stub]) => {
+    const d = displayCount(n);
+    return `<div class="funnel-row"><div class="lbl">${l}${stub?' <span class="pill warn" style="font-size:9px;padding:1px 5px">заглушка</span>':''}</div>
+     <div class="bar"><span style="width:${(n/max*100).toFixed(1)}%;background:${col}"></span></div>
+     <div class="num">${d.primary}${d.hint?`<span class="hint">${d.hint}</span>`:''}</div></div>`;
+  }).join('');
+  return `<div class="panel"><h2>Воронка</h2>${body}</div>`;
+}
+
+function renderTimeseriesPanel(){
+  return `<div class="panel"><h2>Динамика по дням</h2>
+    <canvas id="chart" height="220" style="width:100%"></canvas>
+    <div class="sub" style="margin-top:8px">
+      <span style="color:var(--acc)">■</span> отправлено
+      <span style="color:var(--ok);margin-left:12px">■</span> ответов
+      <span style="color:var(--sub);margin-left:12px">■</span> подписок
+      <span style="color:var(--bad);margin-left:12px">■</span> ошибок
+    </div></div>`;
+}
+
+function drawChart(series){
+  const cv = $('#chart'); if(!cv) return;
+  const dpr = window.devicePixelRatio||1;
+  const W = cv.clientWidth, H = 220;
+  cv.width = W*dpr; cv.height = H*dpr;
+  const g = cv.getContext('2d'); g.scale(dpr,dpr);
+  g.clearRect(0,0,W,H);
+  if(!series || !series.length){ g.fillStyle='#8b95a5'; g.font='13px sans-serif';
+    g.fillText('нет данных за период',12,30); return; }
+
+  const pad = {l:40,r:10,t:12,b:24};
+  const val = (d,k) => MODE==='count' ? (d[k]||0) : (d[k]||0)/86400; // за день -> в сек внутри дня
+  const max = Math.max(1e-9, ...series.map(d=>Math.max(val(d,'sent'),val(d,'replied'),val(d,'failed'),val(d,'subscribed'))));
+  const x = i => pad.l + i*((W-pad.l-pad.r)/Math.max(1,series.length-1));
+  const y = v => H-pad.b - (v/max)*(H-pad.t-pad.b);
+
+  g.strokeStyle='#242a34'; g.lineWidth=1; g.fillStyle='#8b95a5'; g.font='10px sans-serif';
+  for(let i=0;i<=4;i++){
+    const v = max*i/4, yy = y(v);
+    g.beginPath(); g.moveTo(pad.l,yy); g.lineTo(W-pad.r,yy); g.stroke();
+    g.fillText(MODE==='count' ? Math.round(v) : v.toFixed(4), 4, yy+3);
+  }
+  const draw = (key,col) => {
+    g.strokeStyle=col; g.lineWidth=2; g.beginPath();
+    series.forEach((d,i)=>{ const p=[x(i),y(val(d,key))]; i?g.lineTo(...p):g.moveTo(...p); });
+    g.stroke();
+    g.fillStyle=col;
+    series.forEach((d,i)=>{ g.beginPath(); g.arc(x(i),y(val(d,key)),2.5,0,7); g.fill(); });
+  };
+  draw('sent','#5aa9ff'); draw('replied','#3ddc97'); draw('subscribed','#7c5cff'); draw('failed','#ff6b6b');
+
+  g.fillStyle='#8b95a5';
+  series.forEach((d,i)=>{ if(i%Math.ceil(series.length/6)===0)
+    g.fillText(d.d.slice(5), x(i)-12, H-8); });
+}
+
+function renderTemplates(){
+  const data = lastTpl; if(!data) return '<div class="panel"><h2>A/B текстов</h2><div class="muted">Загрузка…</div></div>';
+  const t = data.templates||[];
+  let body;
+  if(!t.length){
+    body = '<div class="muted">Шаблонов нет. Заведите 2–3 варианта на нишу: '+
+      '<code>POST /analytics/templates</code> — тогда бандит начнёт их сравнивать.</div>';
+  } else {
+    const wp = data.win_probability||{};
+    const maxHi = Math.max(0.05, ...t.map(x=>x.ci_high));
+    body = `<table><thead><tr>
+      <th>Ниша</th><th>Вар.</th><th>Текст</th><th>Отправлено</th><th>Ответов</th>
+      <th style="width:170px">Reply rate (90% интервал)</th><th>Оценка</th><th>P(лучший)</th>
+      </tr></thead><tbody>` + t.map(x=>{
+        const lo = x.ci_low/maxHi*100, hi = x.ci_high/maxHi*100, m = x.mean/maxHi*100;
+        const p = wp[x.variant];
+        return `<tr>
+          <td class="muted">${x.niche}</td>
+          <td><b>${x.variant}</b></td>
+          <td class="muted" title="${(x.text||'').replace(/"/g,'&quot;')}">${(x.text||'').slice(0,46)}${x.text.length>46?'…':''}</td>
+          <td>${displayCount(x.sent).primary}</td>
+          <td>${displayCount(x.replies).primary}</td>
+          <td><div class="ci"><i style="left:${lo}%;width:${Math.max(1,hi-lo)}%"></i>
+              <b style="left:${m}%"></b></div></td>
+          <td>${pct(x.mean)} ${x.enough_data?'':'<span class="pill warn">мало данных</span>'}</td>
+          <td>${p==null?'—':pct(p)}</td></tr>`;
+      }).join('') + '</tbody></table>' +
+      ((data.prune_suggestions||[]).length ?
+        '<div class="warnbox" style="margin-top:14px">Кандидаты на отключение: '+
+        data.prune_suggestions.map(s=>`<b>${s.variant}</b> (${pct(s.reply_rate)} против ${pct(s.leader_reply_rate)} у ${s.leader_variant})`).join(', ')+
+        '</div>' : '');
+  }
+  return `<div class="panel"><h2>A/B текстов — вероятность ответа</h2><div class="tbl-scroll">${body}</div></div>`;
+}
+
+function renderAccounts(){
+  const d = lastAcc; if(!d) return '<div class="panel"><h2>Аккаунты</h2><div class="muted">Загрузка…</div></div>';
+  const a = d.accounts||[];
+  if(!a.length) return '<div class="panel"><h2>Аккаунты</h2><div class="muted">Аккаунтов нет.</div></div>';
+  const badge = s => s==='active' ? '<span class="pill ok">активен</span>'
+    : s==='resting' ? '<span class="pill warn">отдыхает</span>'
+    : '<span class="pill bad">выбыл</span>';
+  const body = `<div class="tbl-scroll"><table><thead><tr>
+    <th>Аккаунт</th><th>Статус</th><th>Возраст</th><th>Лимит сегодня</th>
+    <th>Отправлено</th><th>Осталось</th><th>Множитель</th><th>Ошибки 3д</th><th>Всего за жизнь</th>
+    </tr></thead><tbody>` + a.map(x=>`<tr>
+      <td>${x.account}</td><td>${badge(x.status)}</td>
+      <td class="muted">${x.age_days} д</td>
+      <td>${displayCount(x.daily_cap).primary}</td>
+      <td>${displayCount(x.sent_today).primary}</td>
+      <td>${displayCount(x.remaining_today).primary}</td>
+      <td style="color:${x.cap_multiplier<0.8?'var(--warn)':'inherit'}">×${x.cap_multiplier}</td>
+      <td style="color:${x.error_rate_3d>0.1?'var(--bad)':'inherit'}">${pct(x.error_rate_3d)}</td>
+      <td class="muted">${fmt(x.lifetime_sends)}</td></tr>`).join('') +
+    `</tbody></table></div><div class="sub" style="margin-top:10px">
+      База ${d.config.base_daily}/день, потолок ${d.config.hard_cap}. Множитель падает вдвое
+      при FloodWait/PeerFlood и восстанавливается на 10% за чистый день.</div>`;
+  return `<div class="panel"><h2>Аккаунты</h2>${body}</div>`;
+}
+
+// маппинг type -> рендерер (WIDGET TYPE REGISTRY)
+function renderWidget(w){
+  if(w.type === 'kpi_grid') return renderKpiGrid();
+  if(w.type === 'funnel') return renderFunnel();
+  if(w.type === 'timeseries') return renderTimeseriesPanel();
+  if(w.type === 'table_templates') return renderTemplates();
+  if(w.type === 'table_accounts') return renderAccounts();
+  if(w.type === 'two') return `<div class="two">
+    <div>${renderWidget(w.left)}</div><div>${renderWidget(w.right)}</div></div>`;
+  return '';
+}
+
+/* ─────────────────── левая навигация — из DASHBOARDS[] ─────────────────── */
+
+function buildNav(){
+  $('#dashNav').innerHTML = DASHBOARDS.map(d =>
+    `<button data-id="${d.id}" class="${d.id===activeDashboard?'active':''}">
+      <span class="ic">${d.icon}</span>${d.title}</button>`).join('');
+  $('#dashNav').querySelectorAll('button').forEach(b => {
+    b.onclick = () => { activeDashboard = b.dataset.id; buildNav(); buildSections(); renderAll(); };
+  });
+}
+
+function buildSections(){
+  $('#sections').innerHTML = DASHBOARDS.map(d =>
+    `<div class="dash-section ${d.id===activeDashboard?'active':''}" id="sec-${d.id}"></div>`).join('');
+}
+
+function renderAll(){
+  const d = DASHBOARDS.find(x => x.id === activeDashboard);
+  if(!d) return;
+  const el = $('#sec-' + d.id);
+  if(el) el.innerHTML = d.widgets.map(renderWidget).join('');
+  if(activeDashboard === 'overview') drawChart(lastSeries);
+}
+
+/* ─────────────────── загрузка данных ─────────────────── */
+
+async function refresh(){
+  if(!TOKEN){ setLive(false,'введите API_TOKEN'); return; }
+  const n = $('#niche').value, days = $('#days').value;
+  const q = (n? '&niche='+encodeURIComponent(n) : '');
+  try{
+    const [ov, ts, tpl, acc] = await Promise.all([
+      api(`/analytics/overview?days=${days}${q}`),
+      api(`/analytics/timeseries?days=${days}${q}`),
+      api(`/analytics/templates?${n?'niche='+encodeURIComponent(n):''}`),
+      api('/analytics/accounts'),
+    ]);
+    lastOverview = ov; lastSeries = ts; lastTpl = tpl; lastAcc = acc;
+
+    if($('#niche').options.length <= 1 && ov.niches.length)
+      ov.niches.forEach(x=>$('#niche').add(new Option(x,x)));
+
+    renderAll();
+
+    const w = [];
+    if(ov.cpl.note) w.push(ov.cpl.note);
+    if(!ov.capacity.accounts_active) w.push('Нет активных аккаунтов — рассылка не пойдёт.');
+    if(ov.cost_per_message.is_estimate && ov.totals.spend===0)
+      w.push('Стоимость аккаунтов не задана — CPL считается неверно. POST /analytics/accounts/{name}/cost');
+    $('#warns').innerHTML = w.map(x=>`<div class="warnbox">${x}</div>`).join('');
+
+    setLive(true, 'обновлено '+new Date().toLocaleTimeString('ru-RU'));
+  }catch(e){ setLive(false, 'ошибка: '+e.message); }
+}
+
+buildNav();
+buildSections();
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
