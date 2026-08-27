@@ -514,8 +514,19 @@ def funnel(days: float = 30, niche: str | None = None, job_id: str | None = None
     return out
 
 
-def timeseries(days: int = 14, niche: str | None = None) -> list[dict]:
-    q = ("SELECT date(sent_at) d,"
+# Выражение группировки по времени — то же самое, что "цена деления" у Y-зума,
+# только для оси X. День — совместимо со старым поведением; час/минута нужны,
+# чтобы можно было зумиться во времени вплоть до минутной детализации.
+_BUCKET_EXPR = {
+    "day":    "date(sent_at)",
+    "hour":   "strftime('%Y-%m-%d %H:00', sent_at)",
+    "minute": "strftime('%Y-%m-%d %H:%M', sent_at)",
+}
+
+
+def timeseries(days: float = 14, niche: str | None = None, granularity: str = "day") -> list[dict]:
+    bucket = _BUCKET_EXPR.get(granularity, _BUCKET_EXPR["day"])
+    q = (f"SELECT {bucket} d,"
          " SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) sent,"
          " SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) failed,"
          " SUM(CASE WHEN outcome IN ('replied','lead','negative') THEN 1 ELSE 0 END) replied,"

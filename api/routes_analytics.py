@@ -45,8 +45,13 @@ def funnel(days: float = 30, niche: str | None = None, job_id: str | None = None
 
 
 @router.get("/timeseries")
-def timeseries(days: int = 14, niche: str | None = None) -> list[dict]:
-    return an.timeseries(days=days, niche=niche)
+def timeseries(days: float = 14, niche: str | None = None,
+               granularity: str = Query(default="day", pattern="^(minute|hour|day)$")) -> list[dict]:
+    """granularity — цена деления оси времени. 'minute' имеет смысл только
+    для короткого окна (days — доля дня); за 30 дней минутные бакеты дали бы
+    десятки тысяч точек. Фронтенд сам подбирает granularity под окно (см.
+    granularityFor() в desktop/telegramtool-dashboard/src/index.html)."""
+    return an.timeseries(days=days, niche=niche, granularity=granularity)
 
 
 # ──────────────────────────────────────────────────────────────────────────

@@ -152,7 +152,7 @@ $('#save').onclick = () => {
   refresh();
 };
 $('#niche').onchange = refresh;
-$('#days').onchange = refresh;
+$('#days').onchange = () => { xZoomMinutes = null; refresh(); }; // смена глобального периода сбрасывает зум графика по времени
 
 $('#modeSeg').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-mode]');
@@ -245,39 +245,87 @@ function renderFunnel(){
   return `<div class="panel"><h2>Воронка</h2>${body}</div>`;
 }
 
-// Зум графика по Y — "цена деления" (шаг сетки) не фиксирована, а зависит
-// от yZoomFactor. 1 = автомасштаб по данным (как раньше), <1 = "расширить"
-// (крупнее масштаб, шаг сетки меньше), >1 = "сузить" (мельче масштаб, шаг крупнее).
+// ─────────────────── Зум графика по Y ("цена деления" сетки значений) ───────────────────
+// 1 = автомасштаб по данным (как раньше), <1 = "расширить" (крупнее масштаб,
+// шаг сетки меньше), >1 = "сузить" (мельче масштаб, шаг крупнее).
 // Персистентный module-level стейт — переживает перерисовку виджета (innerHTML
 // пересоздаёт canvas каждые 5 сек при поллинге, но не сбрасывает эту переменную).
 let yZoomFactor = 1;
-const ZOOM_MIN = 0.05, ZOOM_MAX = 20;
+const Y_ZOOM_MIN = 0.05, Y_ZOOM_MAX = 20;
 
 function zoomChart(mult){
-  yZoomFactor = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, yZoomFactor * mult));
+  yZoomFactor = Math.max(Y_ZOOM_MIN, Math.min(Y_ZOOM_MAX, yZoomFactor * mult));
   drawChart(lastSeries); // без нового запроса к бэкенду — просто перерисовать
 }
 function resetZoomChart(){ yZoomFactor = 1; drawChart(lastSeries); }
 
+// ─────────────────── Зум графика по X (цена деления оси времени) ───────────────────
+// В отличие от Y — тут нужен новый запрос к бэкенду: чем уже окно, тем мельче
+// бакет (день → час → минута), а бакет считается на сервере (data/analytics.py).
+// null = синхронизировано с глобальным селектом "дней" сверху (как было раньше).
+let xZoomMinutes = null;
+let currentGranularity = 'day';
+const X_ZOOM_MIN_MIN = 5;           // не мельче окна в 5 минут
+const X_ZOOM_MAX_MIN = 90 * 1440;   // не шире 90 дней (потолок как у селекта #days)
+const BUCKET_SECONDS = { day: 86400, hour: 3600, minute: 60 };
+const GRAN_LABEL = { day: 'по дням', hour: 'по часам', minute: 'по минутам' };
+
+function currentWindowMinutes(){
+  return xZoomMinutes != null ? xZoomMinutes : Number($('#days').value || 30) * 1440;
+}
+// семантический зум: чем уже окно, тем мельче бакет — вплоть до минуты
+function granularityFor(mins){
+  if (mins <= 6 * 60) return 'minute';   // окно ≤ 6 часов -> по минутам
+  if (mins <= 4 * 1440) return 'hour';   // окно ≤ 4 дней -> по часам
+  return 'day';
+}
+function fmtWindow(mins){
+  if (mins < 60) return Math.round(mins) + ' мин';
+  if (mins < 1440) return (mins/60).toFixed(mins%60 ? 1 : 0) + ' ч';
+  return (mins/1440).toFixed(mins%1440 ? 1 : 0) + ' дн';
+}
+
+async function fetchTimeseries(){
+  const n = $('#niche').value;
+  const mins = currentWindowMinutes();
+  currentGranularity = granularityFor(mins);
+  const q = (n? '&niche='+encodeURIComponent(n) : '');
+  lastSeries = await api(`/analytics/timeseries?days=${mins/1440}&granularity=${currentGranularity}${q}`);
+}
+async function zoomTime(mult){
+  const cur = currentWindowMinutes();
+  xZoomMinutes = Math.max(X_ZOOM_MIN_MIN, Math.min(X_ZOOM_MAX_MIN, cur * mult));
+  try{ await fetchTimeseries(); drawChart(lastSeries); }catch(e){ setLive(false,'ошибка: '+e.message); }
+}
+async function resetZoomTime(){
+  xZoomMinutes = null;
+  try{ await fetchTimeseries(); drawChart(lastSeries); }catch(e){ setLive(false,'ошибка: '+e.message); }
+}
+
 function renderTimeseriesPanel(){
   return `<div class="panel">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-      <h2 style="margin:0">Динамика по дням</h2>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+      <h2 style="margin:0">Динамика</h2>
       <span class="sp"></span>
       <span class="muted" id="chartStep" style="font-size:11px"></span>
-      <div class="seg">
-        <button onclick="zoomChart(1/1.4)" title="Расширить (крупнее масштаб)">+</button>
-        <button onclick="zoomChart(1.4)" title="Сузить (мельче масштаб)">−</button>
-        <button onclick="resetZoomChart()" title="Сбросить зум">⟲ авто</button>
+      <div class="seg" title="Зум по значениям (шаг сетки)">
+        <button onclick="zoomChart(1/1.4)" title="Расширить по Y (крупнее масштаб)">Y+</button>
+        <button onclick="zoomChart(1.4)" title="Сузить по Y (мельче масштаб)">Y−</button>
       </div>
+      <div class="seg" title="Зум по времени (день → час → минута)">
+        <button onclick="zoomTime(0.5)" title="Расширить по времени — детальнее, вплоть до минуты">X+</button>
+        <button onclick="zoomTime(2)" title="Сузить по времени — более широкий период">X−</button>
+      </div>
+      <button onclick="resetZoomChart();resetZoomTime()" title="Сбросить весь зум">⟲ авто</button>
     </div>
+    <div class="muted" id="chartWindow" style="font-size:11px;margin-bottom:8px"></div>
     <canvas id="chart" height="220" style="width:100%"></canvas>
     <div class="sub" style="margin-top:8px">
       <span style="color:var(--acc)">■</span> отправлено
       <span style="color:var(--ok);margin-left:12px">■</span> ответов
       <span style="color:var(--sub);margin-left:12px">■</span> подписок
       <span style="color:var(--bad);margin-left:12px">■</span> ошибок
-      <span class="muted" style="margin-left:12px">· колесо мыши над графиком тоже зумит</span>
+      <span class="muted" style="margin-left:12px">· колесо мыши зумит по значениям, Shift+колесо — по времени</span>
     </div></div>`;
 }
 
@@ -289,12 +337,16 @@ function drawChart(series){
   const g = cv.getContext('2d'); g.scale(dpr,dpr);
   g.clearRect(0,0,W,H);
 
+  const winEl = $('#chartWindow');
+  if(winEl) winEl.textContent = 'окно: ' + fmtWindow(currentWindowMinutes()) + ' · ' + GRAN_LABEL[currentGranularity];
+
   // колесо мыши — зум; canvas пересоздаётся при каждой перерисовке (innerHTML),
   // поэтому переподвешиваем обработчик каждый раз через прямое присваивание
   // (не addEventListener — иначе на старом узле копились бы старые слушатели).
   cv.onwheel = (e) => {
     e.preventDefault();
-    zoomChart(e.deltaY < 0 ? 1/1.15 : 1.15);
+    if(e.shiftKey) zoomTime(e.deltaY < 0 ? 0.7 : 1/0.7);
+    else zoomChart(e.deltaY < 0 ? 1/1.15 : 1.15);
   };
 
   if(!series || !series.length){ g.fillStyle='#8b95a5'; g.font='13px sans-serif';
@@ -304,7 +356,8 @@ function drawChart(series){
   }
 
   const pad = {l:44,r:10,t:12,b:24};
-  const val = (d,k) => MODE==='count' ? (d[k]||0) : (d[k]||0)/86400; // за день -> в сек внутри дня
+  const bucketSec = BUCKET_SECONDS[currentGranularity] || 86400;
+  const val = (d,k) => MODE==='count' ? (d[k]||0) : (d[k]||0)/bucketSec;
   const dataMax = Math.max(1e-9, ...series.map(d=>Math.max(val(d,'sent'),val(d,'replied'),val(d,'failed'),val(d,'subscribed'))));
   const max = dataMax * yZoomFactor;
   const x = i => pad.l + i*((W-pad.l-pad.r)/Math.max(1,series.length-1));
@@ -329,9 +382,11 @@ function drawChart(series){
   };
   draw('sent','#5aa9ff'); draw('replied','#3ddc97'); draw('subscribed','#7c5cff'); draw('failed','#ff6b6b');
 
+  // подпись оси X зависит от детализации: день -> ММ-ДД, час/минута -> ЧЧ:ММ
+  const xLabel = d => currentGranularity === 'day' ? d.slice(5) : d.slice(11);
   g.fillStyle='#8b95a5';
-  series.forEach((d,i)=>{ if(i%Math.ceil(series.length/6)===0)
-    g.fillText(d.d.slice(5), x(i)-12, H-8); });
+  series.forEach((d,i)=>{ if(i%Math.max(1,Math.ceil(series.length/6))===0)
+    g.fillText(xLabel(d.d), x(i)-14, H-8); });
 }
 
 function renderTemplates(){
@@ -437,13 +492,15 @@ async function refresh(){
   const n = $('#niche').value, days = $('#days').value;
   const q = (n? '&niche='+encodeURIComponent(n) : '');
   try{
-    const [ov, ts, tpl, acc] = await Promise.all([
+    // timeseries — отдельно: у графика своё окно/детализация (X-зум),
+    // не обязательно совпадающее с общим селектом "дней" сверху.
+    const [ov, tpl, acc] = await Promise.all([
       api(`/analytics/overview?days=${days}${q}`),
-      api(`/analytics/timeseries?days=${days}${q}`),
       api(`/analytics/templates?${n?'niche='+encodeURIComponent(n):''}`),
       api('/analytics/accounts'),
+      fetchTimeseries(),
     ]);
-    lastOverview = ov; lastSeries = ts; lastTpl = tpl; lastAcc = acc;
+    lastOverview = ov; lastTpl = tpl; lastAcc = acc;
 
     if($('#niche').options.length <= 1 && ov.niches.length)
       ov.niches.forEach(x=>$('#niche').add(new Option(x,x)));
