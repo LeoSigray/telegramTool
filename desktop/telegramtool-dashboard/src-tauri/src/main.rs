@@ -10,8 +10,24 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Бэкенд (api/auth.py) сам генерирует токен при первом запуске и кладёт
+// в ~/.telegramtool/token, если API_TOKEN не задан явно в .env. Читаем тот
+// же файл напрямую с диска — токен по-прежнему обязателен (см. auth.py),
+// просто человеку не нужно копировать его руками между бэкендом и приложением.
+#[tauri::command]
+fn read_local_token() -> Result<String, String> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE")) // Windows
+        .map_err(|_| "не удалось определить домашнюю директорию".to_string())?;
+    let path = std::path::Path::new(&home).join(".telegramtool").join("token");
+    std::fs::read_to_string(&path)
+        .map(|s| s.trim().to_string())
+        .map_err(|e| format!("не удалось прочитать {}: {}", path.display(), e))
+}
+
 fn main() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![read_local_token])
         .run(tauri::generate_context!())
         .expect("error while running telegramtool-dashboard");
 }

@@ -107,9 +107,12 @@ app.include_router(routes_analytics.page_router)
 
 @app.get("/health")
 def health() -> dict:
+    from . import auth
     return {
         "ok": True,
-        "auth_configured": bool(os.getenv("API_TOKEN")),
+        # auth всегда обязательна (см. api/auth.py) — тут просто откуда взялся
+        # токен: явно из env, или автосгенерирован и лежит в ~/.telegramtool/token
+        "auth_source": "env" if os.getenv("API_TOKEN", "").strip() else "auto-generated",
         "webhook_configured": bool(os.getenv("CRM_WEBHOOK_URL")),
         "active_accounts": len(pool.clients),
     }

@@ -6,9 +6,11 @@ if [ -z "$API_TOKEN" ] && [ -f .env ]; then
   set -a; source .env; set +a
 fi
 
+# API_TOKEN больше не обязателен: если не задан, api/auth.py сам сгенерирует
+# токен при старте и сохранит в ~/.telegramtool/token (десктоп-приложение
+# читает его оттуда автоматически).
 if [ -z "$API_TOKEN" ]; then
-  echo "ERROR: API_TOKEN не задан. Создай .env или экспорти переменную."
-  exit 1
+  echo "API_TOKEN не задан — будет автосгенерирован в ~/.telegramtool/token"
 fi
 
 if [ -d .venv ]; then

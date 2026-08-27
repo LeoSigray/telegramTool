@@ -3,80 +3,105 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>telegramTool — аналитика</title>
+<title>Аналитика</title>
 <style>
+  /* Светлая "стеклянная" тема — light blue + Apple-style frosted glass
+     (backdrop-filter blur на полупрозрачных панелях поверх голубого
+     градиента). --acc — для заливок/линий на светлой поверхности,
+     --acc-deep — та же синева, но затемнённая, для ТЕКСТА (иначе
+     светло-голубой текст на белом читается плохо — контраст ниже нормы). */
   :root{
-    --bg:#0f1216; --panel:#161a21; --line:#242a34; --tx:#e6e9ef; --dim:#8b95a5;
-    --ok:#3ddc97; --warn:#ffb454; --bad:#ff6b6b; --acc:#5aa9ff; --sub:#7c5cff;
+    --bg1:#dbe9fc; --bg2:#eef3fb; --bg3:#f7fafd;
+    --panel: rgba(255,255,255,.58); --panel-solid:#ffffff;
+    --line: rgba(90,130,200,.22); --line-soft: rgba(90,130,200,.14);
+    --tx:#16213a; --dim:#5f6f92;
+    --ok:#1a9c6b; --warn:#b8790a; --bad:#d43f4f;
+    --acc:#3a86ff; --acc-deep:#1a56db; --sub:#7c5cff;
+    --glass-blur: 22px;
+    --shadow: 0 8px 30px rgba(60,100,180,.14), inset 0 1px 0 rgba(255,255,255,.7);
+    --shadow-sm: 0 2px 10px rgba(60,100,180,.10);
   }
   *{box-sizing:border-box}
   html,body{height:100%}
-  body{margin:0;background:var(--bg);color:var(--tx);
-       font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;
-       display:flex;flex-direction:column;overflow:hidden}
+  body{margin:0;color:var(--tx);
+       font:14px/1.5 -apple-system,ui-sans-serif,"SF Pro Text","Segoe UI",Roboto,sans-serif;
+       display:flex;flex-direction:column;overflow:hidden;
+       background:
+         radial-gradient(1100px 700px at 12% -10%, rgba(120,170,255,.35), transparent 60%),
+         radial-gradient(900px 650px at 105% 0%, rgba(150,130,255,.22), transparent 55%),
+         linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 45%, var(--bg3) 100%)}
   header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
-         padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex:none}
-  h1{font-size:14px;margin:0;font-weight:600;letter-spacing:.3px;white-space:nowrap}
+         padding:12px 18px;border-bottom:1px solid var(--line);flex:none;
+         background:var(--panel);backdrop-filter:blur(var(--glass-blur)) saturate(180%);
+         -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(180%);
+         box-shadow:var(--shadow-sm)}
+  h1{font-size:14px;margin:0;font-weight:700;letter-spacing:.2px;white-space:nowrap;color:var(--acc-deep)}
   .sp{flex:1}
-  input,select,button{background:#0d1015;border:1px solid var(--line);color:var(--tx);
-       border-radius:7px;padding:6px 9px;font-size:12px;font-family:inherit}
-  button{cursor:pointer}
-  button:hover{border-color:var(--acc)}
+  input,select,button{background:rgba(255,255,255,.65);border:1px solid var(--line);color:var(--tx);
+       border-radius:9px;padding:6px 10px;font-size:12px;font-family:inherit}
+  input:focus,select:focus{outline:none;border-color:var(--acc)}
+  button{cursor:pointer;transition:background .15s,border-color .15s}
+  button:hover{border-color:var(--acc);background:rgba(255,255,255,.85)}
   .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
 
   /* сегментированный тумблер count / count-сек — то, что справа у дашборда */
-  .seg{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+  .seg{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;
+       background:rgba(255,255,255,.45)}
   .seg button{border:none;border-radius:0;background:transparent;padding:6px 11px}
-  .seg button.active{background:var(--acc);color:#08131f;font-weight:600}
-  .seg button:hover{border-color:transparent}
+  .seg button.active{background:var(--acc);color:#fff;font-weight:600}
+  .seg button:hover{border-color:transparent;background:rgba(58,134,255,.12)}
+  .seg button.active:hover{background:var(--acc)}
 
   .body{flex:1;display:flex;min-height:0}
 
-  /* левая панель — переключатель дашбордов */
-  nav.dash-nav{width:180px;flex:none;background:var(--panel);border-right:1px solid var(--line);
-       padding:10px;overflow-y:auto}
-  nav.dash-nav button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;
-       padding:9px 10px;margin-bottom:4px;border:1px solid transparent;background:transparent;
-       border-radius:8px;font-size:13px;color:var(--tx)}
-  nav.dash-nav button:hover{border-color:var(--line)}
-  nav.dash-nav button.active{background:#101820;border-color:var(--acc);color:var(--acc)}
-  nav.dash-nav .ic{font-size:15px;width:18px;text-align:center}
+  /* левая панель — переключатель дашбордов: подпись "Дашборды" + выпадающий список */
+  nav.dash-nav{width:190px;flex:none;border-right:1px solid var(--line);
+       padding:16px 14px;overflow-y:auto;
+       background:var(--panel);backdrop-filter:blur(var(--glass-blur)) saturate(180%);
+       -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(180%)}
+  .dash-nav-label{font-size:11px;font-weight:700;color:var(--dim);
+       text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px}
+  nav.dash-nav select{width:100%;font-size:13px;padding:9px 10px;color:var(--acc-deep);font-weight:600}
 
-  main{flex:1;overflow-y:auto;padding:18px 22px}
+  main{flex:1;overflow-y:auto;padding:20px 24px}
   .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));margin-bottom:18px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px 16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px 18px;
+       backdrop-filter:blur(var(--glass-blur)) saturate(180%);
+       -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(180%);box-shadow:var(--shadow)}
   .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.7px}
-  .v{font-size:24px;font-weight:600;margin-top:6px;font-variant-numeric:tabular-nums}
+  .v{font-size:25px;font-weight:700;margin-top:6px;font-variant-numeric:tabular-nums;color:var(--tx)}
   .sub{color:var(--dim);font-size:12px;margin-top:3px}
-  .panel{background:var(--panel);border:1px solid var(--line);border-radius:11px;
-         padding:16px 18px;margin-bottom:18px}
-  .panel h2{font-size:13px;margin:0 0 14px;font-weight:600;color:var(--dim);
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;
+         padding:18px 20px;margin-bottom:18px;
+         backdrop-filter:blur(var(--glass-blur)) saturate(180%);
+         -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(180%);box-shadow:var(--shadow)}
+  .panel h2{font-size:13px;margin:0 0 14px;font-weight:700;color:var(--acc-deep);
             text-transform:uppercase;letter-spacing:.7px}
   .two{display:grid;gap:18px;grid-template-columns:1fr 1fr}
   @media(max-width:1000px){.two{grid-template-columns:1fr}}
   .tbl-scroll{overflow-x:auto}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th{text-align:left;color:var(--dim);font-weight:500;font-size:11px;
+  th{text-align:left;color:var(--dim);font-weight:600;font-size:11px;
      text-transform:uppercase;letter-spacing:.5px;padding:6px 8px;border-bottom:1px solid var(--line)}
-  td{padding:7px 8px;border-bottom:1px solid #1c212a;font-variant-numeric:tabular-nums}
+  td{padding:7px 8px;border-bottom:1px solid var(--line-soft);font-variant-numeric:tabular-nums}
   tr:last-child td{border-bottom:none}
-  .bar{height:9px;border-radius:5px;background:#0d1015;overflow:hidden}
+  .bar{height:9px;border-radius:5px;background:rgba(90,130,200,.12);overflow:hidden}
   .bar>span{display:block;height:100%;background:var(--acc)}
   .funnel-row{display:grid;grid-template-columns:130px 1fr 120px;gap:10px;align-items:center;margin-bottom:9px}
   .funnel-row .lbl{color:var(--dim);font-size:12px}
   .funnel-row .num{text-align:right;font-variant-numeric:tabular-nums}
   .funnel-row .num .hint{display:block;color:var(--dim);font-size:10px;font-weight:400}
   .pill{padding:2px 8px;border-radius:20px;font-size:11px;border:1px solid var(--line)}
-  .pill.ok{color:var(--ok);border-color:#1e4d3a}
-  .pill.warn{color:var(--warn);border-color:#5c452a}
-  .pill.bad{color:var(--bad);border-color:#5c2b2b}
-  .ci{position:relative;height:18px;background:#0d1015;border-radius:4px}
-  .ci>i{position:absolute;top:4px;height:10px;background:#2b4a6b;border-radius:3px}
-  .ci>b{position:absolute;top:1px;width:2px;height:16px;background:var(--acc)}
+  .pill.ok{color:var(--ok);border-color:rgba(26,156,107,.35);background:rgba(26,156,107,.08)}
+  .pill.warn{color:var(--warn);border-color:rgba(184,121,10,.35);background:rgba(184,121,10,.08)}
+  .pill.bad{color:var(--bad);border-color:rgba(212,63,79,.35);background:rgba(212,63,79,.08)}
+  .ci{position:relative;height:18px;background:rgba(90,130,200,.10);border-radius:4px}
+  .ci>i{position:absolute;top:4px;height:10px;background:rgba(58,134,255,.35);border-radius:3px}
+  .ci>b{position:absolute;top:1px;width:2px;height:16px;background:var(--acc-deep)}
   .muted{color:var(--dim)}
-  .warnbox{background:#241d12;border:1px solid #5c452a;color:var(--warn);
-           padding:10px 14px;border-radius:9px;margin-bottom:14px;font-size:13px}
-  code{background:#0d1015;padding:1px 5px;border-radius:4px;font-size:12px}
+  .warnbox{background:rgba(184,121,10,.10);border:1px solid rgba(184,121,10,.3);color:#8a5a06;
+           padding:10px 14px;border-radius:11px;margin-bottom:14px;font-size:13px}
+  code{background:rgba(90,130,200,.10);padding:1px 5px;border-radius:4px;font-size:12px;color:var(--acc-deep)}
   .dash-section{display:none}
   .dash-section.active{display:block}
 </style>
@@ -84,7 +109,7 @@
 <body>
 
 <header>
-  <h1>telegramTool · аналитика</h1>
+  <h1>Аналитика</h1>
   <span id="live" class="muted"><span class="dot" style="background:var(--dim)"></span>нет данных</span>
   <span class="sp"></span>
   <select id="niche"><option value="">все ниши</option></select>
@@ -100,14 +125,17 @@
     <button data-mode="count" class="active">count</button>
     <button data-mode="rate">count/сек</button>
   </div>
-  <input id="backend" type="text" placeholder="http://127.0.0.1:9000" style="width:170px">
-  <input id="token" type="password" placeholder="API_TOKEN" style="width:150px">
-  <button id="save">Подключить</button>
 </header>
 
 <div class="body">
-  <!-- левая панель — переключатель дашбордов, рендерится из DASHBOARDS[] -->
-  <nav class="dash-nav" id="dashNav"></nav>
+  <!-- левая панель — переключатель дашбордов, рендерится из DASHBOARDS[].
+       Адрес бэкенда и токен здесь не вводятся: адрес — фиксированный
+       localhost:9000, токен приложение читает само с диска (bootstrap()
+       ниже) — см. api/auth.py, ~/.telegramtool/token. -->
+  <nav class="dash-nav">
+    <div class="dash-nav-label">Дашборды</div>
+    <select id="dashSelect"></select>
+  </nav>
 
   <main>
     <div id="warns"></div>
@@ -142,22 +170,16 @@ function dashboardHasWidget(id, type){
 const UNIT = { count: 'count', percent: 'percent', currency: 'currency', ratio: 'ratio', snapshot: 'snapshot' };
 
 const $ = s => document.querySelector(s);
-let TOKEN = localStorage.getItem('tt_token') || '';
-let BACKEND = localStorage.getItem('tt_backend') || 'http://127.0.0.1:9000';
+// Бэкенд всегда localhost:9000 (десктоп-приложение и бэкенд — на одной машине,
+// см. README про Фазу A), токен нигде не вводится — bootstrap()/ensureToken()
+// внизу файла читают его сами с диска через Tauri. Ни то, ни другое в UI не
+// показываем — по прямому запросу убрать поля адреса/токена из приложения.
+const BACKEND = 'http://127.0.0.1:9000';
+let TOKEN = '';
 let MODE = 'count'; // 'count' | 'rate'
 let activeDashboard = DASHBOARDS[0].id;
 let lastOverview = null, lastSeries = null, lastTpl = null, lastAcc = null;
 
-$('#token').value = TOKEN;
-$('#backend').value = BACKEND;
-
-$('#save').onclick = () => {
-  TOKEN = $('#token').value.trim();
-  BACKEND = ($('#backend').value.trim() || 'http://127.0.0.1:9000').replace(/\/$/, '');
-  localStorage.setItem('tt_token', TOKEN);
-  localStorage.setItem('tt_backend', BACKEND);
-  refresh();
-};
 $('#niche').onchange = () => { refresh(); refreshChart(); }; // ниша влияет и на график тоже — обновить сразу, не ждать минуту
 $('#days').onchange = refresh;
 
@@ -285,7 +307,11 @@ function drawChart(series){
   const g = cv.getContext('2d'); g.scale(dpr,dpr);
   g.clearRect(0,0,W,H);
 
-  if(!series || !series.length){ g.fillStyle='#8b95a5'; g.font='13px sans-serif';
+  // Палитра под светлую стеклянную тему: тёмный текст/сетка на почти-белой
+  // подложке (canvas не видит CSS-переменные — дублируем те же тона руками).
+  const AXIS = '#5f6f92', GRID = 'rgba(90,130,200,.16)';
+
+  if(!series || !series.length){ g.fillStyle=AXIS; g.font='13px sans-serif';
     g.fillText('нет данных за последний час',12,30);
     return;
   }
@@ -297,22 +323,22 @@ function drawChart(series){
   const y = v => H-pad.b - (v/max)*(H-pad.t-pad.b);
 
   const step = max/4;
-  g.strokeStyle='#242a34'; g.lineWidth=1; g.fillStyle='#8b95a5'; g.font='10px sans-serif';
+  g.strokeStyle=GRID; g.lineWidth=1; g.fillStyle=AXIS; g.font='10px sans-serif';
   for(let i=0;i<=4;i++){
     const v = step*i, yy = y(v);
     g.beginPath(); g.moveTo(pad.l,yy); g.lineTo(W-pad.r,yy); g.stroke();
     g.fillText(MODE==='count' ? Math.round(v) : v.toFixed(4), 4, yy+3);
   }
   const draw = (key,col) => {
-    g.strokeStyle=col; g.lineWidth=2; g.beginPath();
+    g.strokeStyle=col; g.lineWidth=2.5; g.beginPath();
     series.forEach((d,i)=>{ const p=[x(i),y(val(d,key))]; i?g.lineTo(...p):g.moveTo(...p); });
     g.stroke();
     g.fillStyle=col;
     series.forEach((d,i)=>{ g.beginPath(); g.arc(x(i),y(val(d,key)),2.5,0,7); g.fill(); });
   };
-  draw('sent','#5aa9ff'); draw('replied','#3ddc97'); draw('subscribed','#7c5cff'); draw('failed','#ff6b6b');
+  draw('sent','#3a86ff'); draw('replied','#1a9c6b'); draw('subscribed','#7c5cff'); draw('failed','#d43f4f');
 
-  g.fillStyle='#8b95a5';
+  g.fillStyle=AXIS;
   series.forEach((d,i)=>{ if(i%Math.max(1,Math.ceil(series.length/6))===0)
     g.fillText(d.d.slice(11), x(i)-14, H-8); }); // 'YYYY-MM-DD HH:MM' -> 'HH:MM'
 }
@@ -387,15 +413,13 @@ function renderWidget(w){
   return '';
 }
 
-/* ─────────────────── левая навигация — из DASHBOARDS[] ─────────────────── */
+/* ─────────────────── левая навигация — из DASHBOARDS[], выпадающий список ─────────────────── */
 
 function buildNav(){
-  $('#dashNav').innerHTML = DASHBOARDS.map(d =>
-    `<button data-id="${d.id}" class="${d.id===activeDashboard?'active':''}">
-      <span class="ic">${d.icon}</span>${d.title}</button>`).join('');
-  $('#dashNav').querySelectorAll('button').forEach(b => {
-    b.onclick = () => { activeDashboard = b.dataset.id; buildNav(); buildSections(); renderAll(); };
-  });
+  const sel = $('#dashSelect');
+  sel.innerHTML = DASHBOARDS.map(d =>
+    `<option value="${d.id}" ${d.id===activeDashboard?'selected':''}>${d.icon} ${d.title}</option>`).join('');
+  sel.onchange = () => { activeDashboard = sel.value; buildSections(); renderAll(); };
 }
 
 function buildSections(){
@@ -412,11 +436,30 @@ function renderAll(){
   if(dashboardHasWidget(activeDashboard, 'timeseries')) drawChart(lastSeries);
 }
 
+/* ─────────────────── токен: без UI, читается напрямую с диска ─────────────────── */
+
+// Тот же файл, что пишет api/auth.py на бэкенде (~/.telegramtool/token) —
+// см. main.rs (read_local_token). Работает только внутри настоящего
+// Tauri-окна (window.__TAURI__ определён только там); в обычном браузере
+// (например при локальной разработке дашборда) тихо не срабатывает.
+// Вызывается не только один раз при старте, а на каждом refresh(), пока
+// TOKEN пуст — так что если бэкенд ещё не запускался в момент открытия
+// приложения, достаточно просто запустить его: токен подхватится сам
+// на следующем опросе, без перезапуска приложения.
+async function ensureToken(){
+  if(TOKEN || !window.__TAURI__) return;
+  try{
+    const t = await window.__TAURI__.core.invoke('read_local_token');
+    if(t) TOKEN = t;
+  }catch(e){ /* бэкенд ещё не запускался ни разу — файла нет, это нормально */ }
+}
+
 /* ─────────────────── загрузка данных ─────────────────── */
 
 // KPI/воронка/шаблоны/аккаунты — раз в 5 сек, как раньше.
 async function refresh(){
-  if(!TOKEN){ setLive(false,'введите API_TOKEN'); return; }
+  await ensureToken();
+  if(!TOKEN){ setLive(false,'бэкенд не найден — запустите ./run_api.sh'); return; }
   const n = $('#niche').value, days = $('#days').value;
   const q = (n? '&niche='+encodeURIComponent(n) : '');
   try{
@@ -447,6 +490,8 @@ async function refresh(){
 // в минутной детализации, которая только раз в минуту и обновляется на бэкенде).
 async function refreshChart(){
   try{
+    await ensureToken(); // на случай, если это сработало раньше, чем refresh()
+    if(!TOKEN) return;
     await fetchTimeseries();
     if(dashboardHasWidget(activeDashboard, 'timeseries')) drawChart(lastSeries);
   }catch(e){ /* не валим остальной дашборд, если график не смог обновиться */ }

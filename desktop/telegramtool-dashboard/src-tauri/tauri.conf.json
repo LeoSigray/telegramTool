@@ -7,9 +7,10 @@
     "frontendDist": "../src"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
-        "title": "telegramTool — аналитика",
+        "title": "Аналитика",
         "width": 1280,
         "height": 820,
         "minWidth": 900,
