@@ -117,18 +117,25 @@
 
 <script>
 /* ────────────────────────────────────────────────────────────────────
-   Конфиг дашбордов. Добавить новый дашборд = добавить объект сюда,
-   если он собран из уже существующих типов виджетов (kpi/funnel/
-   timeseries/table_templates/table_accounts) — без правки остального кода.
+   Конфиг дашбордов. Каждый дашборд — один график/виджет, не пачка сразу
+   (раньше "Обзор" был один монолитный экран с KPI+воронкой+графиком
+   вместе — теперь это три отдельных пункта слева). Добавить новый
+   дашборд = добавить объект сюда, если он собран из уже существующего
+   типа виджета (kpi_grid/funnel/timeseries/table_templates/table_accounts)
+   — без правки остального кода.
    ──────────────────────────────────────────────────────────────────── */
 const DASHBOARDS = [
-  { id: 'overview', title: 'Обзор', icon: '📊',
-    widgets: [{type:'kpi_grid'}, {type:'two', left:{type:'funnel'}, right:{type:'timeseries'}}] },
-  { id: 'templates', title: 'A/B тексты', icon: '✍️',
-    widgets: [{type:'table_templates'}] },
-  { id: 'accounts', title: 'Аккаунты', icon: '👤',
-    widgets: [{type:'table_accounts'}] },
+  { id: 'summary',    title: 'Сводка',     icon: '📊', widgets: [{type:'kpi_grid'}] },
+  { id: 'funnel',     title: 'Воронка',    icon: '🔻', widgets: [{type:'funnel'}] },
+  { id: 'timeseries', title: 'Динамика',   icon: '📈', widgets: [{type:'timeseries'}] },
+  { id: 'templates',  title: 'A/B тексты', icon: '✍️', widgets: [{type:'table_templates'}] },
+  { id: 'accounts',   title: 'Аккаунты',   icon: '👤', widgets: [{type:'table_accounts'}] },
 ];
+
+function dashboardHasWidget(id, type){
+  const d = DASHBOARDS.find(x => x.id === id);
+  return !!(d && d.widgets.some(w => w.type === type));
+}
 
 // какие величины — счётчики событий (тумблер count/сек их трогает),
 // остальные (%, ₽, коэффициент, снэпшот ёмкости) — нет
@@ -377,8 +384,6 @@ function renderWidget(w){
   if(w.type === 'timeseries') return renderTimeseriesPanel();
   if(w.type === 'table_templates') return renderTemplates();
   if(w.type === 'table_accounts') return renderAccounts();
-  if(w.type === 'two') return `<div class="two">
-    <div>${renderWidget(w.left)}</div><div>${renderWidget(w.right)}</div></div>`;
   return '';
 }
 
@@ -403,7 +408,8 @@ function renderAll(){
   if(!d) return;
   const el = $('#sec-' + d.id);
   if(el) el.innerHTML = d.widgets.map(renderWidget).join('');
-  if(activeDashboard === 'overview') drawChart(lastSeries);
+  // canvas графика перерисовывается отдельно от innerHTML (2D-контекст, не HTML)
+  if(dashboardHasWidget(activeDashboard, 'timeseries')) drawChart(lastSeries);
 }
 
 /* ─────────────────── загрузка данных ─────────────────── */
@@ -442,7 +448,7 @@ async function refresh(){
 async function refreshChart(){
   try{
     await fetchTimeseries();
-    if(activeDashboard === 'overview') drawChart(lastSeries);
+    if(dashboardHasWidget(activeDashboard, 'timeseries')) drawChart(lastSeries);
   }catch(e){ /* не валим остальной дашборд, если график не смог обновиться */ }
 }
 
