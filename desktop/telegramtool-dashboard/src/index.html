@@ -245,14 +245,39 @@ function renderFunnel(){
   return `<div class="panel"><h2>Воронка</h2>${body}</div>`;
 }
 
+// Зум графика по Y — "цена деления" (шаг сетки) не фиксирована, а зависит
+// от yZoomFactor. 1 = автомасштаб по данным (как раньше), <1 = "расширить"
+// (крупнее масштаб, шаг сетки меньше), >1 = "сузить" (мельче масштаб, шаг крупнее).
+// Персистентный module-level стейт — переживает перерисовку виджета (innerHTML
+// пересоздаёт canvas каждые 5 сек при поллинге, но не сбрасывает эту переменную).
+let yZoomFactor = 1;
+const ZOOM_MIN = 0.05, ZOOM_MAX = 20;
+
+function zoomChart(mult){
+  yZoomFactor = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, yZoomFactor * mult));
+  drawChart(lastSeries); // без нового запроса к бэкенду — просто перерисовать
+}
+function resetZoomChart(){ yZoomFactor = 1; drawChart(lastSeries); }
+
 function renderTimeseriesPanel(){
-  return `<div class="panel"><h2>Динамика по дням</h2>
+  return `<div class="panel">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <h2 style="margin:0">Динамика по дням</h2>
+      <span class="sp"></span>
+      <span class="muted" id="chartStep" style="font-size:11px"></span>
+      <div class="seg">
+        <button onclick="zoomChart(1/1.4)" title="Расширить (крупнее масштаб)">+</button>
+        <button onclick="zoomChart(1.4)" title="Сузить (мельче масштаб)">−</button>
+        <button onclick="resetZoomChart()" title="Сбросить зум">⟲ авто</button>
+      </div>
+    </div>
     <canvas id="chart" height="220" style="width:100%"></canvas>
     <div class="sub" style="margin-top:8px">
       <span style="color:var(--acc)">■</span> отправлено
       <span style="color:var(--ok);margin-left:12px">■</span> ответов
       <span style="color:var(--sub);margin-left:12px">■</span> подписок
       <span style="color:var(--bad);margin-left:12px">■</span> ошибок
+      <span class="muted" style="margin-left:12px">· колесо мыши над графиком тоже зумит</span>
     </div></div>`;
 }
 
@@ -263,18 +288,35 @@ function drawChart(series){
   cv.width = W*dpr; cv.height = H*dpr;
   const g = cv.getContext('2d'); g.scale(dpr,dpr);
   g.clearRect(0,0,W,H);
-  if(!series || !series.length){ g.fillStyle='#8b95a5'; g.font='13px sans-serif';
-    g.fillText('нет данных за период',12,30); return; }
 
-  const pad = {l:40,r:10,t:12,b:24};
+  // колесо мыши — зум; canvas пересоздаётся при каждой перерисовке (innerHTML),
+  // поэтому переподвешиваем обработчик каждый раз через прямое присваивание
+  // (не addEventListener — иначе на старом узле копились бы старые слушатели).
+  cv.onwheel = (e) => {
+    e.preventDefault();
+    zoomChart(e.deltaY < 0 ? 1/1.15 : 1.15);
+  };
+
+  if(!series || !series.length){ g.fillStyle='#8b95a5'; g.font='13px sans-serif';
+    g.fillText('нет данных за период',12,30);
+    const stepEl = $('#chartStep'); if(stepEl) stepEl.textContent = '';
+    return;
+  }
+
+  const pad = {l:44,r:10,t:12,b:24};
   const val = (d,k) => MODE==='count' ? (d[k]||0) : (d[k]||0)/86400; // за день -> в сек внутри дня
-  const max = Math.max(1e-9, ...series.map(d=>Math.max(val(d,'sent'),val(d,'replied'),val(d,'failed'),val(d,'subscribed'))));
+  const dataMax = Math.max(1e-9, ...series.map(d=>Math.max(val(d,'sent'),val(d,'replied'),val(d,'failed'),val(d,'subscribed'))));
+  const max = dataMax * yZoomFactor;
   const x = i => pad.l + i*((W-pad.l-pad.r)/Math.max(1,series.length-1));
   const y = v => H-pad.b - (v/max)*(H-pad.t-pad.b);
 
+  const step = max/4;
+  const stepEl = $('#chartStep');
+  if(stepEl) stepEl.textContent = 'шаг сетки: ' + (MODE==='count' ? Math.round(step).toLocaleString('ru-RU') : step.toFixed(5));
+
   g.strokeStyle='#242a34'; g.lineWidth=1; g.fillStyle='#8b95a5'; g.font='10px sans-serif';
   for(let i=0;i<=4;i++){
-    const v = max*i/4, yy = y(v);
+    const v = step*i, yy = y(v);
     g.beginPath(); g.moveTo(pad.l,yy); g.lineTo(W-pad.r,yy); g.stroke();
     g.fillText(MODE==='count' ? Math.round(v) : v.toFixed(4), 4, yy+3);
   }
