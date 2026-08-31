@@ -77,6 +77,31 @@ def events(account: str | None = None, days: float = 14) -> list[dict]:
     return an.account_events(account=account, days=days)
 
 
+@router.get("/accounts/acquisition")
+def accounts_acquisition(bucket: str = Query(default="week", pattern="^(day|week|month)$"),
+                         days: float | None = None) -> dict:
+    """График закупки аккаунтов: покупки и выбытие во времени, накопительно
+    куплено/живо, траты. days не задан → всё время."""
+    return {
+        "bucket": bucket,
+        "series": an.acquisition_series(bucket=bucket, days=days),
+        "totals": an.totals(),
+    }
+
+
+@router.get("/accounts/cohorts")
+def accounts_cohorts(by: str = Query(default="price", pattern="^(price|seller)$"),
+                     days: float = 90) -> dict:
+    """Эффективность аккаунтов в разрезе цены или продавца: пробег, дни жизни,
+    % банов, reply-rate, выхлоп за рубль. days — окно для метрик рассылки."""
+    return {
+        "by": by,
+        "cohorts": an.account_cohorts(by=by, days=days),
+        "window_days": days,
+        "price_brackets": [list(b) for b in an.PRICE_BRACKETS],
+    }
+
+
 # ──────────────────────────────────────────────────────────────────────────
 #  Подписки на канал
 # ──────────────────────────────────────────────────────────────────────────
@@ -106,16 +131,86 @@ async def sync_all_channels(days: float = 30) -> list[dict]:
     return await channel_watch.sync_all_recent(days=days)
 
 
+@router.get("/subscriptions/timeseries")
+def subscriptions_timeseries(
+        bucket_minutes: int = Query(default=10, ge=1, le=60),
+        hours: float = Query(default=24, gt=0, le=720),
+        channel: str | None = None) -> dict:
+    """Темп подписок мелкими бакетами (деф. 10 мин) по реальному времени вступления.
+    Для дашборда «Подписки»."""
+    an.expire_pending()
+    out = an.subscription_series(bucket_minutes=bucket_minutes, hours=hours, channel=channel)
+    out["channels"] = an.subscription_channels(days=max(30, hours / 24))
+    return out
+
+
+@router.get("/replies")
+def replies(niche: str | None = None, days: float = 30,
+            bucket: str = Query(default="day", pattern="^(day|week)$"),
+            recent_limit: int = Query(default=40, ge=1, le=200)) -> dict:
+    """Дашборд «Ответы на сообщения»: тренд отклика по вариантам, разбивка исхода,
+    сводная таблица и лента последних ответов."""
+    an.expire_pending()
+    out = {
+        "trend": an.reply_series(niche=niche, days=days, bucket=bucket),
+        "by_variant": an.reply_breakdown(niche=niche, days=max(days, 90)),
+        "recent": an.recent_replies(niche=niche, limit=recent_limit),
+        "niches": an.reply_niches(),
+        "min_samples": bandit.MIN_SAMPLES,
+    }
+    if niche:
+        out["win_probability"] = bandit.win_probability(niche)
+    return out
+
+
+@router.get("/spend")
+def spend(days: float | None = None,
+          bucket: str = Query(default="week", pattern="^(day|week|month)$")) -> dict:
+    """Дашборд «Потраченные средства»: траты во времени + running-эффективность денег."""
+    an.expire_pending()
+    return {
+        **an.spend_series(days=days, bucket=bucket),
+        "by_seller": an.spend_by_seller(days=days),
+        "cpl_modeled": economics.cpl(days=days or 30).get("cpl_modeled"),
+        "cost_per_message": economics.cost_per_message(),
+    }
+
+
 class AccountCostIn(BaseModel):
     cost: float = Field(ge=0, description="Сколько стоил аккаунт")
-    source: str | None = Field(default=None, description="own | lzt | tdata")
+    source: str | None = Field(default=None, description="own | lzt | tdata | session")
+    seller: str | None = Field(default=None, description="Продавец (для разреза эффективности)")
+    acquired_at: str | None = Field(default=None, description="ISO-дата покупки")
 
 
 @router.post("/accounts/{name}/cost")
 def set_cost(name: str, body: AccountCostIn) -> dict:
     """Без цены аккаунтов CPL посчитать нельзя — проставьте её один раз."""
-    an.set_account_cost(name, body.cost, body.source)
+    an.set_account_cost(name, body.cost, body.source, body.seller, body.acquired_at)
     return {"ok": True, "account": an.get_account(name)}
+
+
+class AccountCostRow(AccountCostIn):
+    name: str = Field(min_length=1)
+
+
+@router.post("/accounts/costs")
+def set_costs_bulk(rows: list[AccountCostRow]) -> dict:
+    """Массово проставить цену/продавца/дату покупки — например, залить из своей
+    таблицы за один запрос."""
+    updated = []
+    for r in rows:
+        an.set_account_cost(r.name, r.cost, r.source, r.seller, r.acquired_at)
+        updated.append(r.name)
+    return {"ok": True, "updated": updated, "count": len(updated)}
+
+
+@router.post("/accounts/backfill")
+def backfill_accounts(force: bool = False) -> dict:
+    """Восстановить source/cost/seller/acquired_at для аккаунтов, заведённых до
+    появления учёта покупки: из accounts/*.txt (LZT) и mtime .session-файлов."""
+    from accounts.backfill import backfill_account_meta
+    return backfill_account_meta(force=force)
 
 
 @router.post("/accounts/sweep")

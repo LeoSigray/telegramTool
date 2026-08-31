@@ -174,11 +174,39 @@ def convert_all_accounts() -> dict:
         if result:
             print(f"  [ok]   {item_id} → sessions/{item_id}.session")
             stats["ok"].append(item_id)
+            _register_converted(item_id, account_data, txt_path)
         else:
             print(f"  [fail] {item_id} — не удалось извлечь auth_key")
             stats["fail"].append(item_id)
 
     return stats
+
+
+def _register_converted(item_id: str, account_data: dict, txt_path: str) -> None:
+    """Учёт покупки для аккаунта, сконвертированного из accounts/*.txt.
+    Не роняет конвертацию — всё в try."""
+    try:
+        from datetime import datetime, timezone
+        from data import analytics as an
+
+        cost = 0.0
+        raw_price = account_data.get("price") or account_data.get("rub_price")
+        if raw_price:
+            try:
+                cost = float(raw_price)
+            except ValueError:
+                pass
+        acquired = account_data.get("bought_at")
+        if not acquired:
+            try:
+                acquired = datetime.fromtimestamp(
+                    os.path.getmtime(txt_path), tz=timezone.utc).isoformat()
+            except OSError:
+                acquired = None
+        an.register_purchase(item_id, source="lzt", cost=cost,
+                             seller=account_data.get("seller"), acquired_at=acquired)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [analytics] не удалось записать покупку {item_id}: {e}")
 
 
 def convert_accounts_interactive():

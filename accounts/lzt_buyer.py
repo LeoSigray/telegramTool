@@ -3,6 +3,8 @@ import time
 import json
 import asyncio
 import sqlite3
+from datetime import datetime, timezone
+
 import requests
 
 from config import CONFIG, ACCOUNTS_DIR, SESSIONS_DIR
@@ -14,6 +16,50 @@ DC_IPS = {
     4: "149.154.167.91",
     5: "91.108.56.130",
 }
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def extract_price(item: dict) -> float | None:
+    """Цена аккаунта из ответа LZT (в рублях). Разные эндпоинты кладут её
+    в разные поля — пробуем по очереди."""
+    for key in ("rub_price", "price_rub", "priceWithSellerFeeLabel", "price"):
+        val = item.get(key)
+        if val in (None, "", 0):
+            continue
+        try:
+            return round(float(val), 2)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def extract_seller(item: dict) -> str | None:
+    """Идентификатор продавца из ответа LZT — для разреза эффективности по продавцам."""
+    seller = item.get("seller")
+    if isinstance(seller, dict):
+        return (seller.get("username") or seller.get("displayed_username")
+                or (str(seller["user_id"]) if seller.get("user_id") else None))
+    for key in ("seller_username", "seller_id", "user_id"):
+        if item.get(key):
+            return str(item[key])
+    return None
+
+
+def register_account_purchase(item: dict) -> None:
+    """Пишет метаданные покупки в аналитику (source=lzt, cost, seller, дата).
+    Не должно ронять покупку, поэтому всё в try."""
+    try:
+        from data import analytics as an
+        item_id = str(item.get("item_id", "")).strip()
+        if not item_id:
+            return
+        an.register_purchase(item_id, source="lzt", cost=extract_price(item) or 0.0,
+                             seller=extract_seller(item), acquired_at=_now_iso())
+    except Exception as e:  # noqa: BLE001
+        print(f"  [analytics] не удалось записать покупку {item.get('item_id')}: {e}")
 
 
 class LZTMarketAPI:
@@ -132,6 +178,14 @@ class LZTMarketAPI:
                 val = item.get(key)
                 if val:
                     f.write(f"{key}={val}\n")
+            # Метаданные покупки — для аналитики закупки/эффективности аккаунтов
+            price = extract_price(item)
+            if price is not None:
+                f.write(f"price={price}\n")
+            seller = extract_seller(item)
+            if seller:
+                f.write(f"seller={seller}\n")
+            f.write(f"bought_at={_now_iso()}\n")
         print(f"  Данные сохранены: accounts/{item_id}.txt")
 
 
@@ -267,7 +321,11 @@ def buy_accounts_interactive():
         if not item:
             continue
 
-        api.save_account_txt(item)
+        # search-результат (acc) часто несёт seller/price, которых нет в ответе
+        # fast-buy — подмешиваем их, не перетирая более авторитетные поля item
+        enriched = {**acc, **item}
+        api.save_account_txt(enriched)
+        register_account_purchase(enriched)
         session = create_session_for_item(item, api)
         bought += 1
 

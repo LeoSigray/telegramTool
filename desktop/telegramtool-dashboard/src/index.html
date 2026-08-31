@@ -104,6 +104,14 @@
   code{background:rgba(90,130,200,.10);padding:1px 5px;border-radius:4px;font-size:12px;color:var(--acc-deep)}
   .dash-section{display:none}
   .dash-section.active{display:block}
+
+  /* контролы внутри виджета (селектор бакета/разреза/окна) */
+  .wrow{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:2px 0 16px}
+  .wrow label{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+  .wrow select{font-size:12px;padding:5px 9px}
+  .legend{color:var(--dim);font-size:12px;margin-top:8px}
+  .legend b{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px}
+  .num-r{text-align:right;font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -153,12 +161,23 @@
    — без правки остального кода.
    ──────────────────────────────────────────────────────────────────── */
 const DASHBOARDS = [
-  { id: 'summary',    title: 'Сводка',     icon: '📊', widgets: [{type:'kpi_grid'}] },
-  { id: 'funnel',     title: 'Воронка',    icon: '🔻', widgets: [{type:'funnel'}] },
-  { id: 'timeseries', title: 'Динамика',   icon: '📈', widgets: [{type:'timeseries'}] },
-  { id: 'templates',  title: 'A/B тексты', icon: '✍️', widgets: [{type:'table_templates'}] },
-  { id: 'accounts',   title: 'Аккаунты',   icon: '👤', widgets: [{type:'table_accounts'}] },
+  { id: 'summary',      title: 'Сводка',                icon: '📊', widgets: [{type:'kpi_grid'}] },
+  { id: 'funnel',       title: 'Воронка',               icon: '🔻', widgets: [{type:'funnel'}] },
+  { id: 'timeseries',   title: 'Динамика',              icon: '📈', widgets: [{type:'timeseries'}] },
+  { id: 'templates',    title: 'A/B тексты',            icon: '✍️', widgets: [{type:'table_templates'}] },
+  { id: 'accounts',     title: 'Аккаунты',              icon: '👤', widgets: [{type:'table_accounts'}] },
+  { id: 'acquisition',  title: 'Закупка аккаунтов',      icon: '🛒', widgets: [{type:'acct_acquisition'}] },
+  { id: 'acct_quality', title: 'Эффективность аккаунтов', icon: '⚖️', widgets: [{type:'acct_cohorts'}] },
+  { id: 'subs',         title: 'Подписки',              icon: '📡', widgets: [{type:'subs_rate'}] },
+  { id: 'replies',      title: 'Ответы на сообщения',    icon: '💬', widgets: [{type:'replies_view'}] },
+  { id: 'spend',        title: 'Потраченные средства',   icon: '💸', widgets: [{type:'spend_view'}] },
 ];
+
+// Дашборды с интерактивными контролами (селекторы бакета/разреза/окна) —
+// сами управляют своим DOM: mount<X>() строит оболочку с контролами ОДИН раз,
+// paint<X>() обновляет только данные. renderAll() их не перерисовывает, чтобы
+// открытый дропдаун не закрывался на каждом опросе. См. refreshCustom().
+const CUSTOM_DASH = new Set(['acquisition', 'acct_quality', 'subs', 'replies', 'spend']);
 
 function dashboardHasWidget(id, type){
   const d = DASHBOARDS.find(x => x.id === id);
@@ -179,6 +198,19 @@ let TOKEN = '';
 let MODE = 'count'; // 'count' | 'rate'
 let activeDashboard = DASHBOARDS[0].id;
 let lastOverview = null, lastSeries = null, lastTpl = null, lastAcc = null;
+
+// данные и состояние контролов новых дашбордов
+let lastAcq = null, lastCohorts = null, lastSubs = null, lastReplies = null, lastSpend = null;
+let acqBucket = 'week';                       // day | week | month
+let cohortBy = 'price';                       // price | seller
+let cohortMetric = 'avg_lifetime_sends';      // какая метрика на bar-графике
+let subsHours = 24;                           // окно графика подписок: 24 | 72 | 168
+let subsChannel = '';                         // фильтр по каналу ('' = все)
+let replyNiche = '';                          // фильтр ниши для дашборда ответов
+let replyMetric = 'answer_rate';              // answer_rate | positive_rate | negative_rate | lead_rate
+let replyBucket = 'week';                     // day | week
+let spendBucket = 'month';                    // day | week | month
+let spendView = 'money';                      // money (траты) | efficiency (цена лида/сообщения)
 
 $('#niche').onchange = () => { refresh(); refreshChart(); }; // ниша влияет и на график тоже — обновить сразу, не ждать минуту
 $('#days').onchange = refresh;
@@ -403,6 +435,645 @@ function renderAccounts(){
   return `<div class="panel"><h2>Аккаунты</h2>${body}</div>`;
 }
 
+/* ═══════════════ Новые дашборды (self-managed, см. CUSTOM_DASH) ═══════════════
+   Оболочка (h2 + контролы + canvas/таблица) строится один раз в renderAll(),
+   дальше paint*() обновляет только данные. Контролы слушаются делегированием
+   на #sections (bindCustomControls в init), поэтому переживают перерисовку. */
+
+const SRC_COLOR = { lzt:'#3a86ff', tdata:'#7c5cff', session:'#1a9c6b', own:'#8b95a5', unknown:'#b8790a' };
+const CANVAS_AXIS = '#5f6f92', CANVAS_GRID = 'rgba(90,130,200,.16)';
+
+function canvasCtx(id, H){
+  const cv = $('#'+id); if(!cv) return null;
+  const dpr = window.devicePixelRatio||1, W = cv.clientWidth||600;
+  cv.width = W*dpr; cv.height = H*dpr;
+  const g = cv.getContext('2d'); g.scale(dpr,dpr); g.clearRect(0,0,W,H);
+  return {g, W, H};
+}
+function emptyCanvas(id, H, msg){
+  const c = canvasCtx(id, H); if(!c) return;
+  c.g.fillStyle = CANVAS_AXIS; c.g.font = '13px sans-serif';
+  c.g.fillText(msg, 12, 28);
+}
+
+/* ─── 1. Закупка аккаунтов ─────────────────────────────────────────────── */
+
+function renderAcqAcquisition(){
+  return `<div class="panel">
+    <h2>Закупка аккаунтов</h2>
+    <div class="wrow">
+      <label for="acqBucket">Бакет</label>
+      <select id="acqBucket">
+        <option value="day">день</option>
+        <option value="week" selected>неделя</option>
+        <option value="month">месяц</option>
+      </select>
+      <span id="acqTotals" class="muted" style="margin-left:auto"></span>
+    </div>
+    <canvas id="acqChart" height="260" style="width:100%"></canvas>
+    <div class="legend">
+      <span><b style="background:#3a86ff"></b>куплено за бакет</span>
+      <span style="margin-left:14px"><b style="background:#d43f4f"></b>выбыло за бакет</span>
+      <span style="margin-left:14px"><b style="background:#1a9c6b"></b>живо (накопительно, правая ось)</span>
+      <span style="margin-left:14px"><b style="background:#16213a"></b>куплено всего (накопительно, правая ось)</span>
+      <span id="acqSrcLegend"></span>
+    </div>
+    <div id="acqNote" class="sub" style="margin-top:10px"></div>
+  </div>`;
+}
+
+function paintAcq(){
+  if(!$('#acqChart')) return;
+  const bsel = $('#acqBucket'); if(bsel && bsel.value !== acqBucket) bsel.value = acqBucket;
+  const data = lastAcq;
+  if(!data){ emptyCanvas('acqChart', 260, 'загрузка…'); return; }
+  const series = data.series || [];
+  const t = data.totals || {};
+  const el = $('#acqTotals');
+  if(el) el.textContent = `всего ${fmt(t.accounts)} · живо ${fmt((t.accounts||0)-(t.accounts_dead||0))} · выбыло ${fmt(t.accounts_dead)} · потрачено ${money(t.spend)}`;
+  const srcLeg = $('#acqSrcLegend');
+  if(srcLeg){
+    const srcs = [...new Set(series.flatMap(d => Object.keys(d.by_source||{})))];
+    srcLeg.innerHTML = srcs.length > 1
+      ? '<span style="margin-left:14px;color:var(--dim)">источник:</span> ' +
+        srcs.map(s => `<span style="margin-left:6px"><b style="background:${SRC_COLOR[s]||'#8b95a5'}"></b>${s}</span>`).join('')
+      : '';
+  }
+  const note = $('#acqNote');
+  if(note){
+    if(!t.spend) note.innerHTML = 'Цена аккаунтов не проставлена — траты по нулям. '+
+      '<code>POST /analytics/accounts/backfill</code> или пункт 12 в меню «Управление аккаунтами».';
+    else note.textContent = '';
+  }
+  drawAcqChart(series);
+}
+
+function drawAcqChart(series){
+  if(!series.length){ emptyCanvas('acqChart', 260, 'нет закупок за период'); return; }
+  const c = canvasCtx('acqChart', 260); if(!c) return;
+  const {g, W, H} = c;
+  const pad = {l:40, r:44, t:14, b:34};
+  const plotW = W-pad.l-pad.r, plotH = H-pad.t-pad.b;
+
+  const sources = [...new Set(series.flatMap(d => Object.keys(d.by_source||{})))];
+  const maxBar = Math.max(1, ...series.map(d => Math.max(d.bought||0, d.dead||0)));
+  const maxCum = Math.max(1, ...series.map(d => Math.max(d.bought_cum||0, d.alive_cum||0)));
+  const n = series.length;
+  const slot = plotW / n;
+  const bw = Math.max(3, Math.min(26, slot * 0.30));   // ширина одной колонки пары
+  const xc = i => pad.l + (i + 0.5) * slot;
+  const yL = v => pad.t + plotH - (v/maxBar) * plotH;
+  const yR = v => pad.t + plotH - (v/maxCum) * plotH;
+  const barBottom = pad.t + plotH;
+
+  // сетка + левая ось (бары)
+  g.strokeStyle = CANVAS_GRID; g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif'; g.lineWidth = 1;
+  for(let i=0;i<=4;i++){
+    const v = Math.round(maxBar*i/4), y = yL(v);
+    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(W-pad.r, y); g.stroke();
+    g.fillText(v, 6, y+3);
+  }
+  // правая ось (накопительно)
+  g.fillStyle = '#16213a';
+  for(let i=0;i<=4;i++){
+    const v = Math.round(maxCum*i/4), y = yR(v);
+    g.fillText(v, W-pad.r+6, y+3);
+  }
+
+  // сгруппированная пара: «куплено» (слева, стопкой по source) и «выбыло» (справа)
+  series.forEach((d,i) => {
+    const xBought = xc(i) - bw - 1;
+    const xDead = xc(i) + 1;
+    if(sources.length > 1 && d.by_source){
+      let acc = 0;
+      sources.forEach(s => {
+        const val = d.by_source[s]||0; if(!val) return;
+        g.fillStyle = SRC_COLOR[s] || '#8b95a5';
+        g.fillRect(xBought, yL(acc+val), bw, (val/maxBar)*plotH);
+        acc += val;
+      });
+    } else if(d.bought){
+      g.fillStyle = '#3a86ff';
+      g.fillRect(xBought, yL(d.bought), bw, barBottom - yL(d.bought));
+    }
+    if(d.dead){
+      g.fillStyle = '#d43f4f';
+      g.fillRect(xDead, yL(d.dead), bw, barBottom - yL(d.dead));
+    }
+  });
+
+  // линии накопительно (правая ось)
+  const line = (key, col, width) => {
+    g.strokeStyle = col; g.lineWidth = width; g.beginPath();
+    series.forEach((d,i) => { const p = [xc(i), yR(d[key]||0)]; i ? g.lineTo(...p) : g.moveTo(...p); });
+    g.stroke();
+    g.fillStyle = col;
+    series.forEach((d,i) => { g.beginPath(); g.arc(xc(i), yR(d[key]||0), 2.4, 0, 7); g.fill(); });
+  };
+  line('bought_cum', '#16213a', 1.6);
+  line('alive_cum', '#1a9c6b', 2.4);
+
+  // подписи X (убираем ведущий '2026-')
+  g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif';
+  const stepX = Math.max(1, Math.ceil(n/8));
+  series.forEach((d,i) => { if(i%stepX===0){
+    const lbl = String(d.t).replace(/^\d{4}-/, '');
+    g.fillText(lbl, xc(i) - g.measureText(lbl).width/2, H-10);
+  }});
+}
+
+/* ─── 2. Эффективность аккаунтов (разрез по цене / продавцу) ────────────── */
+
+const COHORT_METRICS = [
+  ['avg_lifetime_sends', 'пробег (сообщений)'],
+  ['avg_days_alive',     'дней жизни'],
+  ['pct_dead',           '% банов'],
+  ['reply_rate',         'reply rate'],
+  ['sends_per_rub',      'сообщений за ₽'],
+  ['replies_per_rub',    'ответов за ₽'],
+];
+
+function renderAcctCohorts(){
+  return `<div class="panel">
+    <h2>Эффективность аккаунтов</h2>
+    <div class="wrow">
+      <label for="cohortBy">Разрез</label>
+      <select id="cohortBy">
+        <option value="price" selected>по цене</option>
+        <option value="seller">по продавцу</option>
+      </select>
+      <label for="cohortMetric" style="margin-left:6px">Метрика на графике</label>
+      <select id="cohortMetric">
+        ${COHORT_METRICS.map(([k,l]) => `<option value="${k}">${l}</option>`).join('')}
+      </select>
+    </div>
+    <canvas id="cohortChart" height="210" style="width:100%"></canvas>
+    <div id="cohortTable" class="tbl-scroll" style="margin-top:14px"></div>
+    <div class="sub" style="margin-top:10px">«за ₽» — суммарный выхлоп на потраченный рубль:
+      прямой ответ на вопрос, дешевле ли дешёвые аккаунты по факту. Корзины &lt;5 аккаунтов помечены — статистика шумная.</div>
+  </div>`;
+}
+
+function paintCohorts(){
+  if(!$('#cohortChart')) return;
+  const b1 = $('#cohortBy'); if(b1 && b1.value !== cohortBy) b1.value = cohortBy;
+  const b2 = $('#cohortMetric'); if(b2 && b2.value !== cohortMetric) b2.value = cohortMetric;
+  const data = lastCohorts;
+  const tbl = $('#cohortTable');
+  if(!data){ emptyCanvas('cohortChart', 210, 'загрузка…'); return; }
+  const rows = data.cohorts || [];
+  if(!rows.length){
+    emptyCanvas('cohortChart', 210, 'нет аккаунтов');
+    if(tbl) tbl.innerHTML = '<div class="muted">Нет аккаунтов с метаданными. Заполните через бэкофилл (пункт 12 в меню) или <code>POST /analytics/accounts/costs</code>.</div>';
+    return;
+  }
+  const metricLabel = (COHORT_METRICS.find(m => m[0]===cohortMetric)||[])[1] || cohortMetric;
+  drawCohortBars(rows, cohortMetric, metricLabel);
+
+  const per = v => v == null ? '—' : v.toFixed(2);
+  if(tbl) tbl.innerHTML = `<table><thead><tr>
+    <th>${cohortBy === 'price' ? 'Цена' : 'Продавец'}</th><th class="num-r">Аккаунтов</th>
+    <th class="num-r">Ср. цена</th><th class="num-r">Пробег</th><th class="num-r">Дней жизни</th>
+    <th class="num-r">% банов</th><th class="num-r">Reply rate</th>
+    <th class="num-r">Сообщ./₽</th><th class="num-r">Ответов/₽</th>
+    </tr></thead><tbody>` + rows.map(r => `<tr>
+      <td>${r.key}${r.enough_data ? '' : ' <span class="pill warn" style="font-size:9px;padding:1px 5px">мало данных</span>'}</td>
+      <td class="num-r">${fmt(r.accounts)}</td>
+      <td class="num-r">${money(r.avg_cost)}</td>
+      <td class="num-r">${fmt(r.avg_lifetime_sends)}</td>
+      <td class="num-r">${fmt(r.avg_days_alive)}</td>
+      <td class="num-r" style="color:${r.pct_dead>0.3?'var(--bad)':'inherit'}">${pct(r.pct_dead)}</td>
+      <td class="num-r">${pct(r.reply_rate)}</td>
+      <td class="num-r">${per(r.sends_per_rub)}</td>
+      <td class="num-r">${per(r.replies_per_rub)}</td>
+    </tr>`).join('') + '</tbody></table>';
+}
+
+function drawCohortBars(rows, metric, label){
+  const c = canvasCtx('cohortChart', 210); if(!c) return;
+  const {g, W, H} = c;
+  const pad = {l:44, r:12, t:16, b:40};
+  const plotW = W-pad.l-pad.r, plotH = H-pad.t-pad.b;
+  const vals = rows.map(r => r[metric] == null ? 0 : r[metric]);
+  const max = Math.max(1e-9, ...vals);
+  const n = rows.length;
+  const bw = Math.max(10, Math.min(70, plotW/n*0.6));
+  const xc = i => pad.l + (i+0.5)*(plotW/n);
+  const y = v => pad.t + plotH - (v/max)*plotH;
+  const isPct = metric === 'pct_dead' || metric === 'reply_rate';
+
+  g.strokeStyle = CANVAS_GRID; g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif'; g.lineWidth = 1;
+  for(let i=0;i<=4;i++){
+    const v = max*i/4, yy = y(v);
+    g.beginPath(); g.moveTo(pad.l, yy); g.lineTo(W-pad.r, yy); g.stroke();
+    g.fillText(isPct ? (v*100).toFixed(0)+'%' : (max<10 ? v.toFixed(1) : Math.round(v)), 4, yy+3);
+  }
+  g.fillText(label, pad.l, 11);
+
+  rows.forEach((r,i) => {
+    const v = r[metric] == null ? 0 : r[metric];
+    const x = xc(i) - bw/2;
+    g.fillStyle = r.enough_data ? '#3a86ff' : 'rgba(58,134,255,.35)';
+    g.fillRect(x, y(v), bw, plotH - (y(v)-pad.t));
+    g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif';
+    const txt = r[metric]==null ? '—' : (isPct ? (v*100).toFixed(0)+'%' : (v<10 ? v.toFixed(1) : fmt(Math.round(v))));
+    g.fillText(txt, xc(i) - g.measureText(txt).width/2, y(v) - 4);
+    const lbl = String(r.key).length > 12 ? String(r.key).slice(0,11)+'…' : String(r.key);
+    g.fillText(lbl, xc(i) - g.measureText(lbl).width/2, H-24);
+    g.fillStyle = '#9aa7c2';
+    g.fillText('n='+r.accounts, xc(i) - g.measureText('n='+r.accounts).width/2, H-11);
+    g.fillStyle = CANVAS_AXIS;
+  });
+}
+
+/* ─── 3. Подписки — темп по 10-минутным бакетам ────────────────────────── */
+
+function renderSubsRate(){
+  return `<div class="panel">
+    <h2>Подписки — темп по бакетам</h2>
+    <div class="wrow">
+      <label for="subsWindow">Окно</label>
+      <select id="subsWindow">
+        <option value="24" selected>24 часа</option>
+        <option value="72">3 дня</option>
+        <option value="168">7 дней</option>
+      </select>
+      <label for="subsChannel" style="margin-left:6px">Канал</label>
+      <select id="subsChannel"><option value="">все каналы</option></select>
+      <span id="subsMeta" class="muted" style="margin-left:auto"></span>
+    </div>
+    <canvas id="subsChart" height="240" style="width:100%"></canvas>
+    <div class="legend">
+      <span><b style="background:#3a86ff"></b>подписок за бакет</span>
+      <span style="margin-left:14px"><b style="background:#1a9c6b"></b>всего (накопительно)</span>
+      <span class="muted" style="margin-left:14px">· по реальному времени вступления · обновление раз в 20 сек</span>
+    </div>
+  </div>`;
+}
+
+function paintSubs(){
+  if(!$('#subsChart')) return;
+  const wsel = $('#subsWindow'); if(wsel && +wsel.value !== subsHours) wsel.value = String(subsHours);
+  const data = lastSubs;
+  if(!data){ emptyCanvas('subsChart', 240, 'загрузка…'); return; }
+
+  // наполняем список каналов один раз
+  const csel = $('#subsChannel');
+  if(csel && (data.channels||[]).length && csel.options.length <= 1){
+    data.channels.forEach(ch => csel.add(new Option(ch, ch)));
+  }
+  if(csel && csel.value !== subsChannel) csel.value = subsChannel;
+
+  const series = data.series || [];
+  const meta = $('#subsMeta');
+  if(meta){
+    const total = series.reduce((s,d) => s + (d.subs||0), 0);
+    meta.textContent = `бакет ${data.bucket_minutes} мин · ${fmt(total)} подписок за окно`;
+  }
+  drawSubsChart(series, data.bucket_minutes || 10);
+}
+
+function drawSubsChart(series, bucketMin){
+  if(!series.length){ emptyCanvas('subsChart', 240, 'нет подписок за окно'); return; }
+  const c = canvasCtx('subsChart', 240); if(!c) return;
+  const {g, W, H} = c;
+  const pad = {l:40, r:44, t:14, b:30};
+  const plotW = W-pad.l-pad.r, plotH = H-pad.t-pad.b;
+  const perSec = MODE === 'rate';
+  const barVal = d => perSec ? (d.subs||0)/(bucketMin*60) : (d.subs||0);
+  const maxBar = Math.max(perSec ? 1e-6 : 1, ...series.map(barVal));
+  const maxCum = Math.max(1, ...series.map(d => d.subs_cum||0));
+  const n = series.length;
+  const bw = Math.max(2, Math.min(24, plotW/n*0.7));
+  const xc = i => pad.l + (i+0.5)*(plotW/n);
+  const yL = v => pad.t + plotH - (v/maxBar)*plotH;
+  const yR = v => pad.t + plotH - (v/maxCum)*plotH;
+
+  g.strokeStyle = CANVAS_GRID; g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif'; g.lineWidth = 1;
+  for(let i=0;i<=4;i++){
+    const v = maxBar*i/4, y = yL(v);
+    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(W-pad.r, y); g.stroke();
+    g.fillText(perSec ? v.toFixed(4) : Math.round(v), 4, y+3);
+  }
+  g.fillStyle = '#1a9c6b';
+  for(let i=0;i<=4;i++){ const v = Math.round(maxCum*i/4); g.fillText(v, W-pad.r+6, yR(v)+3); }
+
+  series.forEach((d,i) => {
+    g.fillStyle = '#3a86ff';
+    const v = barVal(d), top = yL(v);
+    g.fillRect(xc(i)-bw/2, top, bw, pad.t+plotH-top);
+  });
+
+  g.strokeStyle = '#1a9c6b'; g.lineWidth = 2.4; g.beginPath();
+  series.forEach((d,i) => { const p = [xc(i), yR(d.subs_cum||0)]; i ? g.lineTo(...p) : g.moveTo(...p); });
+  g.stroke();
+
+  g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif';
+  const stepX = Math.max(1, Math.ceil(n/8));
+  series.forEach((d,i) => { if(i%stepX===0){
+    const hhmm = String(d.t).slice(11);  // 'YYYY-MM-DDTHH:MM' -> 'HH:MM'
+    g.fillText(hhmm, xc(i)-14, H-10);
+  }});
+}
+
+/* ─── 4. Ответы на сообщения ───────────────────────────────────────────── */
+
+const REPLY_METRICS = [
+  ['answer_rate',   'ответили (всего)'],
+  ['positive_rate', 'позитивно'],
+  ['negative_rate', 'отказ'],
+  ['lead_rate',     'лид'],
+];
+const VARIANT_COLORS = ['#3a86ff', '#1a9c6b', '#7c5cff', '#d99a2b', '#d43f4f', '#5f6f92'];
+const OUTCOME_BADGE = {
+  lead:     ['лид', '#1a9c6b'],
+  replied:  ['ответ', '#3a86ff'],
+  negative: ['отказ', '#d43f4f'],
+  no_reply: ['молчит', '#5f6f92'],
+  pending:  ['ждём', '#b8790a'],
+};
+
+function renderRepliesView(){
+  return `<div class="panel">
+    <h2>Ответы на сообщения</h2>
+    <div class="wrow">
+      <label for="replyNiche">Ниша</label>
+      <select id="replyNiche"><option value="">все ниши</option></select>
+      <label for="replyMetric" style="margin-left:6px">Метрика тренда</label>
+      <select id="replyMetric">
+        ${REPLY_METRICS.map(([k,l]) => `<option value="${k}">${l}</option>`).join('')}
+      </select>
+      <label for="replyBucket" style="margin-left:6px">Бакет</label>
+      <select id="replyBucket"><option value="day">день</option><option value="week" selected>неделя</option></select>
+    </div>
+    <canvas id="replyChart" height="220" style="width:100%"></canvas>
+    <div class="legend" id="replyLegend"></div>
+    <div id="replyVariants" class="tbl-scroll" style="margin-top:16px"></div>
+    <h3 style="margin:22px 0 6px;font-family:'IBM Plex Sans',sans-serif">Последние ответы</h3>
+    <div class="sub" style="margin-bottom:8px">Живой сигнал для подбора текста — и данные, на которых потом будет учиться нейронка-редактор.</div>
+    <div id="replyFeed"></div>
+  </div>`;
+}
+
+function paintReplies(){
+  if(!$('#replyChart')) return;
+  const d = lastReplies;
+  if(!d){ emptyCanvas('replyChart', 220, 'загрузка…'); return; }
+
+  const nsel = $('#replyNiche');
+  if(nsel && (d.niches||[]).length && nsel.options.length <= 1)
+    d.niches.forEach(n => nsel.add(new Option(n, n)));
+  if(nsel && nsel.value !== replyNiche) nsel.value = replyNiche;
+  const msel = $('#replyMetric'); if(msel && msel.value !== replyMetric) msel.value = replyMetric;
+  const bsel = $('#replyBucket'); if(bsel && bsel.value !== replyBucket) bsel.value = replyBucket;
+
+  drawReplyTrend(d.trend, replyMetric);
+
+  // легенда вариантов
+  const vars = d.trend.variants || [];
+  const leg = $('#replyLegend');
+  if(leg) leg.innerHTML = vars.map((v,i) =>
+    `<span style="margin-right:14px"><b style="background:${VARIANT_COLORS[i%VARIANT_COLORS.length]}"></b>вариант ${v}</span>`).join('')
+    + '<span class="muted" style="margin-left:6px">· свежие бакеты (моложе 72 ч) ещё дозревают</span>';
+
+  // сводная таблица по вариантам
+  const rows = d.by_variant || [];
+  const wp = d.win_probability || {};
+  const vt = $('#replyVariants');
+  if(vt) vt.innerHTML = !rows.length ? '<div class="muted">Нет отправок с шаблонами. Заведите варианты текста: <code>POST /analytics/templates</code>.</div>'
+    : `<table><thead><tr>
+      <th>Ниша</th><th>Вар.</th><th>Текст</th><th>Отпр.</th><th>Ответили</th>
+      <th>Ответ %</th><th>Позитив %</th><th>Отказ %</th><th>Лид %</th><th>P(лучший)</th>
+      </tr></thead><tbody>` + rows.map(r => `<tr>
+        <td class="muted">${r.niche}</td><td><b>${r.variant}</b></td>
+        <td class="muted" title="${(r.text||'').replace(/"/g,'&quot;')}">${(r.text||'').slice(0,42)}${(r.text||'').length>42?'…':''}</td>
+        <td class="num-r">${fmt(r.sent)}</td>
+        <td class="num-r">${fmt(r.answered)}${r.pending?` <span class="muted">+${r.pending} ждём</span>`:''}</td>
+        <td class="num-r">${pct(r.answer_rate)} ${r.decided>=d.min_samples?'':'<span class="pill warn">мало</span>'}</td>
+        <td class="num-r" style="color:var(--ok)">${pct(r.positive_rate)}</td>
+        <td class="num-r" style="color:${r.negative_rate>0.1?'var(--bad)':'inherit'}">${pct(r.negative_rate)}</td>
+        <td class="num-r">${pct(r.lead_rate)}</td>
+        <td class="num-r">${wp[r.variant]==null?'—':pct(wp[r.variant])}</td>
+      </tr>`).join('') + '</tbody></table>';
+
+  // лента ответов
+  const feed = $('#replyFeed');
+  const recent = d.recent || [];
+  if(feed) feed.innerHTML = !recent.length ? '<div class="muted">Ответов пока нет.</div>'
+    : recent.map(r => {
+      const [lbl,col] = OUTCOME_BADGE[r.outcome] || [r.outcome, '#5f6f92'];
+      const when = r.replied_at ? new Date(r.replied_at).toLocaleString('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : '';
+      return `<div style="padding:9px 0;border-bottom:1px solid var(--line-soft)">
+        <div style="font-size:12px;color:var(--dim);display:flex;gap:10px;flex-wrap:wrap">
+          <span>${r.target||''}</span>
+          <span>вариант <b style="color:var(--tx)">${r.variant||'—'}</b></span>
+          <span>${r.niche||''}</span>
+          <span style="color:${col}">■ ${lbl}</span>
+          <span style="margin-left:auto">${when}</span>
+        </div>
+        <div style="margin-top:2px">${(r.reply_text||'').replace(/</g,'&lt;').slice(0,240)}</div>
+      </div>`;
+    }).join('');
+}
+
+function drawReplyTrend(trend, metric){
+  const series = (trend && trend.series) || [];
+  const vars = (trend && trend.variants) || [];
+  if(!series.length){ emptyCanvas('replyChart', 220, 'нет данных за период'); return; }
+  const c = canvasCtx('replyChart', 220); if(!c) return;
+  const {g, W, H} = c;
+  const pad = {l:40, r:12, t:14, b:26};
+  const plotW = W-pad.l-pad.r, plotH = H-pad.t-pad.b;
+  const val = (d,v) => { const pv = d.per_variant[v]; return pv ? pv[metric] : null; };
+  let max = 0.05;
+  series.forEach(d => vars.forEach(v => { const x = val(d,v); if(x!=null && x>max) max = x; }));
+  const n = series.length;
+  const x = i => pad.l + (n===1 ? plotW/2 : i*(plotW/(n-1)));
+  const y = p => pad.t + plotH - (p/max)*plotH;
+
+  g.strokeStyle = CANVAS_GRID; g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif'; g.lineWidth = 1;
+  for(let i=0;i<=4;i++){ const v = max*i/4, yy = y(v);
+    g.beginPath(); g.moveTo(pad.l,yy); g.lineTo(W-pad.r,yy); g.stroke();
+    g.fillText((v*100).toFixed(0)+'%', 6, yy+3);
+  }
+  vars.forEach((v,vi) => {
+    const col = VARIANT_COLORS[vi%VARIANT_COLORS.length];
+    const line = series.map((d,i) => ({ i, p: val(d,v) })).filter(o => o.p != null);
+    if(!line.length) return;
+    g.strokeStyle = col; g.fillStyle = col; g.lineWidth = 2.4;
+    // сплошная линия до предпоследней точки
+    if(line.length > 1){
+      g.setLineDash([]); g.beginPath();
+      line.slice(0, -1).forEach((o,k) => { const px = x(o.i), py = y(o.p);
+        k ? g.lineTo(px,py) : g.moveTo(px,py); });
+      const pre = line[line.length-2];
+      g.lineTo(x(pre.i), y(pre.p));
+      g.stroke();
+      // последний сегмент пунктиром — бакет ещё дозревает
+      const last = line[line.length-1];
+      g.setLineDash([4,3]); g.beginPath();
+      g.moveTo(x(pre.i), y(pre.p)); g.lineTo(x(last.i), y(last.p)); g.stroke();
+      g.setLineDash([]);
+    }
+    line.forEach(o => { g.beginPath(); g.arc(x(o.i), y(o.p), 2.6, 0, 7); g.fill(); });
+  });
+  g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif';
+  const step = Math.max(1, Math.ceil(n/8));
+  series.forEach((d,i) => { if(i%step===0){
+    const lbl = String(d.t).replace(/^\d{4}-/, '');
+    g.fillText(lbl, x(i) - g.measureText(lbl).width/2, H-9);
+  }});
+}
+
+/* ─── 5. Потраченные средства ──────────────────────────────────────────── */
+
+function renderSpendView(){
+  return `<div class="panel">
+    <h2>Потраченные средства</h2>
+    <div class="wrow">
+      <div class="seg" id="spendViewSeg">
+        <button data-v="money" class="active">траты</button>
+        <button data-v="efficiency">эффективность денег</button>
+      </div>
+      <label for="spendBucket" style="margin-left:6px">Бакет</label>
+      <select id="spendBucket">
+        <option value="week">неделя</option><option value="month" selected>месяц</option>
+      </select>
+      <span id="spendTotals" class="muted" style="margin-left:auto"></span>
+    </div>
+    <canvas id="spendChart" height="250" style="width:100%"></canvas>
+    <div class="legend" id="spendLegend"></div>
+    <div id="spendSellers" class="tbl-scroll" style="margin-top:16px"></div>
+  </div>`;
+}
+
+function paintSpend(){
+  if(!$('#spendChart')) return;
+  const d = lastSpend;
+  if(!d){ emptyCanvas('spendChart', 250, 'загрузка…'); return; }
+  const bsel = $('#spendBucket'); if(bsel && bsel.value !== spendBucket) bsel.value = spendBucket;
+  [...($('#spendViewSeg')?.children||[])].forEach(b => b.classList.toggle('active', b.dataset.v === spendView));
+
+  const t = d.totals || {};
+  const el = $('#spendTotals');
+  if(el) el.textContent = `всего ${money(t.spend)} · ${fmt(t.accounts)} аккаунтов · цена лида ~${money(d.cpl_modeled)}`;
+
+  const leg = $('#spendLegend');
+  if(spendView === 'money'){
+    drawSpendMoney(d.series);
+    const srcs = [...new Set((d.series||[]).flatMap(s => Object.keys(s.by_source||{})))];
+    if(leg) leg.innerHTML = '<span><b style="background:#3a86ff"></b>потрачено за бакет</span>'
+      + '<span style="margin-left:14px"><b style="background:#16213a"></b>накопительно</span>'
+      + (srcs.length>1 ? '<span style="margin-left:14px;color:var(--dim)">источник:</span> '
+        + srcs.map(s => `<span style="margin-left:6px"><b style="background:${SRC_COLOR[s]||'#8b95a5'}"></b>${s}</span>`).join('') : '');
+  } else {
+    drawSpendEfficiency(d.series);
+    if(leg) leg.innerHTML = '<span><b style="background:#d43f4f"></b>цена лида ₽ (running)</span>'
+      + '<span style="margin-left:14px"><b style="background:#3a86ff"></b>цена сообщения ₽ (running)</span>'
+      + '<span class="muted" style="margin-left:8px">· потрачено ÷ выхлоп нарастающим итогом</span>';
+  }
+
+  const sellers = d.by_seller || [];
+  const st = $('#spendSellers');
+  if(st) st.innerHTML = !sellers.length ? ''
+    : `<table><thead><tr><th>Продавец</th><th class="num-r">Аккаунтов</th><th class="num-r">Потрачено</th><th class="num-r">Средний чек</th></tr></thead><tbody>`
+      + sellers.map(s => `<tr><td>${s.seller}</td><td class="num-r">${fmt(s.accounts)}</td><td class="num-r">${money(s.spend)}</td><td class="num-r">${money(s.avg_cost)}</td></tr>`).join('')
+      + '</tbody></table>';
+}
+
+function drawSpendMoney(series){
+  if(!series.length){ emptyCanvas('spendChart', 250, 'нет трат за период'); return; }
+  const c = canvasCtx('spendChart', 250); if(!c) return;
+  const {g, W, H} = c;
+  const pad = {l:52, r:48, t:14, b:28};
+  const plotW = W-pad.l-pad.r, plotH = H-pad.t-pad.b;
+  const srcs = [...new Set(series.flatMap(s => Object.keys(s.by_source||{})))];
+  const maxBar = Math.max(1, ...series.map(s => s.spend||0));
+  const maxCum = Math.max(1, ...series.map(s => s.spend_cum||0));
+  const n = series.length, slot = plotW/n;
+  const bw = Math.max(6, Math.min(46, slot*0.5));
+  const xc = i => pad.l + (i+0.5)*slot;
+  const yL = v => pad.t + plotH - (v/maxBar)*plotH;
+  const yR = v => pad.t + plotH - (v/maxCum)*plotH;
+  const bottom = pad.t + plotH;
+
+  g.strokeStyle = CANVAS_GRID; g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif'; g.lineWidth = 1;
+  for(let i=0;i<=4;i++){ const v = maxBar*i/4, yy = yL(v);
+    g.beginPath(); g.moveTo(pad.l,yy); g.lineTo(W-pad.r,yy); g.stroke();
+    g.fillText(Math.round(v)+'₽', 4, yy+3);
+  }
+  g.fillStyle = '#16213a';
+  for(let i=0;i<=4;i++){ const v = Math.round(maxCum*i/4); g.fillText(v+'₽', W-pad.r+5, yR(v)+3); }
+
+  series.forEach((s,i) => {
+    const x = xc(i) - bw/2;
+    if(srcs.length > 1){
+      let acc = 0;
+      srcs.forEach(src => { const v = s.by_source[src]||0; if(!v) return;
+        g.fillStyle = SRC_COLOR[src]||'#8b95a5';
+        g.fillRect(x, yL(acc+v), bw, (v/maxBar)*plotH); acc += v;
+      });
+    } else { g.fillStyle = '#3a86ff'; g.fillRect(x, yL(s.spend||0), bw, bottom - yL(s.spend||0)); }
+  });
+  g.strokeStyle = '#16213a'; g.lineWidth = 2; g.beginPath();
+  series.forEach((s,i) => { const p = [xc(i), yR(s.spend_cum||0)]; i?g.lineTo(...p):g.moveTo(...p); });
+  g.stroke();
+  g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif';
+  const step = Math.max(1, Math.ceil(n/8));
+  series.forEach((s,i) => { if(i%step===0){ const l = String(s.t).replace(/^\d{4}-/,'');
+    g.fillText(l, xc(i) - g.measureText(l).width/2, H-10); }});
+}
+
+function drawSpendEfficiency(series){
+  const pts = series.filter(s => s.cpm_running != null);
+  if(!pts.length){ emptyCanvas('spendChart', 250, 'нет данных: нужны и траты, и отправки'); return; }
+  const c = canvasCtx('spendChart', 250); if(!c) return;
+  const {g, W, H} = c;
+  const pad = {l:50, r:50, t:14, b:28};
+  const plotW = W-pad.l-pad.r, plotH = H-pad.t-pad.b;
+  const cpl = pts.map(s => s.cpl_running).filter(v => v!=null);
+  const cpm = pts.map(s => s.cpm_running);
+  const maxL = Math.max(0.01, ...cpl);
+  const maxM = Math.max(0.001, ...cpm);
+  const n = pts.length;
+  const x = i => pad.l + (n===1?plotW/2:i*(plotW/(n-1)));
+  const yL = v => pad.t + plotH - (v/maxL)*plotH;
+  const yR = v => pad.t + plotH - (v/maxM)*plotH;
+
+  g.strokeStyle = CANVAS_GRID; g.fillStyle = '#d43f4f'; g.font = '10px sans-serif'; g.lineWidth = 1;
+  for(let i=0;i<=4;i++){ const v = maxL*i/4, yy = yL(v);
+    g.beginPath(); g.moveTo(pad.l,yy); g.lineTo(W-pad.r,yy); g.strokeStyle=CANVAS_GRID; g.stroke();
+    g.fillText(Math.round(v)+'₽', 4, yy+3);
+  }
+  g.fillStyle = '#3a86ff';
+  for(let i=0;i<=4;i++){ const v = maxM*i/4; g.fillText(v.toFixed(2), W-pad.r+5, yR(v)+3); }
+
+  const line = (arr, yfn, col) => {
+    g.strokeStyle = col; g.fillStyle = col; g.lineWidth = 2.4; g.beginPath();
+    let started = false;
+    pts.forEach((s,i) => { const v = arr(s); if(v==null) return;
+      const p = [x(i), yfn(v)]; started ? g.lineTo(...p) : (g.moveTo(...p), started = true); });
+    g.stroke();
+    pts.forEach((s,i) => { const v = arr(s); if(v==null) return;
+      g.beginPath(); g.arc(x(i), yfn(v), 2.6, 0, 7); g.fill(); });
+  };
+  line(s => s.cpl_running, yL, '#d43f4f');
+  line(s => s.cpm_running, yR, '#3a86ff');
+
+  g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif';
+  const step = Math.max(1, Math.ceil(n/8));
+  pts.forEach((s,i) => { if(i%step===0){ const l = String(s.t).replace(/^\d{4}-/,'');
+    g.fillText(l, x(i) - g.measureText(l).width/2, H-10); }});
+}
+
+function paintCustom(id){
+  if(id === 'acquisition') paintAcq();
+  else if(id === 'acct_quality') paintCohorts();
+  else if(id === 'subs') paintSubs();
+  else if(id === 'replies') paintReplies();
+  else if(id === 'spend') paintSpend();
+}
+
 // маппинг type -> рендерер (WIDGET TYPE REGISTRY)
 function renderWidget(w){
   if(w.type === 'kpi_grid') return renderKpiGrid();
@@ -410,6 +1081,11 @@ function renderWidget(w){
   if(w.type === 'timeseries') return renderTimeseriesPanel();
   if(w.type === 'table_templates') return renderTemplates();
   if(w.type === 'table_accounts') return renderAccounts();
+  if(w.type === 'acct_acquisition') return renderAcqAcquisition();
+  if(w.type === 'acct_cohorts') return renderAcctCohorts();
+  if(w.type === 'subs_rate') return renderSubsRate();
+  if(w.type === 'replies_view') return renderRepliesView();
+  if(w.type === 'spend_view') return renderSpendView();
   return '';
 }
 
@@ -419,7 +1095,7 @@ function buildNav(){
   const sel = $('#dashSelect');
   sel.innerHTML = DASHBOARDS.map(d =>
     `<option value="${d.id}" ${d.id===activeDashboard?'selected':''}>${d.icon} ${d.title}</option>`).join('');
-  sel.onchange = () => { activeDashboard = sel.value; buildSections(); renderAll(); };
+  sel.onchange = () => { activeDashboard = sel.value; buildSections(); renderAll(); refreshCustom(); };
 }
 
 function buildSections(){
@@ -431,9 +1107,71 @@ function renderAll(){
   const d = DASHBOARDS.find(x => x.id === activeDashboard);
   if(!d) return;
   const el = $('#sec-' + d.id);
-  if(el) el.innerHTML = d.widgets.map(renderWidget).join('');
+  if(!el) return;
+  if(CUSTOM_DASH.has(d.id)){
+    // оболочку с контролами строим один раз — иначе открытый дропдаун
+    // закрывался бы на каждом опросе; дальше только paint данных
+    if(!el.dataset.mounted){
+      el.innerHTML = d.widgets.map(renderWidget).join('');
+      el.dataset.mounted = '1';
+    }
+    paintCustom(d.id);
+    return;
+  }
+  el.innerHTML = d.widgets.map(renderWidget).join('');
   // canvas графика перерисовывается отдельно от innerHTML (2D-контекст, не HTML)
   if(dashboardHasWidget(activeDashboard, 'timeseries')) drawChart(lastSeries);
+}
+
+/* контролы новых дашбордов — делегирование на #sections (стабильный родитель),
+   поэтому слушатели переживают перерисовку оболочки */
+function bindCustomControls(){
+  $('#sections').addEventListener('change', (e) => {
+    const t = e.target;
+    if(t.id === 'acqBucket'){ acqBucket = t.value; refreshCustom(); }
+    else if(t.id === 'cohortBy'){ cohortBy = t.value; refreshCustom(); }
+    else if(t.id === 'cohortMetric'){ cohortMetric = t.value; paintCohorts(); }
+    else if(t.id === 'subsWindow'){ subsHours = Number(t.value); refreshCustom(); }
+    else if(t.id === 'subsChannel'){ subsChannel = t.value; refreshCustom(); }
+    else if(t.id === 'replyNiche'){ replyNiche = t.value; refreshCustom(); }
+    else if(t.id === 'replyMetric'){ replyMetric = t.value; paintReplies(); }
+    else if(t.id === 'replyBucket'){ replyBucket = t.value; refreshCustom(); }
+    else if(t.id === 'spendBucket'){ spendBucket = t.value; refreshCustom(); }
+  });
+  // сегментированный тумблер «траты / эффективность» — это click, не change
+  $('#sections').addEventListener('click', (e) => {
+    const b = e.target.closest('#spendViewSeg button[data-v]');
+    if(!b) return;
+    spendView = b.dataset.v;
+    paintSpend();
+  });
+}
+
+async function fetchCustom(id){
+  if(id === 'acquisition'){
+    lastAcq = await api(`/analytics/accounts/acquisition?bucket=${acqBucket}`);
+  } else if(id === 'acct_quality'){
+    lastCohorts = await api(`/analytics/accounts/cohorts?by=${cohortBy}`);
+  } else if(id === 'subs'){
+    const q = subsChannel ? '&channel='+encodeURIComponent(subsChannel) : '';
+    lastSubs = await api(`/analytics/subscriptions/timeseries?bucket_minutes=10&hours=${subsHours}${q}`);
+  } else if(id === 'replies'){
+    const q = replyNiche ? '&niche='+encodeURIComponent(replyNiche) : '';
+    lastReplies = await api(`/analytics/replies?days=60&bucket=${replyBucket}${q}`);
+  } else if(id === 'spend'){
+    lastSpend = await api(`/analytics/spend?bucket=${spendBucket}`);
+  }
+}
+
+async function refreshCustom(){
+  if(!CUSTOM_DASH.has(activeDashboard)) return;
+  await ensureToken();
+  if(!TOKEN){ setLive(false,'бэкенд не найден — запустите ./run_api.sh'); return; }
+  try{
+    await fetchCustom(activeDashboard);
+    renderAll();
+    setLive(true, 'обновлено '+new Date().toLocaleTimeString('ru-RU'));
+  }catch(e){ setLive(false, 'ошибка: '+e.message); }
 }
 
 /* ─────────────────── токен: без UI, читается напрямую с диска ─────────────────── */
@@ -447,11 +1185,22 @@ function renderAll(){
 // приложения, достаточно просто запустить его: токен подхватится сам
 // на следующем опросе, без перезапуска приложения.
 async function ensureToken(){
-  if(TOKEN || !window.__TAURI__) return;
+  if(TOKEN) return;
+  if(window.__TAURI__){
+    try{
+      const t = await window.__TAURI__.core.invoke('read_local_token');
+      if(t){ TOKEN = t; return; }
+    }catch(e){ /* бэкенд ещё не запускался ни разу — файла нет, это нормально */ }
+  }
+  // Фолбэк для запуска в обычном браузере (локальная разработка/проверка
+  // дашбордов без Tauri): токен из ?token=... или localStorage. В настоящем
+  // Tauri-окне сюда не доходит. Консистентно с веб-версией api/dashboard.html.
   try{
-    const t = await window.__TAURI__.core.invoke('read_local_token');
-    if(t) TOKEN = t;
-  }catch(e){ /* бэкенд ещё не запускался ни разу — файла нет, это нормально */ }
+    const urlTok = new URLSearchParams(location.search).get('token');
+    if(urlTok){ TOKEN = urlTok; localStorage.setItem('tt_token', urlTok); return; }
+    const stored = localStorage.getItem('tt_token');
+    if(stored) TOKEN = stored;
+  }catch(e){ /* localStorage может быть недоступен — не критично */ }
 }
 
 /* ─────────────────── загрузка данных ─────────────────── */
@@ -499,10 +1248,13 @@ async function refreshChart(){
 
 buildNav();
 buildSections();
+bindCustomControls();
 refresh();
 refreshChart();
+refreshCustom();
 setInterval(refresh, 5000);
 setInterval(refreshChart, 60000);
+setInterval(refreshCustom, 20000);   // «Подписки» ощущаются живыми; закупка/эффективность — тоже недорого
 </script>
 </body>
 </html>

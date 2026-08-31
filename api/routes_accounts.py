@@ -58,6 +58,16 @@ def _unique_path(directory: str, base: str) -> str:
     return candidate
 
 
+def _register_import(name: str, source: str) -> None:
+    """Учёт появления аккаунта (source=tdata/session) в аналитике закупки.
+    Импорт не должен падать из-за аналитики."""
+    try:
+        from data import analytics as an
+        an.register_purchase(name, source=source, cost=0.0)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @router.post("/import-tdata")
 async def import_tdata_zip(file: UploadFile = File(...)) -> dict:
     """
@@ -108,6 +118,7 @@ async def import_tdata_zip(file: UploadFile = File(...)) -> dict:
             ok, err, info = convert_tdata(session_name, tpath, sessions_dir=SESSIONS_DIR)
             entry = {"name": session_name, "source": raw_name}
             if ok:
+                _register_import(session_name, "tdata")
                 imported.append({**entry, "user_id": info.get("user_id"), "dc_id": info.get("dc_id")})
             else:
                 failed.append({**entry, "error": err})

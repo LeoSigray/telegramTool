@@ -48,11 +48,18 @@ async def _diff(client, entity, channel: str) -> dict:
     known = an.known_channel_members(channel)
     current: list[str] = []
     new_ids: list[str] = []
+    joined: dict[str, str] = {}  # uid -> реальная дата вступления (participant.date)
 
     try:
         async for user in client.iter_participants(entity, aggressive=True):
             uid = str(user.id)
             current.append(uid)
+            pdate = getattr(getattr(user, "participant", None), "date", None)
+            if pdate is not None:
+                try:
+                    joined[uid] = pdate.isoformat()
+                except (AttributeError, ValueError):
+                    pass
             if uid not in known:
                 new_ids.append(uid)
     except FloodWaitError as e:
@@ -61,14 +68,19 @@ async def _diff(client, entity, channel: str) -> dict:
 
     matched = 0
     for uid in new_ids:
-        if an.record_subscription(uid, channel):
+        if an.record_subscription(uid, channel, joined_at=joined.get(uid)):
             matched += 1
 
+    # Telegram не шлёт событие подписки — раньше subscribed_at ставилось временем
+    # часового синка. Теперь одноразово чиним ранее сматченные подписки этого
+    # канала на реальное время вступления (для 10-минутного графика это критично).
+    corrected = an.correct_subscription_dates(channel, joined)
+
     an.remember_channel_members(channel, current)
-    log.info("[channel_watch] %s: участников=%d новых=%d совпало_с_рассылкой=%d",
-             channel, len(current), len(new_ids), matched)
-    return {"channel": channel, "checked": len(current),
-            "new_members": len(new_ids), "matched": matched}
+    log.info("[channel_watch] %s: участников=%d новых=%d совпало_с_рассылкой=%d исправлено_дат=%d",
+             channel, len(current), len(new_ids), matched, corrected)
+    return {"channel": channel, "checked": len(current), "new_members": len(new_ids),
+            "matched": matched, "corrected_dates": corrected}
 
 
 async def sync_all_recent(days: float = 30) -> list[dict]:

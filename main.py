@@ -119,6 +119,7 @@ def handle_accounts():
         print("  9. Привязать личный канал к профилю")
         print(" 10. Конвертировать accounts → sessions")
         print(" 11. Скачать сессии с LZT (для уже купленных)")
+        print(" 12. Бэкофилл аналитики закупки (цена/продавец/дата из файлов)")
         print("  0. Назад")
 
         choice = input("\nВыбор: ").strip()
@@ -154,6 +155,8 @@ def handle_accounts():
             convert_accounts_interactive()
         elif choice == "11":
             _handle_download_sessions_lzt()
+        elif choice == "12":
+            _handle_backfill_account_analytics()
         elif choice == "0":
             break
 
@@ -236,6 +239,10 @@ def _handle_import_sessions():
         return
 
     from data.db import save_session_from_file as _db_save
+    try:
+        from data import analytics as _an
+    except Exception:  # noqa: BLE001
+        _an = None
     copied = skipped = db_saved = 0
     for src in found:
         dst = os.path.join(SESSIONS_DIR, os.path.basename(src))
@@ -249,6 +256,13 @@ def _handle_import_sessions():
         # Сохраняем / обновляем в БД в любом случае
         if _db_save(dst):
             db_saved += 1
+        # Учёт появления аккаунта для аналитики закупки
+        if _an is not None:
+            try:
+                _an.register_purchase(os.path.splitext(os.path.basename(dst))[0],
+                                      source="session", cost=0.0)
+            except Exception:  # noqa: BLE001
+                pass
 
     for t in tmp_dirs:
         shutil.rmtree(t, ignore_errors=True)
@@ -532,7 +546,7 @@ def _handle_set_personal_channel():
 
 def _handle_download_sessions_lzt():
     """Скачивает .session с LZT для аккаунтов из accounts/ у которых ещё нет сессии."""
-    from accounts.lzt_buyer import LZTMarketAPI, login_via_code
+    from accounts.lzt_buyer import LZTMarketAPI, login_via_code, register_account_purchase
 
     print("\n--- Скачать сессии с LZT ---")
 
@@ -596,12 +610,29 @@ def _handle_download_sessions_lzt():
         session_path = asyncio.run(login_via_code(item, api))
         if session_path:
             print(f"  [{item_id}] ✓ Сессия готова")
+            register_account_purchase({**item, "item_id": item_id})
             ok += 1
         else:
             print(f"  [{item_id}] ✗ Не удалось создать сессию")
             fail += 1
 
     print(f"\nГотово: {ok} успешно, {fail} ошибок")
+
+
+def _handle_backfill_account_analytics():
+    """Восстанавливает source/cost/seller/acquired_at для аккаунтов, заведённых
+    до появления учёта покупки (из accounts/*.txt и mtime .session)."""
+    from accounts.backfill import backfill_account_meta
+
+    print("\n--- Бэкофилл аналитики закупки аккаунтов ---")
+    force = input("Перезаписать даже уже заполненные записи? (y/N): ").strip().lower() == "y"
+    res = backfill_account_meta(force=force)
+    print(f"\nОбновлено: {res['changed_count']}, пропущено: {res['skipped']}")
+    for row in res["changed"]:
+        est = " (дата оценочная)" if row.get("estimated_date") else ""
+        print(f"  {row['account']}: "
+              f"source={row.get('source', '—')} cost={row.get('cost', '—')} "
+              f"seller={row.get('seller', '—')} acquired_at={row.get('acquired_at', '—')}{est}")
 
 
 # ========================================================================
