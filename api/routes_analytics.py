@@ -148,7 +148,7 @@ def subscriptions_timeseries(
 def replies(niche: str | None = None, days: float = 30,
             bucket: str = Query(default="day", pattern="^(day|week)$"),
             recent_limit: int = Query(default=40, ge=1, le=200)) -> dict:
-    """Дашборд «Ответы на сообщения»: тренд отклика по вариантам, разбивка исхода,
+    """Дашборд «Ответы на сообщения»: тренд исхода по вариантам (успех/отказ/блок),
     сводная таблица и лента последних ответов."""
     an.expire_pending()
     out = {
@@ -161,6 +161,13 @@ def replies(niche: str | None = None, days: float = 30,
     if niche:
         out["win_probability"] = bandit.win_probability(niche)
     return out
+
+
+@router.post("/replies/reclassify")
+def replies_reclassify() -> dict:
+    """Прогнать обновлённые списки фраз отказа (HARD_OPT_OUT / SOFT_REJECT в
+    data/analytics.py) по уже сохранённым текстам ответов. Пополняет стоп-лист."""
+    return an.reclassify_replies()
 
 
 @router.get("/spend")
@@ -318,8 +325,9 @@ def forecast(targets_remaining: int = Query(..., ge=0), niche: str | None = None
 # ──────────────────────────────────────────────────────────────────────────
 
 class OutcomeIn(BaseModel):
+    # новые имена + старые (replied/negative) для обратной совместимости с CRM
     send_id: int
-    outcome: str = Field(pattern="^(lead|negative|replied|no_reply)$")
+    outcome: str = Field(pattern="^(lead|success|rejected|blocked|no_reply|replied|negative)$")
 
 
 @router.post("/outcome")

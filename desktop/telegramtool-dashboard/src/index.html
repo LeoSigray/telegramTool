@@ -207,7 +207,7 @@ let cohortMetric = 'avg_lifetime_sends';      // какая метрика на 
 let subsHours = 24;                           // окно графика подписок: 24 | 72 | 168
 let subsChannel = '';                         // фильтр по каналу ('' = все)
 let replyNiche = '';                          // фильтр ниши для дашборда ответов
-let replyMetric = 'answer_rate';              // answer_rate | positive_rate | negative_rate | lead_rate
+let replyMetric = 'success_rate';             // success_rate | reject_rate | blocked_rate | answer_rate | lead_rate
 let replyBucket = 'week';                     // day | week
 let spendBucket = 'month';                    // day | week | month
 let spendView = 'money';                      // money (траты) | efficiency (цена лида/сообщения)
@@ -779,18 +779,25 @@ function drawSubsChart(series, bucketMin){
 /* ─── 4. Ответы на сообщения ───────────────────────────────────────────── */
 
 const REPLY_METRICS = [
-  ['answer_rate',   'ответили (всего)'],
-  ['positive_rate', 'позитивно'],
-  ['negative_rate', 'отказ'],
-  ['lead_rate',     'лид'],
+  ['success_rate', 'успех'],
+  ['reject_rate',  'отказ'],
+  ['blocked_rate', 'блок'],
+  ['answer_rate',  'ответили (успех+отказ)'],
+  ['lead_rate',    'лид'],
 ];
 const VARIANT_COLORS = ['#3a86ff', '#1a9c6b', '#7c5cff', '#d99a2b', '#d43f4f', '#5f6f92'];
+// цвета исходов — общие для ленты и стековой разбивки
+const OUTCOME_COLOR = { success:'#1a9c6b', lead:'#127a53', rejected:'#d43f4f', blocked:'#8a5a06', no_reply:'#9aa7c2', pending:'#b8790a' };
 const OUTCOME_BADGE = {
-  lead:     ['лид', '#1a9c6b'],
-  replied:  ['ответ', '#3a86ff'],
-  negative: ['отказ', '#d43f4f'],
-  no_reply: ['молчит', '#5f6f92'],
-  pending:  ['ждём', '#b8790a'],
+  lead:     ['лид', OUTCOME_COLOR.lead],
+  success:  ['успех', OUTCOME_COLOR.success],
+  rejected: ['отказ', OUTCOME_COLOR.rejected],
+  blocked:  ['блок', OUTCOME_COLOR.blocked],
+  no_reply: ['молчит', OUTCOME_COLOR.no_reply],
+  pending:  ['ждём', OUTCOME_COLOR.pending],
+  // старые имена на случай непереразмеченных строк
+  replied:  ['успех', OUTCOME_COLOR.success],
+  negative: ['отказ', OUTCOME_COLOR.rejected],
 };
 
 function renderRepliesView(){
@@ -808,6 +815,8 @@ function renderRepliesView(){
     </div>
     <canvas id="replyChart" height="220" style="width:100%"></canvas>
     <div class="legend" id="replyLegend"></div>
+    <h3 style="margin:22px 0 8px;font-family:'IBM Plex Sans',sans-serif">Разбивка исхода по вариантам</h3>
+    <div id="replyBreakdown"></div>
     <div id="replyVariants" class="tbl-scroll" style="margin-top:16px"></div>
     <h3 style="margin:22px 0 6px;font-family:'IBM Plex Sans',sans-serif">Последние ответы</h3>
     <div class="sub" style="margin-bottom:8px">Живой сигнал для подбора текста — и данные, на которых потом будет учиться нейронка-редактор.</div>
@@ -836,22 +845,42 @@ function paintReplies(){
     `<span style="margin-right:14px"><b style="background:${VARIANT_COLORS[i%VARIANT_COLORS.length]}"></b>вариант ${v}</span>`).join('')
     + '<span class="muted" style="margin-left:6px">· свежие бакеты (моложе 72 ч) ещё дозревают</span>';
 
-  // сводная таблица по вариантам
   const rows = d.by_variant || [];
   const wp = d.win_probability || {};
+
+  // разбивка исхода — стековая полоса на вариант (успех / отказ / блок / молчит)
+  const bd = $('#replyBreakdown');
+  if(bd) bd.innerHTML = !rows.length ? '<div class="muted">—</div>'
+    : rows.filter(r => r.decided > 0).map(r => {
+      const seg = (n,col,lbl) => n ? `<span title="${lbl}: ${n}" style="width:${(n/r.decided*100).toFixed(1)}%;background:${col};display:block;height:100%"></span>` : '';
+      return `<div style="display:grid;grid-template-columns:120px 1fr 64px;gap:10px;align-items:center;margin-bottom:6px">
+        <div style="font-size:12px;color:var(--dim)">${r.niche} · <b style="color:var(--tx)">${r.variant}</b></div>
+        <div style="display:flex;height:14px;border-radius:4px;overflow:hidden;background:var(--line-soft)">
+          ${seg(r.success,OUTCOME_COLOR.success,'успех')}${seg(r.rejected,OUTCOME_COLOR.rejected,'отказ')}${seg(r.blocked,OUTCOME_COLOR.blocked,'блок')}${seg(r.no_reply,OUTCOME_COLOR.no_reply,'молчит')}
+        </div>
+        <div class="num-r" style="font-size:12px">${fmt(r.decided)}</div>
+      </div>`;
+    }).join('')
+    + '<div class="legend" style="margin-top:8px">'
+      + `<span><b style="background:${OUTCOME_COLOR.success}"></b>успех</span>`
+      + `<span style="margin-left:12px"><b style="background:${OUTCOME_COLOR.rejected}"></b>отказ → стоп-лист</span>`
+      + `<span style="margin-left:12px"><b style="background:${OUTCOME_COLOR.blocked}"></b>блок / удалил чат</span>`
+      + `<span style="margin-left:12px"><b style="background:${OUTCOME_COLOR.no_reply}"></b>молчит</span></div>`;
+
+  // сводная таблица по вариантам
   const vt = $('#replyVariants');
   if(vt) vt.innerHTML = !rows.length ? '<div class="muted">Нет отправок с шаблонами. Заведите варианты текста: <code>POST /analytics/templates</code>.</div>'
     : `<table><thead><tr>
-      <th>Ниша</th><th>Вар.</th><th>Текст</th><th>Отпр.</th><th>Ответили</th>
-      <th>Ответ %</th><th>Позитив %</th><th>Отказ %</th><th>Лид %</th><th>P(лучший)</th>
+      <th>Ниша</th><th>Вар.</th><th>Текст</th><th>Отпр.</th><th>Решено</th>
+      <th>Успех %</th><th>Отказ %</th><th>Блок %</th><th>Лид %</th><th>P(лучший)</th>
       </tr></thead><tbody>` + rows.map(r => `<tr>
         <td class="muted">${r.niche}</td><td><b>${r.variant}</b></td>
         <td class="muted" title="${(r.text||'').replace(/"/g,'&quot;')}">${(r.text||'').slice(0,42)}${(r.text||'').length>42?'…':''}</td>
         <td class="num-r">${fmt(r.sent)}</td>
-        <td class="num-r">${fmt(r.answered)}${r.pending?` <span class="muted">+${r.pending} ждём</span>`:''}</td>
-        <td class="num-r">${pct(r.answer_rate)} ${r.decided>=d.min_samples?'':'<span class="pill warn">мало</span>'}</td>
-        <td class="num-r" style="color:var(--ok)">${pct(r.positive_rate)}</td>
-        <td class="num-r" style="color:${r.negative_rate>0.1?'var(--bad)':'inherit'}">${pct(r.negative_rate)}</td>
+        <td class="num-r">${fmt(r.decided)}${r.pending?` <span class="muted">+${r.pending} ждём</span>`:''} ${r.decided>=d.min_samples?'':'<span class="pill warn">мало</span>'}</td>
+        <td class="num-r" style="color:var(--ok)">${pct(r.success_rate)}</td>
+        <td class="num-r" style="color:${r.reject_rate>0.15?'var(--bad)':'inherit'}">${pct(r.reject_rate)}</td>
+        <td class="num-r" style="color:${r.blocked_rate>0.05?'var(--warn)':'inherit'}">${pct(r.blocked_rate)}</td>
         <td class="num-r">${pct(r.lead_rate)}</td>
         <td class="num-r">${wp[r.variant]==null?'—':pct(wp[r.variant])}</td>
       </tr>`).join('') + '</tbody></table>';

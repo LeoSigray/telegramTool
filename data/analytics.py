@@ -29,12 +29,50 @@ from data.db import DB_PATH
 # Окно, внутри которого ответ засчитывается как реакция на рассылку.
 REPLY_WINDOW_HOURS = 72
 
-# Стоп-слова: если человек так ответил — в стоп-лист, больше не пишем.
-OPT_OUT_MARKERS = (
-    "не пишите", "не пиши", "отпишись", "отписаться", "отстань", "стоп",
-    "спам", "не интересно", "неинтересно", "не интересует", "жалоба",
-    "unsubscribe", "stop",
+# ── Классификация ответа ─────────────────────────────────────────────────
+# Ответ = человек написал в ответ на рассылку. Делим на:
+#   rejected — отказ (любой), → стоп-лист навсегда
+#   success  — всё остальное, что написали
+# Молчание → no_reply, недоставка/удаление чата → blocked (см. record_reply,
+# dm_runner, listener). Списки ниже — редактируемые; после правки прогнать
+# reclassify_replies(), чтобы применить к уже сохранённым текстам.
+
+# Жёсткий отказ / жалоба — помимо стоп-листа это репутационный риск.
+HARD_OPT_OUT = (
+    "не пишите", "не пиши", "отпишись", "отписаться", "отстаньте", "отстань",
+    "спам", "жалоба", "пожалуюсь", "заблокирую", "в бан", "unsubscribe", "stop",
 )
+
+# Мягкий отказ — вежливое «нет». Тоже в стоп-лист (по решению: не заходим повторно).
+SOFT_REJECT = (
+    "нет спасибо", "спасибо нет", "нет, спасибо", "спасибо, не", "не спасибо",
+    "не нужно", "ненужно", "не надо", "ненадо", "нам не нужно", "мне не нужно",
+    "не интересно", "неинтересно", "не интересует", "не заинтересован", "не заинтересованы",
+    "не актуально", "неактуально", "не актуальн",
+    "не пойдёт", "не пойдет", "нам это не", "мне это не",
+    "не рассматриваю", "не рассматриваем", "не работаем с", "уже есть подрядчик",
+    "нет, не", "нет не ", "нет.", "не сейчас", "не в этом", "не по адресу",
+    "нет, спасибо, не", "спасибо, но нет", "спс нет",
+)
+
+# Полный набор для матчинга (жёсткие + мягкие).
+REJECT_MARKERS = HARD_OPT_OUT + SOFT_REJECT
+
+# для обратной совместимости — часть кода/тестов ещё ссылается на старое имя
+OPT_OUT_MARKERS = HARD_OPT_OUT
+
+
+def classify_reply(text: str | None) -> tuple[str, str | None]:
+    """(outcome, stop_reason). outcome: 'rejected' | 'success'.
+    stop_reason не None → добавить в стоп-лист с этой причиной."""
+    low = (text or "").lower().strip()
+    if not low:
+        return "success", None            # пустой/сервисный — не наказываем текст
+    if any(m in low for m in HARD_OPT_OUT):
+        return "rejected", "жёсткий отказ / жалоба"
+    if any(m in low for m in SOFT_REJECT):
+        return "rejected", "отказ в ответе"
+    return "success", None
 
 
 def _conn() -> sqlite3.Connection:
@@ -134,6 +172,10 @@ def init_analytics() -> None:
         c.execute("CREATE INDEX IF NOT EXISTS ix_sends_channel ON sends(channel, peer_id)")
         c.execute("CREATE INDEX IF NOT EXISTS ix_sends_subscribed ON sends(subscribed_at)")
         c.execute("CREATE INDEX IF NOT EXISTS ix_meta_acquired ON account_meta(acquired_at)")
+        # Переименование исходов: replied → success, negative → rejected.
+        # Идемпотентно (на новых базах этих значений уже нет).
+        c.execute("UPDATE sends SET outcome='success'  WHERE outcome='replied'")
+        c.execute("UPDATE sends SET outcome='rejected' WHERE outcome='negative'")
 
 
 def _migrate_columns(c: sqlite3.Connection) -> None:
@@ -235,7 +277,7 @@ def record_reply(peer_id: str, text: str | None, account: str | None = None) -> 
     Матчит входящее сообщение с последней отправкой этому же человеку.
     Возвращает id записи sends или None если это не ответ на рассылку.
 
-    Если текст похож на отказ — добавляет человека в стоп-лист.
+    Классифицирует: отказ (→ стоп-лист) или успех. См. classify_reply().
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=REPLY_WINDOW_HOURS)).isoformat()
     with _conn() as c:
@@ -247,29 +289,75 @@ def record_reply(peer_id: str, text: str | None, account: str | None = None) -> 
         if row is None:
             return None
 
-        low = (text or "").lower()
-        negative = any(m in low for m in OPT_OUT_MARKERS)
-        outcome = "negative" if negative else "replied"
-
+        outcome, stop_reason = classify_reply(text)
         c.execute(
             "UPDATE sends SET replied_at=?, reply_text=?, outcome=? WHERE id=?",
             (_now(), (text or "")[:2000], outcome, row["id"]),
         )
-        if negative:
-            c.execute(
-                "INSERT INTO suppression (key, reason) VALUES (?,?) "
-                "ON CONFLICT(key) DO NOTHING", (str(peer_id), "opt-out в ответе"))
-            c.execute(
-                "INSERT INTO suppression (key, reason) VALUES (?,?) "
-                "ON CONFLICT(key) DO NOTHING", (row["target"].lower().lstrip("@"), "opt-out в ответе"))
+        if stop_reason:
+            for key in (str(peer_id), row["target"].lower().lstrip("@")):
+                c.execute("INSERT INTO suppression (key, reason) VALUES (?,?) "
+                          "ON CONFLICT(key) DO NOTHING", (key, stop_reason))
+        return row["id"]
+
+
+def mark_send_blocked(send_id: int, detail: str = "blocked") -> None:
+    """Не удалось доставить: заблокирован / закрытая приватность (dm_runner)."""
+    with _conn() as c:
+        c.execute("UPDATE sends SET outcome='blocked', error=? WHERE id=?", (detail, send_id))
+
+
+def record_chat_deleted(peer_id: str) -> int | None:
+    """
+    Best-effort: пришло событие удаления сообщений в 1:1. Если этому человеку
+    недавно писали и он не отвечал — помечаем blocked (удалил чат). Если уже
+    ответил — реакция важнее, не трогаем. Telegram для 1:1 часто не передаёт
+    чат события удаления, а «удалить у себя» вообще не долетает — сигнал неполный.
+    """
+    cutoff = _ago(SUBSCRIBE_WINDOW_DAYS)
+    with _conn() as c:
+        row = c.execute(
+            "SELECT id FROM sends WHERE peer_id=? AND status='sent'"
+            " AND outcome IN ('pending','no_reply') AND sent_at >= ?"
+            " ORDER BY sent_at DESC LIMIT 1", (str(peer_id), cutoff)).fetchone()
+        if row is None:
+            return None
+        c.execute("UPDATE sends SET outcome='blocked', error='чат удалён' WHERE id=?", (row["id"],))
         return row["id"]
 
 
 def mark_outcome(send_id: int, outcome: str) -> bool:
-    """Финальный статус из CRM: lead | negative | replied | no_reply."""
+    """Финальный статус из CRM. Принимает и новые имена (success/rejected/blocked),
+    и старые (replied/negative) — нормализует."""
+    norm = {"replied": "success", "negative": "rejected"}.get(outcome, outcome)
     with _conn() as c:
-        cur = c.execute("UPDATE sends SET outcome=? WHERE id=?", (outcome, send_id))
+        cur = c.execute("UPDATE sends SET outcome=? WHERE id=?", (norm, send_id))
         return cur.rowcount > 0
+
+
+def reclassify_replies() -> dict:
+    """Прогоняет обновлённые списки фраз по уже сохранённым reply_text.
+    Возвращает {moved_to_rejected, moved_to_success}. Стоп-лист пополняет,
+    но НЕ вычищает (снятие — вручную)."""
+    moved_r = moved_s = 0
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, peer_id, target, reply_text, outcome FROM sends"
+            " WHERE reply_text IS NOT NULL AND outcome IN ('success','rejected')").fetchall()
+        for r in rows:
+            want, stop_reason = classify_reply(r["reply_text"])
+            if want == r["outcome"]:
+                continue
+            c.execute("UPDATE sends SET outcome=? WHERE id=?", (want, r["id"]))
+            if want == "rejected":
+                moved_r += 1
+                for key in (str(r["peer_id"] or ""), (r["target"] or "").lower().lstrip("@")):
+                    if key:
+                        c.execute("INSERT INTO suppression (key, reason) VALUES (?,?) "
+                                  "ON CONFLICT(key) DO NOTHING", (key, stop_reason or "отказ в ответе"))
+            else:
+                moved_s += 1
+    return {"moved_to_rejected": moved_r, "moved_to_success": moved_s}
 
 
 def expire_pending() -> int:
@@ -551,7 +639,10 @@ def funnel(days: float = 30, niche: str | None = None, job_id: str | None = None
         args.append(job_id)
     q += " GROUP BY status, outcome"
 
+    # replied/negative — алиасы для старых дашбордов: replied = «написал в ответ»
+    # (success + rejected + lead), negative = rejected.
     out = {"attempted": 0, "sent": 0, "skipped": 0, "failed": 0,
+           "success": 0, "rejected": 0, "blocked": 0,
            "replied": 0, "negative": 0, "leads": 0, "pending": 0, "no_reply": 0,
            "subscribed": 0}
     with _conn() as c:
@@ -562,13 +653,11 @@ def funnel(days: float = 30, niche: str | None = None, job_id: str | None = None
                 out["sent"] += n
                 key = r["outcome"]
                 if key == "lead":
-                    out["leads"] += n
-                    out["replied"] += n
-                elif key == "replied":
-                    out["replied"] += n
-                elif key == "negative":
-                    out["negative"] += n
-                    out["replied"] += n
+                    out["leads"] += n; out["success"] += n; out["replied"] += n
+                elif key == "success":
+                    out["success"] += n; out["replied"] += n
+                elif key == "rejected":
+                    out["rejected"] += n; out["negative"] += n; out["replied"] += n
                 elif key in out:
                     out[key] += n
             elif r["status"] == "skipped":
@@ -588,6 +677,9 @@ def funnel(days: float = 30, niche: str | None = None, job_id: str | None = None
         out["subscribed"] = c.execute(sub_q, sub_args).fetchone()["n"] or 0
 
     out["reply_rate"] = round(out["replied"] / out["sent"], 4) if out["sent"] else 0.0
+    out["success_rate"] = round(out["success"] / out["sent"], 4) if out["sent"] else 0.0
+    out["reject_rate"] = round(out["rejected"] / out["sent"], 4) if out["sent"] else 0.0
+    out["blocked_rate"] = round(out["blocked"] / out["sent"], 4) if out["sent"] else 0.0
     out["lead_rate"] = round(out["leads"] / out["sent"], 4) if out["sent"] else 0.0
     out["subscribe_rate"] = round(out["subscribed"] / out["sent"], 4) if out["sent"] else 0.0
     return out
@@ -608,7 +700,7 @@ def timeseries(days: float = 14, niche: str | None = None, granularity: str = "d
     q = (f"SELECT {bucket} d,"
          " SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) sent,"
          " SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) failed,"
-         " SUM(CASE WHEN outcome IN ('replied','lead','negative') THEN 1 ELSE 0 END) replied,"
+         " SUM(CASE WHEN outcome IN ('success','lead','rejected') THEN 1 ELSE 0 END) replied,"
          " SUM(CASE WHEN outcome='lead' THEN 1 ELSE 0 END) leads,"
          " SUM(CASE WHEN subscribed_at IS NOT NULL THEN 1 ELSE 0 END) subscribed"
          " FROM sends WHERE sent_at >= ?")
@@ -629,9 +721,10 @@ def template_stats(niche: str | None = None, days: float = 90) -> list[dict]:
     """
     q = ("SELECT t.id, t.niche, t.variant, t.text, t.active,"
          " COUNT(s.id) sent,"
-         " SUM(CASE WHEN s.outcome IN ('replied','lead') THEN 1 ELSE 0 END) replies,"
+         " SUM(CASE WHEN s.outcome IN ('success','lead') THEN 1 ELSE 0 END) replies,"
          " SUM(CASE WHEN s.outcome='lead' THEN 1 ELSE 0 END) leads,"
-         " SUM(CASE WHEN s.outcome='negative' THEN 1 ELSE 0 END) negatives,"
+         " SUM(CASE WHEN s.outcome='rejected' THEN 1 ELSE 0 END) rejected,"
+         " SUM(CASE WHEN s.outcome='blocked' THEN 1 ELSE 0 END) blocked,"
          " SUM(CASE WHEN s.outcome='no_reply' THEN 1 ELSE 0 END) no_reply,"
          " SUM(CASE WHEN s.outcome='pending' THEN 1 ELSE 0 END) pending,"
          " SUM(CASE WHEN s.subscribed_at IS NOT NULL THEN 1 ELSE 0 END) subscribed"
@@ -644,7 +737,8 @@ def template_stats(niche: str | None = None, days: float = 90) -> list[dict]:
     with _conn() as c:
         rows = [dict(r) for r in c.execute(q + " GROUP BY t.id ORDER BY t.niche, t.variant", args)]
     for r in rows:
-        decided = (r["replies"] or 0) + (r["no_reply"] or 0) + (r["negatives"] or 0)
+        r["negatives"] = r["rejected"]  # алиас для старого кода бандита
+        decided = (r["replies"] or 0) + (r["no_reply"] or 0) + (r["rejected"] or 0)
         r["decided"] = decided
         r["reply_rate"] = round((r["replies"] or 0) / decided, 4) if decided else None
     return rows
@@ -656,7 +750,7 @@ def account_stats(days: float = 7) -> list[dict]:
          " COUNT(s.id) attempts,"
          " SUM(CASE WHEN s.status='sent' THEN 1 ELSE 0 END) sent,"
          " SUM(CASE WHEN s.status='failed' THEN 1 ELSE 0 END) failed,"
-         " SUM(CASE WHEN s.outcome IN ('replied','lead') THEN 1 ELSE 0 END) replies"
+         " SUM(CASE WHEN s.outcome IN ('success','lead') THEN 1 ELSE 0 END) replies"
          " FROM account_meta a LEFT JOIN sends s"
          "   ON s.account = a.name AND s.sent_at >= ?"
          " GROUP BY a.name ORDER BY a.name")
@@ -824,7 +918,7 @@ def account_cohorts(by: str = "price", days: float = 90) -> list[dict]:
         win = {r["account"]: r for r in c.execute(
             "SELECT account,"
             " SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) sent,"
-            " SUM(CASE WHEN outcome IN ('replied','lead') THEN 1 ELSE 0 END) replies,"
+            " SUM(CASE WHEN outcome IN ('success','lead') THEN 1 ELSE 0 END) replies,"
             " SUM(CASE WHEN outcome='lead' THEN 1 ELSE 0 END) leads"
             " FROM sends WHERE sent_at >= ? GROUP BY account", (win_since,))}
 
@@ -937,25 +1031,25 @@ def subscription_channels(days: float = 30) -> list[str]:
 # ──────────────────────────────────────────────────────────────────────────
 #  Дашборд «Ответы на сообщения» — отклик по вариантам текста во времени
 # ──────────────────────────────────────────────────────────────────────────
-#  «Ответ» здесь = человек вообще написал в ответ (replied | lead | negative),
-#  в отличие от reply_rate бандита, который считает только позитив.
-#  Это осознанно: для подбора пробивного текста важно и «отвечают ли», и
-#  «что именно отвечают».
+#  Исходы: success (ответил чем-то не-отказным) | rejected (отказ, → стоп-лист)
+#  | blocked (не доставлено / удалил чат) | no_reply (молчит) | lead (из CRM).
+#  «ответили» = success + lead + rejected (написал в ответ хоть что-то).
+#  decided = всё, кроме pending (blocked тоже терминальный).
 
 def reply_series(niche: str | None = None, days: float = 30, bucket: str = "day") -> dict:
     """
     Отклик по вариантам текста во времени. Бакет — по дате ОТПРАВКИ (когорта):
-    из отправок этого дня какая доля ответила. Свежие бакеты (моложе окна
-    ответа REPLY_WINDOW_HOURS) ещё дозревают — фронт их помечает пунктиром.
+    из отправок этого дня какая доля ответила / отказала / заблокировала.
+    Свежие бакеты (моложе REPLY_WINDOW_HOURS) ещё дозревают — фронт их помечает.
     """
     tmpl = _ACQ_BUCKET.get(bucket, _ACQ_BUCKET["day"])
     bexpr = tmpl.format(col="s.sent_at")
 
     q = (f"SELECT {bexpr} b, COALESCE(t.variant,'—') v,"
          " COUNT(*) sent,"
-         " SUM(CASE WHEN s.outcome IN ('replied','lead','negative') THEN 1 ELSE 0 END) answered,"
-         " SUM(CASE WHEN s.outcome IN ('replied','lead') THEN 1 ELSE 0 END) positive,"
-         " SUM(CASE WHEN s.outcome='negative' THEN 1 ELSE 0 END) negative,"
+         " SUM(CASE WHEN s.outcome IN ('success','lead') THEN 1 ELSE 0 END) success,"
+         " SUM(CASE WHEN s.outcome='rejected' THEN 1 ELSE 0 END) rejected,"
+         " SUM(CASE WHEN s.outcome='blocked' THEN 1 ELSE 0 END) blocked,"
          " SUM(CASE WHEN s.outcome='lead' THEN 1 ELSE 0 END) leads,"
          " SUM(CASE WHEN s.outcome='no_reply' THEN 1 ELSE 0 END) no_reply,"
          " SUM(CASE WHEN s.outcome='pending' THEN 1 ELSE 0 END) pending"
@@ -972,15 +1066,18 @@ def reply_series(niche: str | None = None, days: float = 30, bucket: str = "day"
     with _conn() as c:
         for r in c.execute(q, args):
             variants.add(r["v"])
-            decided = (r["answered"] or 0) + (r["no_reply"] or 0)
+            succ, rej, blk, nr = (r["success"] or 0), (r["rejected"] or 0), (r["blocked"] or 0), (r["no_reply"] or 0)
+            decided = succ + rej + blk + nr
+            answered = succ + rej
             buckets.setdefault(r["b"], {})[r["v"]] = {
                 "sent": r["sent"] or 0, "decided": decided, "pending": r["pending"] or 0,
-                "answered": r["answered"] or 0, "positive": r["positive"] or 0,
-                "negative": r["negative"] or 0, "leads": r["leads"] or 0,
-                "answer_rate":    round((r["answered"] or 0) / decided, 4) if decided else None,
-                "positive_rate":  round((r["positive"] or 0) / decided, 4) if decided else None,
-                "negative_rate":  round((r["negative"] or 0) / decided, 4) if decided else None,
-                "lead_rate":      round((r["leads"] or 0) / decided, 4) if decided else None,
+                "success": succ, "rejected": rej, "blocked": blk, "no_reply": nr,
+                "answered": answered, "leads": r["leads"] or 0,
+                "success_rate":  round(succ / decided, 4) if decided else None,
+                "reject_rate":   round(rej / decided, 4) if decided else None,
+                "blocked_rate":  round(blk / decided, 4) if decided else None,
+                "answer_rate":   round(answered / decided, 4) if decided else None,
+                "lead_rate":     round((r["leads"] or 0) / decided, 4) if decided else None,
             }
     return {
         "bucket": bucket,
@@ -991,25 +1088,27 @@ def reply_series(niche: str | None = None, days: float = 30, bucket: str = "day"
 
 
 def reply_breakdown(niche: str | None = None, days: float = 90) -> list[dict]:
-    """По каждому варианту текста за окно: отправлено, ответило, из ответов
-    позитив / лид / отказ, доли. Строится поверх template_stats()."""
+    """По каждому варианту текста за окно: отправлено, из решённых —
+    успех / отказ / блок / молчание, доли. Строится поверх template_stats()."""
     out = []
     for r in template_stats(niche=niche, days=days):
-        positive = r["replies"] or 0          # в template_stats replies = replied+lead
-        negative = r["negatives"] or 0
+        success = r["replies"] or 0          # в template_stats replies = success+lead
+        rejected = r["rejected"] or 0
+        blocked = r["blocked"] or 0
         no_reply = r["no_reply"] or 0
         leads = r["leads"] or 0
-        decided = positive + negative + no_reply
-        answered = positive + negative
+        decided = success + rejected + blocked + no_reply
+        answered = success + rejected
         out.append({
             "template_id": r["id"], "niche": r["niche"], "variant": r["variant"],
             "text": r["text"], "active": bool(r["active"]),
             "sent": r["sent"] or 0, "decided": decided, "pending": r["pending"] or 0,
-            "answered": answered, "positive": positive, "negative": negative,
-            "leads": leads, "no_reply": no_reply,
+            "answered": answered, "success": success, "rejected": rejected,
+            "blocked": blocked, "leads": leads, "no_reply": no_reply,
             "answer_rate":   round(answered / decided, 4) if decided else None,
-            "positive_rate": round(positive / decided, 4) if decided else None,
-            "negative_rate": round(negative / decided, 4) if decided else None,
+            "success_rate":  round(success / decided, 4) if decided else None,
+            "reject_rate":   round(rejected / decided, 4) if decided else None,
+            "blocked_rate":  round(blocked / decided, 4) if decided else None,
             "lead_rate":     round(leads / decided, 4) if decided else None,
         })
     return out
@@ -1072,7 +1171,7 @@ def spend_series(days: float | None = None, bucket: str = "week") -> dict:
         out_rows = c.execute(
             f"SELECT {b_sent} b, COUNT(*) sent,"
             f" SUM(CASE WHEN outcome='lead' THEN 1 ELSE 0 END) leads,"
-            f" SUM(CASE WHEN outcome IN ('replied','lead','negative') THEN 1 ELSE 0 END) answered"
+            f" SUM(CASE WHEN outcome IN ('success','lead','rejected') THEN 1 ELSE 0 END) answered"
             f" FROM sends WHERE {sent_where} GROUP BY b", s_args).fetchall()
 
     keys: set[str] = set()

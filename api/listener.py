@@ -132,6 +132,14 @@ async def _on_deleted(event):
     if session_name is None:
         return
     chat_id_val = event.chat_id
+    # best-effort «удалил чат» → исход blocked для дашборда ответов.
+    # Для 1:1 Telegram часто НЕ передаёт chat_id, а «удалить у себя» вообще
+    # не долетает — поэтому сигнал неполный, ловим что можем.
+    if chat_id_val is not None:
+        try:
+            an.record_chat_deleted(str(chat_id_val))
+        except Exception:  # noqa: BLE001
+            log.exception("record_chat_deleted failed")
     await _post_webhook("/message-deleted", {
         "account_name": session_name,
         "chat_id": (str(chat_id_val) if chat_id_val is not None else None),

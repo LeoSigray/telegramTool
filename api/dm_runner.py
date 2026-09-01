@@ -21,6 +21,12 @@ from telethon.errors import (
     UserDeactivatedBanError,
     UserPrivacyRestrictedError,
 )
+
+try:  # есть не во всех версиях telethon
+    from telethon.errors import UserIsBlockedError
+except ImportError:  # pragma: no cover
+    class UserIsBlockedError(Exception):
+        pass
 from datetime import datetime, timezone
 
 from accounts.manager import get_session_files
@@ -162,9 +168,17 @@ async def _account_worker(*, job: Job, session_path: str, queue: "asyncio.Queue[
             _mark(job, target, "sent", None, session_name,
                   peer_id=peer_id, template_id=template_id)
             sent_in_account += 1
-        except UserPrivacyRestrictedError:
-            _mark(job, target, "skipped", "privacy_restricted", session_name,
+        except (UserIsBlockedError, UserPrivacyRestrictedError) as e:
+            # первое сообщение не дошло: заблокировали / закрытая приватность —
+            # это исход «blocked» для дашборда ответов
+            reason = "blocked" if isinstance(e, UserIsBlockedError) else "privacy_restricted"
+            _mark(job, target, "skipped", reason, session_name,
                   peer_id=peer_id, template_id=template_id)
+            if target.send_id:
+                try:
+                    an.mark_send_blocked(target.send_id, reason)
+                except Exception:  # noqa: BLE001
+                    pass
         except FloodWaitError as e:
             queue.put_nowait(target)
             health.on_error(session_name, "flood_wait", f"send {e.seconds}s")

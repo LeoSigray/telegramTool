@@ -72,10 +72,13 @@ TEMPLATE_TEXT = {
     "B": "Добрый день. Вы сейчас как-то ведёте запись через мессенджеры? Есть идея, которая может добавить 10–15 записей в неделю.",
     "C": "Привет! Увидел ваш профиль — занимаемся продвижением в нише. Актуально обсудить?",
 }
-TEMPLATE_Q = {"A": 1.25, "B": 1.5, "C": 0.7}  # множитель позитивности
+TEMPLATE_Q = {"A": 1.25, "B": 1.5, "C": 0.7}   # множитель позитивности
+TEMPLATE_BLOCK = {"A": 0.6, "B": 0.5, "C": 1.6}  # множитель «бесит → блок/удаление»
 POS_REPLIES = ["да, интересно, расскажите", "скиньте кейсы пожалуйста", "сколько стоит?",
                "можно подробнее по срокам", "ок, давайте созвон", "а какие гарантии?"]
-NEG_REPLIES = ["не пишите больше", "спам, отписался", "не интересно", "отстаньте"]
+REJECT_REPLIES = ["нет, спасибо", "не нужно", "не интересно", "спасибо, не надо",
+                  "не актуально", "не пойдёт", "нам не нужно", "спам, отписался",
+                  "не пишите больше", "мне это не надо"]
 NEU_REPLIES = ["кто это?", "откуда у вас мой контакт", "я подумаю", "напишите позже"]
 
 tpl_ids: dict = {}
@@ -109,16 +112,19 @@ for sid in range(3200):
     if status == "sent":
         outcome = "no_reply"
         answered_p = 0.16 * a["qreply"] * TEMPLATE_Q[variant]
+        block_p = 0.05 * TEMPLATE_BLOCK[variant]
         roll = random.random()
-        if roll < answered_p:
+        if roll < block_p:
+            outcome = "blocked"                              # не дошло / удалил чат
+        elif roll < block_p + answered_p:
             replied_at = iso(sent_at + timedelta(hours=random.uniform(1, 40)))
             sub_roll = random.random()
-            if sub_roll < 0.22:
+            if sub_roll < 0.20:
                 outcome, reply_text = "lead", random.choice(POS_REPLIES)
-            elif sub_roll < 0.78:
-                outcome, reply_text = "replied", random.choice(POS_REPLIES + NEU_REPLIES)
+            elif sub_roll < 0.62:
+                outcome, reply_text = "success", random.choice(POS_REPLIES + NEU_REPLIES)
             else:
-                outcome, reply_text = "negative", random.choice(NEG_REPLIES)
+                outcome, reply_text = "rejected", random.choice(REJECT_REPLIES)
         elif (NOW - sent_at).total_seconds() < 72 * 3600 and random.random() < 0.3:
             outcome = "pending"
         if channel and random.random() < 0.18:
