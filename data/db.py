@@ -52,6 +52,11 @@ def init_db() -> None:
                 id    INTEGER PRIMARY KEY CHECK (id = 1),
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS account_proxy (
+                account    TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
             CREATE TABLE IF NOT EXISTS folder_links (
                 id  INTEGER PRIMARY KEY AUTOINCREMENT,
                 url TEXT NOT NULL UNIQUE
@@ -191,6 +196,58 @@ def clear_proxy() -> None:
     """Удаляет прокси из БД."""
     with _conn() as c:
         c.execute("DELETE FROM proxy WHERE id = 1")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  Proxy по аккаунтам
+#
+#  Отдельный прокси на каждый аккаунт (вместо одного общего IP на весь пул) —
+#  общий IP для всех аккаунтов сразу — один из главных сигналов для антиспама
+#  Telegram, что это ферма аккаунтов, а не разные люди. get_account_proxy()
+#  возвращает None если для аккаунта ничего не назначено — вызывающий код
+#  сам решает, падать на общий load_proxy() или нет.
+# ──────────────────────────────────────────────────────────────────────────
+
+def get_account_proxy(account: str) -> str | None:
+    """Прокси-строка для конкретного аккаунта или None, если не назначена."""
+    try:
+        with _conn() as c:
+            row = c.execute(
+                "SELECT value FROM account_proxy WHERE account = ?", (account,)
+            ).fetchone()
+        return row["value"] if row else None
+    except Exception:
+        return None
+
+
+def set_account_proxy(account: str, value: str) -> None:
+    """Назначает/обновляет прокси для аккаунта."""
+    with _conn() as c:
+        c.execute(
+            """
+            INSERT INTO account_proxy (account, value, updated_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(account) DO UPDATE SET
+                value = excluded.value, updated_at = datetime('now')
+            """,
+            (account, value),
+        )
+
+
+def clear_account_proxy(account: str) -> None:
+    """Убирает персональный прокси аккаунта (вернётся на общий, если он есть)."""
+    with _conn() as c:
+        c.execute("DELETE FROM account_proxy WHERE account = ?", (account,))
+
+
+def all_account_proxies() -> dict[str, str]:
+    """Все назначения {account: proxy} — для списка/отчёта."""
+    try:
+        with _conn() as c:
+            rows = c.execute("SELECT account, value FROM account_proxy ORDER BY account").fetchall()
+        return {row["account"]: row["value"] for row in rows}
+    except Exception:
+        return {}
 
 
 # ──────────────────────────────────────────────────────────────────────────

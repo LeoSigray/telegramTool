@@ -8,7 +8,7 @@ import zipfile
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from . import gemini
+from . import copywriter
 from .auth import require_token
 from .client_pool import pool
 from .routes_accounts import ProfileIn, _apply_profile
@@ -105,18 +105,18 @@ class GenerateNamesIn(BaseModel):
 
 @router.post("/generate-names")
 async def bulk_generate_names(body: GenerateNamesIn) -> dict:
-    """Генерирует имена через Gemini и опционально применяет ко всем аккаунтам."""
-    if not gemini.is_configured():
-        raise HTTPException(status_code=503, detail="GEMINI_API_KEY не задан")
+    """Генерирует имена нейросетью и опционально применяет ко всем аккаунтам."""
+    if not copywriter.is_configured():
+        raise HTTPException(status_code=503, detail=copywriter.config_hint())
 
     accounts = list(pool.clients.items())
     if not accounts:
         return {"generated": [], "applied": [], "message": "Нет активных аккаунтов"}
 
     try:
-        generated = await gemini.generate_names(body.prompt, count=len(accounts), fields=body.fields)
+        generated = await copywriter.generate_names(body.prompt, count=len(accounts), fields=body.fields)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"gemini: {e}")
+        raise HTTPException(status_code=502, detail=f"llm: {e}")
 
     if not body.apply:
         return {"generated": generated, "applied": [], "accounts": [n for n, _ in accounts]}

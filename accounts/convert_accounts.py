@@ -117,7 +117,7 @@ def convert_account(item_id: str, account_data: dict):
 
     # --- DC ID: ищем во всех местах ---
     # 1. Прямо в полях .txt файла (сохраняется новым lzt_buyer.py)
-    for key in ("dc_id", "dcId", "telegram_dc"):
+    for key in ("telegram_dc_id", "dc_id", "dcId", "telegram_dc"):
         if account_data.get(key):
             try:
                 dc_id = int(account_data[key])
@@ -172,7 +172,7 @@ def convert_all_accounts() -> dict:
         result = convert_account(item_id, account_data)
 
         if result:
-            print(f"  [ok]   {item_id} → sessions/{item_id}.session")
+            print(f"  [ok]   {item_id} -> sessions/{item_id}.session")
             stats["ok"].append(item_id)
             _register_converted(item_id, account_data, txt_path)
         else:
@@ -210,7 +210,7 @@ def _register_converted(item_id: str, account_data: dict, txt_path: str) -> None
 
 
 def convert_accounts_interactive():
-    print("\n--- Конвертация accounts → sessions ---")
+    print("\n--- Конвертация accounts -> sessions ---")
 
     txt_count = len([f for f in os.listdir(ACCOUNTS_DIR) if f.endswith(".txt")]) \
         if os.path.exists(ACCOUNTS_DIR) else 0
@@ -239,11 +239,11 @@ def convert_accounts_interactive():
     print(f"  Ошибок:                {len(stats['fail'])}")
 
     if stats["ok"]:
-        print("\nТеперь проверь аккаунты: меню → 1 → 4")
+        print("\nТеперь проверь аккаунты: меню -> 1 -> 4")
 
 
 if __name__ == "__main__":
-    print("=== Конвертация accounts → sessions ===\n")
+    print("=== Конвертация accounts -> sessions ===\n")
     stats = convert_all_accounts()
     print(f"\n--- Итого ---")
     print(f"  OK:        {len(stats['ok'])}")

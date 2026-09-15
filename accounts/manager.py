@@ -5,7 +5,7 @@ import sqlite3
 from telethon import TelegramClient
 
 from config import CONFIG, SESSIONS_DIR
-from proxy_manager import get_telethon_proxy
+from proxy_manager import client_kwargs_for
 
 
 def fix_session_version(session_path: str) -> bool:
@@ -107,13 +107,13 @@ def create_client(session_path):
     session_path — полный путь к .session файлу.
     """
     session_name = os.path.splitext(session_path)[0]  # без .session
-    proxy = get_telethon_proxy()
+    account = os.path.basename(session_name)
 
     client = TelegramClient(
         session_name,
         CONFIG["TELEGRAM_API_ID"],
         CONFIG["TELEGRAM_API_HASH"],
-        proxy=proxy,
+        **client_kwargs_for(account),
     )
     return client
 

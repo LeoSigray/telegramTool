@@ -5,7 +5,7 @@ Async-runner для нейрокомментинга.
   1. Ищем каналы по ключевым словам (SearchRequest)
   2. Отсеиваем каналы без linked discussion group
   3. Параллельные воркеры (N = job.parallel) разбирают каналы из очереди
-  4. Каждый воркер = один аккаунт: join → собрать посты → Gemini → send_message
+  4. Каждый воркер = один аккаунт: join → собрать посты → Grok → send_message
   5. Ротация по лимиту COMMENT_LIMIT_PER_ACCOUNT, FloodWait-защита
   6. Continuous: ищет новые каналы каждые COMMENT_ROUND_DELAY секунд
 """
@@ -28,7 +28,7 @@ from accounts.manager import get_session_files
 from config import COMMENT_DELAY_MIN, COMMENT_DELAY_MAX, COMMENT_LIMIT_PER_ACCOUNT, COMMENT_ROUND_DELAY
 from parsing.channel_searcher import search_channels_multi
 from .client_pool import pool
-from .gemini import generate_comment, is_configured
+from .copywriter import generate_comment, is_configured
 from .jobs import Job, TargetState
 
 log = logging.getLogger(__name__)
@@ -215,7 +215,7 @@ async def _account_worker(
             try:
                 comment_text = await generate_comment(post.text, style_prompt)
             except Exception as e:
-                job.add_log(event="gemini_error", channel=ch.username,
+                job.add_log(event="llm_error", channel=ch.username,
                             post_id=post.id, error=str(e))
                 continue
 
@@ -277,7 +277,7 @@ async def run_comment_job(
     Запускает нейрокомментинг с поддержкой параллельных аккаунтов.
 
     job.parallel — сколько аккаунтов работают одновременно.
-    job.message  — style_prompt для Gemini.
+    job.message  — style_prompt для Grok.
     continuous   — бесконечный режим: ищет новые каналы каждые COMMENT_ROUND_DELAY сек.
     """
     sessions = get_session_files()
@@ -288,8 +288,9 @@ async def run_comment_job(
         return
 
     if not is_configured():
+        from .copywriter import config_hint
         job.status = "failed"
-        job.error = "GEMINI_API_KEY не задан в .env"
+        job.error = config_hint()
         job.finished_at = datetime.now(timezone.utc)
         return
 

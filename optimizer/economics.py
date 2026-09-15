@@ -156,8 +156,8 @@ def should_buy_account(value_per_lead: float, price: float | None = None,
 
 def forecast(targets_remaining: int, niche: str | None = None) -> dict:
     """Сколько дней и денег нужно, чтобы обработать оставшийся список."""
-    capacity = health.total_capacity_today()
-    active = [a for a in health.report() if a["status"] == "active"]
+    capacity = health.total_capacity_today(real=True)
+    active = [a for a in health.report_real() if a["status"] == "active"]
     daily = sum(a["daily_cap"] for a in active)
 
     cpm = cost_per_message()

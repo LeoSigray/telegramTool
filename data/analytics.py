@@ -898,6 +898,25 @@ def _days_alive(meta: dict) -> float:
     return max(0.0, (d1 - d0).total_seconds() / 86400)
 
 
+def _is_resting_now(meta: dict) -> bool:
+    """
+    Сейчас ли аккаунт на вынужденном отдыхе (rest_until в будущем).
+    Копия логики optimizer.health.is_resting() — не импортируем health
+    напрямую, чтобы не ловить циклический импорт (health сам зависит от
+    data.analytics).
+    """
+    until = meta.get("rest_until")
+    if not until:
+        return False
+    try:
+        dt = datetime.fromisoformat(until)
+    except (ValueError, TypeError):
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt > datetime.now(timezone.utc)
+
+
 def account_cohorts(by: str = "price", days: float = 90) -> list[dict]:
     """
     Аккаунты, сгруппированные по цене (корзины PRICE_BRACKETS) или по продавцу.
@@ -921,6 +940,9 @@ def account_cohorts(by: str = "price", days: float = 90) -> list[dict]:
             " SUM(CASE WHEN outcome IN ('success','lead') THEN 1 ELSE 0 END) replies,"
             " SUM(CASE WHEN outcome='lead' THEN 1 ELSE 0 END) leads"
             " FROM sends WHERE sent_at >= ? GROUP BY account", (win_since,))}
+        flood = {r["account"]: r["n"] for r in c.execute(
+            "SELECT account, COUNT(*) n FROM account_events"
+            " WHERE event IN ('peer_flood', 'flood_wait') GROUP BY account")}
 
     groups: dict[str, list] = {}
     for a in accounts:
@@ -936,6 +958,11 @@ def account_cohorts(by: str = "price", days: float = 90) -> list[dict]:
         total_repl = sum((win.get(nm) or {})["replies"] or 0 for nm in names if win.get(nm))
         total_lead = sum((win.get(nm) or {})["leads"] or 0 for nm in names if win.get(nm))
         dead = sum(1 for a in accs if a.get("status") == "dead")
+        # "resting" — сейчас на отдыхе после PeerFlood/FloodWait (не мёртв, но
+        # временно недоступен). Не путать с pct_dead: свежий пример — все живы,
+        # просто все словили PeerFlood и на 48ч выключены (см. optimizer.health).
+        resting = sum(1 for a in accs if _is_resting_now(a))
+        flood_events = sum(flood.get(nm, 0) for nm in names)
         out.append({
             "key": key,
             "accounts": n,
@@ -943,6 +970,8 @@ def account_cohorts(by: str = "price", days: float = 90) -> list[dict]:
             "avg_lifetime_sends": round(sum(life.get(nm, 0) for nm in names) / n, 1) if n else 0.0,
             "avg_days_alive": round(sum(_days_alive(a) for a in accs) / n, 1) if n else 0.0,
             "pct_dead": round(dead / n, 4) if n else 0.0,
+            "pct_resting": round(resting / n, 4) if n else 0.0,
+            "flood_events": flood_events,
             "reply_rate": round(total_repl / total_sent, 4) if total_sent else 0.0,
             "sends_per_rub": round(total_sent / total_cost, 3) if total_cost else None,
             "replies_per_rub": round(total_repl / total_cost, 4) if total_cost else None,

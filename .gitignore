@@ -21,6 +21,10 @@ proxy.txt
 
 # Excel данные и рантайм
 data/targets.xlsx
+# ...и любые резервные копии базы контактов — в них те же тысячи реальных
+# юзернеймов живых людей, в репозиторий им нельзя
+data/targets.xlsx.bak*
+data/*.bak-*
 data/daily_usage.json
 
 # Python cache

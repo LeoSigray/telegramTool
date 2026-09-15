@@ -23,9 +23,11 @@ from accounts.manager import migrate_all_sessions
 from config import SESSIONS_DIR, DATA_DIR
 from data.analytics import expire_pending, init_analytics
 from data.db import init_db, migrate_from_files, sync_all_to_db
+from data.inbox import init_inbox
 from optimizer import health
 
-from . import channel_watch, listener, routes_accounts, routes_analytics, routes_broadcast, routes_bulk
+from . import (channel_watch, listener, routes_accounts, routes_analytics,
+               routes_broadcast, routes_bulk, routes_inbox)
 from .client_pool import pool
 
 log = logging.getLogger(__name__)
@@ -62,6 +64,7 @@ async def lifespan(app: FastAPI):
     # 1. инициализируем БД и мигрируем старые файлы (если нужно)
     init_db()
     init_analytics()
+    init_inbox()
     migrate_from_files(SESSIONS_DIR, DATA_DIR)
     # 2. чиним старые версии sessions
     migrate_all_sessions()
@@ -103,6 +106,8 @@ app.include_router(routes_bulk.router)
 app.include_router(routes_broadcast.router)
 app.include_router(routes_analytics.router)
 app.include_router(routes_analytics.page_router)
+app.include_router(routes_inbox.router)
+app.include_router(routes_inbox.page_router)
 
 
 @app.get("/health")

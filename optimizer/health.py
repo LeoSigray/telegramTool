@@ -18,6 +18,7 @@ optimizer/health.py — динамический дневной лимит на 
 """
 
 import math
+import os
 from datetime import datetime, timedelta, timezone
 
 from data import analytics as an
@@ -189,6 +190,23 @@ def report() -> list[dict]:
     return out
 
 
-def total_capacity_today() -> int:
-    """Суммарная свободная ёмкость пула на сегодня."""
-    return sum(r["remaining_today"] for r in report() if r["status"] == "active")
+def report_real() -> list[dict]:
+    """Как report(), но только для аккаунтов, у которых реально есть .session
+    на диске — то есть тех, кто прямо сейчас может попасть в пул и слать.
+
+    account_meta хранит вперемешку: демо-строки (для наглядности дашбордов,
+    см. seed_demo_dashboards.py) и купленные-но-неавторизованные аккаунты
+    (мёртвый auth-ключ, сессии нет). Оба варианта report() честно включает —
+    это нужно для отображения. Но для РЕАЛЬНОГО планирования рассылки
+    (planner.capacity, economics.forecast) их пускать нельзя, иначе план
+    врёт о доступной ёмкости на несуществующие аккаунты."""
+    from accounts.manager import get_session_files
+    real = {os.path.splitext(os.path.basename(p))[0] for p in get_session_files()}
+    return [r for r in report() if r["account"] in real]
+
+
+def total_capacity_today(real: bool = False) -> int:
+    """Суммарная свободная ёмкость пула на сегодня.
+    real=True — только по аккаунтам с рабочей сессией (см. report_real)."""
+    rows = report_real() if real else report()
+    return sum(r["remaining_today"] for r in rows if r["status"] == "active")

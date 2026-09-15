@@ -34,6 +34,10 @@ from data.excel_manager import (
 #  Утилиты
 # ========================================================================
 
+# Папка с фотографиями для случайных аватарок ("14. Случайные аватарки")
+AVATARS_DIR = "foricons"
+
+
 def _ensure_min_photo_size(img_path: str, min_side: int = 800) -> str:
     """
     Гарантирует минимум min_side×min_side и конвертирует в JPEG.
@@ -75,7 +79,7 @@ def show_menu():
     print(f"  Аккаунтов: {len(get_session_files())}")
     print("-" * 50)
     print("  1. Управление аккаунтами")
-    print("  2. Нейрокомментинг (Gemini)")
+    print("  2. Нейрокомментинг (Grok)")
     print("  3. Рассылка")
     print("  4. Парсинг чатов")
     print("  5. База людей (Users)")
@@ -89,16 +93,46 @@ def show_menu():
 # ========================================================================
 
 def input_multiline(prompt: str) -> str:
-    """Ввод многострочного текста. Пустая строка = конец ввода."""
+    """
+    Ввод многострочного текста — поддерживает вставку готового текста с
+    пустыми строками между абзацами (раньше пустая строка обрывала ввод,
+    и вставленный текст с абзацами резался на первом переносе).
+    Завершение — отдельная строка "END".
+    """
     print(prompt)
-    print("(пустая строка = завершить ввод)")
+    print('Вставь или напиши текст. Когда закончишь — с новой строки "END" и Enter.')
     lines = []
     while True:
         line = input()
-        if line == "" and lines:
+        if line.strip().upper() == "END":
             break
-        lines.append(line)
+        lines.append(line.rstrip("\r"))
     return "\n".join(lines)
+
+
+def pick_message_text() -> str | None:
+    """
+    Выбор текста рассылки:
+      1. Статичный — текст из переменной STATIC_MESSAGE в data/static_message.py.
+         Чтобы поменять текст — открой этот файл и отредактируй переменную.
+      2. Динамичный — свой текст (ввод/вставка через input_multiline).
+
+    Возвращает готовый текст или None, если ввод пуст/отменён.
+    """
+    from data.static_message import STATIC_MESSAGE
+
+    print("\n--- Текст сообщения ---")
+    print("  1. Статичный (текст из data/static_message.py)")
+    print("  2. Динамичный (написать/вставить новый)")
+    choice = input("Выбор (Enter = динамичный): ").strip()
+
+    if choice == "1":
+        if not STATIC_MESSAGE.strip():
+            print("STATIC_MESSAGE пустой — впиши текст в data/static_message.py.")
+        else:
+            return STATIC_MESSAGE
+
+    return input_multiline("Текст сообщения:").strip() or None
 
 
 # ========================================================================
@@ -115,11 +149,18 @@ def handle_accounts():
         print("  5. Проверить аккаунты")
         print("  6. Изменить описание профиля (bio)")
         print("  7. Сменить аватарки (ZIP)")
-        print("  8. Сгенерировать имена/фамилии (Gemini)")
+        print("  8. Сгенерировать имена/фамилии (Grok)")
         print("  9. Привязать личный канал к профилю")
         print(" 10. Конвертировать accounts → sessions")
         print(" 11. Скачать сессии с LZT (для уже купленных)")
         print(" 12. Бэкофилл аналитики закупки (цена/продавец/дата из файлов)")
+        print(" 13. Подтянуть ВСЕ купленные с LZT (по истории заказов)")
+        print(f" 14. Случайные аватарки из {AVATARS_DIR}/ (2 шт. на аккаунт)")
+        print(" 15. Имена LINKTECH (фикс. имя/фамилия всем аккаунтам)")
+        print(" 16. Очистить имя и фамилию (всем аккаунтам)")
+        print(" 17. Очистить аватарки (всем аккаунтам)")
+        print(" 18. Авторизация в аккаунт (повторный вход для одного)")
+        print(" 19. Сбросить здоровье аккаунтов (снять отдых и штрафы)")
         print("  0. Назад")
 
         choice = input("\nВыбор: ").strip()
@@ -157,8 +198,24 @@ def handle_accounts():
             _handle_download_sessions_lzt()
         elif choice == "12":
             _handle_backfill_account_analytics()
+        elif choice == "13":
+            _handle_pull_all_lzt()
+        elif choice == "14":
+            _handle_random_avatars_folder()
+        elif choice == "15":
+            _handle_set_linktech_names()
+        elif choice == "16":
+            _handle_clear_names()
+        elif choice == "17":
+            _handle_clear_avatars()
+        elif choice == "18":
+            _handle_authorize_one_account()
+        elif choice == "19":
+            _handle_reset_health()
         elif choice == "0":
             break
+        else:
+            print("Неверный выбор.")
 
 
 def _handle_import_sessions():
@@ -385,9 +442,79 @@ def _handle_bulk_avatars_zip():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def _handle_random_avatars_folder():
+    """
+    Ставит каждому аккаунту 2 случайные разные фотографии из AVATARS_DIR
+    как аватарки профиля (доп. фото профиля, не замена). Выбор пары —
+    отдельно и заново для каждого аккаунта.
+    """
+    import random
+    from telethon.tl.functions.photos import UploadProfilePhotoRequest
+
+    sessions = get_session_files()
+    if not sessions:
+        print("Нет аккаунтов.")
+        return
+
+    print(f"\n--- Случайные аватарки из {AVATARS_DIR}/ ---")
+
+    if not os.path.isdir(AVATARS_DIR):
+        print(f"Папка не найдена: {AVATARS_DIR}")
+        return
+
+    images = [
+        os.path.join(AVATARS_DIR, fn)
+        for fn in os.listdir(AVATARS_DIR)
+        if fn.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
+    ]
+    if len(images) < 2:
+        print(f"В папке {AVATARS_DIR}/ меньше 2 фото ({len(images)}) — нечего случайно выбирать.")
+        return
+
+    print(f"Фото в папке: {len(images)}")
+    print(f"Аккаунтов:    {len(sessions)}")
+    print("Каждому аккаунту — 2 случайные разные фотографии из папки.")
+    print("Начать? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        return
+
+    async def _run():
+        from api.client_pool import pool
+        print("\nПодключаем аккаунты...")
+        await pool.start_all()
+        active = pool.list_active()
+        if not active:
+            print("Ни один аккаунт не авторизован.")
+            await pool.shutdown()
+            return
+        print(f"Активных: {len(active)}\n")
+
+        ok = fail = 0
+        for acc_name, client in pool.clients.items():
+            for img_path in random.sample(images, 2):
+                upload_path = img_path
+                try:
+                    upload_path = _ensure_min_photo_size(img_path)
+                    uploaded = await client.upload_file(upload_path)
+                    await client(UploadProfilePhotoRequest(file=uploaded))
+                    print(f"  ✓ {acc_name} ← {os.path.basename(img_path)}")
+                    ok += 1
+                except Exception as e:
+                    print(f"  ✗ {acc_name} ({os.path.basename(img_path)}): {e}")
+                    fail += 1
+                finally:
+                    if upload_path != img_path and os.path.exists(upload_path):
+                        os.unlink(upload_path)
+
+        await pool.shutdown()
+        print(f"\nГотово: {ok} успешно, {fail} ошибок")
+
+    asyncio.run(_run())
+
+
 def _handle_generate_names():
-    """Сгенерировать имена/фамилии через Gemini и применить ко всем аккаунтам."""
-    from api.gemini import is_configured, generate_names
+    """Сгенерировать имена/фамилии нейросетью и применить ко всем аккаунтам."""
+    from api.copywriter import is_configured, generate_names, config_hint
 
     sessions = get_session_files()
     if not sessions:
@@ -395,10 +522,10 @@ def _handle_generate_names():
         return
 
     if not is_configured():
-        print("\n⚠  GEMINI_API_KEY не задан в .env")
+        print(f"\n⚠  {config_hint()}")
         return
 
-    print("\n--- Сгенерировать имена/фамилии (Gemini) ---")
+    print("\n--- Сгенерировать имена/фамилии ---")
     print(f"Аккаунтов: {len(sessions)}\n")
 
     print("Какие поля генерировать?")
@@ -413,7 +540,7 @@ def _handle_generate_names():
     else:
         fields = ["first_name", "last_name"]
 
-    print("\nПромт для Gemini (описание стиля имён).")
+    print("\nПромт для Grok (описание стиля имён).")
     print("Например: «русские мужские», «западные женские, 25-35 лет», «нейтральные»")
     prompt = input("Промт (Enter = без уточнений): ").strip()
 
@@ -423,11 +550,11 @@ def _handle_generate_names():
         from api.client_pool import pool
         from api.routes_accounts import ProfileIn, _apply_profile
 
-        # Генерируем имена (не нужен пул — только Gemini)
+        # Генерируем имена (не нужен пул — только Grok)
         try:
             generated = await generate_names(prompt, count=len(sessions), fields=fields)
         except Exception as e:
-            print(f"✗\nОшибка Gemini: {e}")
+            print(f"✗\nОшибка Grok: {e}")
             return
 
         print(f"✓ ({len(generated)} вариантов)\n")
@@ -469,6 +596,251 @@ def _handle_generate_names():
         print(f"\nГотово: {ok} успешно, {fail} ошибок")
 
     asyncio.run(_run())
+
+
+# Фиксированные имя/фамилия для брендинга LINKTECH — без нейросети,
+# одинаковые у всех аккаунтов (в отличие от "8", где имена генерируются).
+LINKTECH_FIRST_NAME = "LINKTECH | WORK"
+LINKTECH_LAST_NAME = "Михаил Кадяев"
+
+
+def _handle_set_linktech_names():
+    """Ставит фиксированные имя+фамилию LINKTECH всем аккаунтам."""
+    sessions = get_session_files()
+    if not sessions:
+        print("Нет аккаунтов.")
+        return
+
+    print("\n--- Имена LINKTECH ---")
+    print(f"Аккаунтов: {len(sessions)}")
+    print(f"Имя:     {LINKTECH_FIRST_NAME}")
+    print(f"Фамилия: {LINKTECH_LAST_NAME}")
+    print(f"\nПрименить ко всем {len(sessions)} аккаунтам? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    async def _run():
+        from api.client_pool import pool
+        from api.routes_accounts import ProfileIn, _apply_profile
+
+        print("\nПодключаем аккаунты...")
+        await pool.start_all()
+        active = pool.list_active()
+        if not active:
+            print("Ни один аккаунт не авторизован.")
+            await pool.shutdown()
+            return
+        print(f"Активных: {len(active)}\n")
+
+        profile = ProfileIn(first_name=LINKTECH_FIRST_NAME, last_name=LINKTECH_LAST_NAME)
+        ok = fail = 0
+        for acc_name, client in pool.clients.items():
+            try:
+                await _apply_profile(client, profile)
+                print(f"  ✓ {acc_name}")
+                ok += 1
+            except Exception as e:
+                print(f"  ✗ {acc_name}: {e}")
+                fail += 1
+
+        await pool.shutdown()
+        print(f"\nГотово: {ok} успешно, {fail} ошибок")
+
+    asyncio.run(_run())
+
+
+# Telegram не даёт первому имени быть по-настоящему пустой строкой
+# ("The first name is invalid" от UpdateProfileRequest — проверено вживую,
+# даже " " (пробел) он режет). ⁣ (INVISIBLE SEPARATOR) — единственный
+# рабочий способ получить визуально пустое имя: Telegram его принимает,
+# а показывается оно как пусто. Фамилию можно оставлять реально пустой.
+_EMPTY_FIRST_NAME = "⁣"
+
+
+def _handle_clear_names():
+    """Ставит визуально пустые имя+фамилию всем аккаунтам."""
+    sessions = get_session_files()
+    if not sessions:
+        print("Нет аккаунтов.")
+        return
+
+    print("\n--- Очистить имя и фамилию ---")
+    print(f"Аккаунтов: {len(sessions)}")
+    print(f"\nОчистить имя и фамилию у всех {len(sessions)} аккаунтов? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    async def _run():
+        from api.client_pool import pool
+        from api.routes_accounts import ProfileIn, _apply_profile
+
+        print("\nПодключаем аккаунты...")
+        await pool.start_all()
+        active = pool.list_active()
+        if not active:
+            print("Ни один аккаунт не авторизован.")
+            await pool.shutdown()
+            return
+        print(f"Активных: {len(active)}\n")
+
+        profile = ProfileIn(first_name=_EMPTY_FIRST_NAME, last_name="")
+        ok = fail = 0
+        for acc_name, client in pool.clients.items():
+            try:
+                await _apply_profile(client, profile)
+                print(f"  ✓ {acc_name}")
+                ok += 1
+            except Exception as e:
+                print(f"  ✗ {acc_name}: {e}")
+                fail += 1
+
+        await pool.shutdown()
+        print(f"\nГотово: {ok} успешно, {fail} ошибок")
+
+    asyncio.run(_run())
+
+
+def _handle_clear_avatars():
+    """Удаляет все фото профиля у всех аккаунтов."""
+    sessions = get_session_files()
+    if not sessions:
+        print("Нет аккаунтов.")
+        return
+
+    print("\n--- Очистить аватарки ---")
+    print(f"Аккаунтов: {len(sessions)}")
+    print(f"\nУдалить ВСЕ фото профиля у всех {len(sessions)} аккаунтов? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    async def _run():
+        from api.client_pool import pool
+        from telethon import utils
+        from telethon.tl.functions.photos import DeletePhotosRequest
+
+        print("\nПодключаем аккаунты...")
+        await pool.start_all()
+        active = pool.list_active()
+        if not active:
+            print("Ни один аккаунт не авторизован.")
+            await pool.shutdown()
+            return
+        print(f"Активных: {len(active)}\n")
+
+        ok = fail = 0
+        for acc_name, client in pool.clients.items():
+            try:
+                photos = await client.get_profile_photos("me")
+                if not photos:
+                    print(f"  ─ {acc_name}: аватарок и так нет")
+                    ok += 1
+                    continue
+                input_photos = [utils.get_input_photo(p) for p in photos]
+                await client(DeletePhotosRequest(id=input_photos))
+                print(f"  ✓ {acc_name}: удалено {len(input_photos)}")
+                ok += 1
+            except Exception as e:
+                print(f"  ✗ {acc_name}: {e}")
+                fail += 1
+
+        await pool.shutdown()
+        print(f"\nГотово: {ok} успешно, {fail} ошибок")
+
+    asyncio.run(_run())
+
+
+def _handle_authorize_one_account():
+    """
+    Повторный автовход для ОДНОГО конкретного аккаунта (по item_id LZT) —
+    когда он не авторизован, а гонять весь пункт 13 (все купленные) не нужно.
+    """
+    from accounts.lzt_buyer import LZTMarketAPI, create_session_for_item
+    from accounts.lzt_buyer import _session_is_authorized
+
+    item_id = input("\nitem_id аккаунта (число, как в sessions/<item_id>.session): ").strip()
+    if not item_id or not item_id.isdigit():
+        print("Нужен числовой item_id.")
+        return
+
+    sess = os.path.join(SESSIONS_DIR, f"{item_id}.session")
+    if os.path.exists(sess) and _session_is_authorized(sess):
+        print(f"[{item_id}] уже авторизован — делать нечего.")
+        return
+
+    api = LZTMarketAPI()
+    item = api.get_item(int(item_id))
+    if not item:
+        print(f"[{item_id}] LZT не отдал данные по этому item_id "
+              f"(не ваш аккаунт / не найден / нет доступа).")
+        return
+
+    print(f"[{item_id}] пробую автовход...")
+    path = create_session_for_item(item, api, attempts=4)
+    if path and _session_is_authorized(path):
+        print(f"[{item_id}] ✓ авторизован, сессия готова: {path}")
+    else:
+        print(f"[{item_id}] ✗ автовход не удался — см. причину выше "
+              f"(код не пришёл / протух / аккаунт мёртв).")
+
+
+def _handle_reset_health():
+    """
+    Снимает «отдых» и восстанавливает штрафной множитель (cap_multiplier → 1.0).
+
+    Нужно, когда аккаунты получили серию PeerFlood не по своей вине (например,
+    из-за бага в рассылке — см. историю с проваленными резолвами без пауз):
+    каждый флуд режет множитель вдвое, до пола 0.15, и тогда дневной лимит
+    падает до нуля — аккаунт живой, но тул его не берёт. Сброс возвращает
+    аккаунт в строй. На реальные ограничения Telegram это не влияет никак:
+    если он всё ещё ограничивает аккаунт, тот просто снова словит PeerFlood.
+    """
+    from data import analytics as an
+    import optimizer.health as health
+
+    rows = [m for m in an.list_accounts()
+            if not (m["name"].startswith("демо") or "demo" in m["name"])]
+    if not rows:
+        print("Нет аккаунтов в аналитике.")
+        return
+
+    print("\n--- Здоровье аккаунтов ---")
+    problem = []
+    for m in rows:
+        name = m["name"]
+        resting = health.is_resting(m)
+        mult = float(m.get("cap_multiplier") or 1.0)
+        cap = health.daily_cap(name)
+        mark = ""
+        if m["status"] == "dead":
+            mark = "МЁРТВ (бан)"
+        elif resting or mult < 1.0:
+            mark = "под штрафом"
+            problem.append(name)
+        print(f"  {name:<12} статус={m['status']:<8} множитель={mult:<5} "
+              f"лимит_сегодня={cap:<3} {mark}")
+
+    if not problem:
+        print("\nШтрафов нет — сбрасывать нечего.")
+        return
+
+    print(f"\nПод штрафом: {len(problem)} аккаунт(ов).")
+    print("Сброс снимет отдых и вернёт множитель 1.0 (мёртвые не трогаем).")
+    if input("Сбросить? (y/n): ").strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    done = 0
+    for name in problem:
+        an.update_account(name, status="active", rest_until=None, cap_multiplier=1.0)
+        done += 1
+    print(f"Готово: сброшено {done}.")
+
+    print("\nПосле сброса:")
+    for name in problem:
+        print(f"  {name:<12} лимит_сегодня={health.daily_cap(name)}")
 
 
 def _handle_set_personal_channel():
@@ -544,9 +916,40 @@ def _handle_set_personal_channel():
     asyncio.run(_run())
 
 
+def _handle_pull_all_lzt():
+    """Подтягивает ВСЕ купленные на LZT Telegram-аккаунты по истории заказов:
+    сохраняет accounts/*.txt, пишет аналитику покупки и (опц.) делает автовход."""
+    from accounts.lzt_buyer import pull_purchased_accounts
+    from data.db import sync_all_to_db
+    from config import SESSIONS_DIR
+
+    print("\n--- Подтянуть ВСЕ купленные с LZT ---")
+    print("Возьму список из истории заказов LZT (не из папки accounts/).")
+    print("Сессии собираются из auth-ключа аккаунта (быстро, без прокси);")
+    print("для мёртвых ключей — фолбэк на вход по SMS-коду от LZT.")
+    ans = input("\nСобирать сессии сейчас? (Y/n): ").strip().lower()
+    do_login = ans != "n"
+
+    res = pull_purchased_accounts(login=do_login)
+
+    print(f"\nСохранено данных аккаунтов: {len(res['saved'])}")
+    if res.get("live"):
+        print(f"  Рабочих ({len(res['live'])}): {', '.join(res['live'])}")
+    if res.get("skipped"):
+        print(f"  Уже были ({len(res['skipped'])}): {', '.join(res['skipped'])}")
+    if res.get("dead"):
+        print(f"  Нерабочих ({len(res['dead'])}): {', '.join(res['dead'])}")
+        print("  → у этих аккаунтов на стороне LZT сброшен ключ. Зайди на lzt.market,")
+        print("    открой аккаунт и залогинься там заново, либо запроси возврат/замену.")
+
+    if do_login:
+        n = sync_all_to_db(SESSIONS_DIR)
+        print(f"Синхронизировано сессий в БД: {n}")
+
+
 def _handle_download_sessions_lzt():
     """Скачивает .session с LZT для аккаунтов из accounts/ у которых ещё нет сессии."""
-    from accounts.lzt_buyer import LZTMarketAPI, login_via_code, register_account_purchase
+    from accounts.lzt_buyer import LZTMarketAPI, create_session_for_item, register_account_purchase
 
     print("\n--- Скачать сессии с LZT ---")
 
@@ -607,7 +1010,7 @@ def _handle_download_sessions_lzt():
             print(f"  [{item_id}] ✗ Не удалось получить данные")
             fail += 1
             continue
-        session_path = asyncio.run(login_via_code(item, api))
+        session_path = create_session_for_item({**item, "item_id": item_id}, api, attempts=4)
         if session_path:
             print(f"  [{item_id}] ✓ Сессия готова")
             register_account_purchase({**item, "item_id": item_id})
@@ -645,19 +1048,17 @@ def handle_neuro_commenting():
         print("Нет аккаунтов.")
         return
 
-    from api.gemini import is_configured
+    from api.copywriter import is_configured, config_hint
 
     if not is_configured():
-        print("\n⚠  GEMINI_API_KEY не задан в .env")
-        print("   Получи ключ на https://aistudio.google.com/app/apikey")
-        print("   и добавь в .env: GEMINI_API_KEY=AIzaSy...")
+        print(f"\n⚠  {config_hint()}")
         return
 
     print("\n--- Нейрокомментинг ---")
-    print("Gemini читает пост и пишет живой осмысленный комментарий.\n")
+    print("Нейросеть читает пост и пишет живой осмысленный комментарий.\n")
 
     # Стиль
-    print("Стиль комментирования (промт для Gemini).")
+    print("Стиль комментирования (промт для Grok).")
     print("Например: «Ты эксперт по инвестициям. Пиши коротко, задавай вопросы, делись мнением.»")
     style_prompt = input_multiline("Промт:").strip()
     if not style_prompt:
@@ -760,7 +1161,7 @@ def handle_neuro_commenting():
                     print(f"  🔍 [{r}] Найдено: {entry.get('total')}, новых: {entry.get('new')}")
                 elif ev == "round_complete":
                     print(f"  ✓ Раунд {entry.get('round')} завершён, отправлено: {entry.get('sent')}")
-                elif ev in ("gemini_error", "comment_error", "flood_wait"):
+                elif ev in ("llm_error", "comment_error", "flood_wait"):
                     print(f"  ✗ {ev}: {entry.get('error') or entry.get('channel')}")
 
         await pool.shutdown()
@@ -791,10 +1192,18 @@ def handle_broadcasting():
             handle_inviting()
         elif choice == "0":
             break
+        else:
+            print("Неверный выбор.")
 
 
 def _run_job_console(job, runner_coro):
-    """Запускает job через пул клиентов. Выводит итог."""
+    """
+    Запускает job через пул клиентов. Выводит итог — в т.ч. сколько целей
+    НЕ обработано (застряло в очереди, если все аккаунты остановились раньше
+    времени) и почему аккаунты останавливались (FloodWait/PeerFlood/бан) —
+    раньше это молча терялось: печатались только sent/skipped/failed, и было
+    непонятно, почему из 50 адресатов ушло сообщение только одному.
+    """
     async def _run():
         from api.client_pool import pool
         print("\nПодключаем аккаунты...")
@@ -812,11 +1221,30 @@ def _run_job_console(job, runner_coro):
             job.cancel.set()
             print("\nОстановка...")
             await asyncio.sleep(1)
+
+        attempted = job.sent + job.failed + job.skipped
+        backlog = job.total - attempted
+
         print(f"\n{'='*40}")
-        print(f"Статус:      {job.status}")
-        print(f"Отправлено:  {job.sent}")
-        print(f"Пропущено:   {job.skipped}")
-        print(f"Ошибок:      {job.failed}")
+        print(f"Статус:         {job.status}")
+        print(f"Всего в списке: {job.total}")
+        print(f"Отправлено:     {job.sent}")
+        print(f"Пропущено:      {job.skipped}")
+        print(f"Ошибок:         {job.failed}")
+        if backlog > 0:
+            print(f"⚠ НЕ обработано: {backlog} — не дошла очередь "
+                  f"(все аккаунты остановились раньше, см. причины ниже)")
+
+        reasons = [
+            f"  [{e.get('account')}] {e.get('event')}: {e.get('reason') or e.get('error') or ''}"
+            for e in job.log
+            if e.get("event") in ("account_paused", "account_dead", "account_skipped", "account_failed")
+        ]
+        if reasons:
+            print("\nПричины остановки/пропуска аккаунтов:")
+            for r in reasons:
+                print(r)
+
         await pool.shutdown()
 
     asyncio.run(_run())
@@ -832,7 +1260,43 @@ def handle_dm_sending():
         return
 
     print(f"Найдено: {len(users)} контактов")
-    targets = [f"@{u['username']}" if u.get("username") else str(u["user_id"]) for u in users]
+
+    # Контакты без @username (только числовой user_id) отправить НЕЛЬЗЯ: Telegram
+    # не даёт написать по голому id, если этот аккаунт раньше с человеком не
+    # пересекался (нет access_hash). Парсил чаты один аккаунт, рассылают другие —
+    # у них таких прав нет, и каждый такой резолв гарантированно падает.
+    # А пачка проваленных резолвов подряд — главный триггер PeerFlood.
+    # Поэтому отсеиваем их ДО рассылки, а не жжём на них аккаунты.
+    sendable = [u for u in users if u.get("username")]
+    dropped = len(users) - len(sendable)
+    if dropped:
+        print(f"  ⚠ Пропущено {dropped} контактов без @username "
+              f"(по голому id Telegram написать не даёт — они бы всё равно упали)")
+    if not sendable:
+        print("Не осталось контактов с @username — рассылать некому.")
+        return
+    users = sendable
+    print(f"Реально доступно к отправке: {len(users)}")
+
+    limit_raw = input(f"Скольким отправить? (Enter = всем {len(users)}): ").strip()
+    if limit_raw:
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            print("Неверное число.")
+            return
+        if limit <= 0:
+            print("Число должно быть больше 0.")
+            return
+        # Случайная выборка, а не "первые N" — контакты из парсинга идут по
+        # чатам подряд, и в начале списка может оказаться сплошь один чат
+        # (в т.ч. ботный/накрученный). Рандом размазывает выборку по всей базе.
+        import random
+        limit = min(limit, len(users))
+        users = random.sample(users, limit)
+        print(f"К отправке: {len(users)} контактов (случайная выборка)")
+
+    targets = [f"@{u['username']}" for u in users]
 
     niche = input("\nНиша (Enter — без оптимизатора, разовое сообщение вручную): ").strip()
     target_channel = None
@@ -848,7 +1312,7 @@ def handle_dm_sending():
             print("После чистки списка (дубли/стоп-лист/уже писали) отправлять некому.")
             return
     else:
-        message = input_multiline("\nТекст сообщения:").strip()
+        message = pick_message_text()
         if not message:
             print("Пустое сообщение. Отмена.")
             return
@@ -871,7 +1335,7 @@ def handle_dm_sending():
 
 def _prepare_niche_dm(niche: str, raw_targets: list[str]):
     """
-    Ниша → существующие шаблоны или генерация через Gemini → план (чистка списка,
+    Ниша → существующие шаблоны или генерация через Grok → план (чистка списка,
     ёмкость аккаунтов на сегодня). Возвращает (message_fallback, plan) или (None, None)
     при отмене. message_fallback используется только как job.message для старых
     kind, сама рассылка идёт вариантами из БД через optimizer.bandit.
@@ -913,12 +1377,12 @@ def _prepare_niche_dm(niche: str, raw_targets: list[str]):
 
 
 def _generate_dm_templates_console(niche: str) -> list[dict]:
-    """Генерирует варианты через Gemini, даёт посмотреть и подтвердить перед сохранением."""
+    """Генерирует варианты нейросетью, даёт посмотреть и подтвердить перед сохранением."""
     from data import analytics as an
-    from api import gemini
+    from api import copywriter
 
-    if not gemini.is_configured():
-        print("GEMINI_API_KEY не задан в .env — нейрогенерация недоступна.")
+    if not copywriter.is_configured():
+        print(f"{copywriter.config_hint()} — нейрогенерация недоступна.")
         text = input_multiline("Введите текст шаблона вручную:").strip()
         if not text:
             return []
@@ -928,9 +1392,9 @@ def _generate_dm_templates_console(niche: str) -> list[dict]:
     count_raw = input("Сколько вариантов сгенерировать (по умолчанию 2): ").strip()
     count = int(count_raw) if count_raw.isdigit() else 2
 
-    print("Генерирую через Gemini...")
+    print("Генерирую...")
     try:
-        variants = asyncio.run(gemini.generate_dm_variants(niche, info, count))
+        variants = asyncio.run(copywriter.generate_dm_variants(niche, info, count))
     except Exception as e:  # noqa: BLE001
         print(f"Ошибка генерации: {e}")
         return []
@@ -998,7 +1462,7 @@ def handle_chat_sending():
         return
 
     print(f"Чатов: {len(chats)}")
-    message = input_multiline("\nТекст сообщения:").strip()
+    message = pick_message_text()
     if not message:
         print("Пустое сообщение. Отмена.")
         return
@@ -1091,6 +1555,8 @@ def handle_parsing():
             _show_category_stats()
         elif choice == "0":
             break
+        else:
+            print("Неверный выбор.")
 
 
 def handle_parse_folders():
@@ -1255,6 +1721,8 @@ def handle_users_base():
             _handle_parse_by_category()
         elif choice == "0":
             break
+        else:
+            print("Неверный выбор.")
 
 
 def _handle_add_users_manual():
@@ -1333,7 +1801,9 @@ def _handle_parse_single_chat():
         if result["error"]:
             print(f"Ошибка: {result['error']}")
         else:
-            print(f"Готово! Спарсено: {result['parsed']}, добавлено: {result['added']}, дублей: {result['skipped']}")
+            print(f"Готово! Спарсено: {result['parsed']}, добавлено: {result['added']}, "
+                  f"дублей: {result['skipped']}, без @username (пропущены): "
+                  f"{result.get('no_username', 0)}")
 
     asyncio.run(_run())
 
@@ -1424,7 +1894,8 @@ def _handle_parse_by_category():
                 total_parsed += result["parsed"]
                 total_added += result["added"]
                 total_skipped += result["skipped"]
-                print(f"✓ {result['parsed']} участников, +{result['added']} новых")
+                print(f"✓ {result['parsed']} участников, +{result['added']} новых "
+                      f"(без @username пропущено: {result.get('no_username', 0)})")
 
             # Пауза между чатами чтобы не получить FloodWait
             if i < len(chats):
@@ -1446,33 +1917,197 @@ def _handle_parse_by_category():
 # ========================================================================
 
 def handle_proxy():
-    print("\n--- Настройки прокси ---")
-    current = load_proxy()
-    if current:
-        print(f"Текущий: {current}")
-    else:
-        print("Не установлен.")
+    while True:
+        current = load_proxy()
+        print("\n--- Настройки прокси ---")
+        print(f"Общий (фолбэк): {current or 'не установлен'}")
+        print("\n  1. Установить общий прокси")
+        print("  2. Удалить общий прокси")
+        print("  3. Прокси по аккаунтам — список")
+        print("  4. Назначить прокси одному аккаунту")
+        print("  5. Массово назначить (список прокси → по одному на аккаунт)")
+        print("  6. Убрать персональный прокси у аккаунта")
+        print("  0. Назад")
 
-    print("\n  1. Установить прокси")
-    print("  2. Удалить прокси")
-    print("  0. Назад")
+        choice = input("\nВыбор: ").strip()
 
-    choice = input("\nВыбор: ").strip()
+        if choice == "1":
+            proxy = input("SOCKS5 (socks5://...) или MTProxy (tg://proxy?...): ").strip()
+            proxy = _valid_proxy_or_none(proxy)
+            if not proxy:
+                print("Отмена.")
+                continue
+            save_proxy(proxy)
+            print(f"Сохранен: {proxy}")
+        elif choice == "2":
+            from data.db import clear_proxy
+            clear_proxy()
+            print("Удален.")
+        elif choice == "3":
+            _show_account_proxies()
+        elif choice == "4":
+            _handle_set_account_proxy()
+        elif choice == "5":
+            _handle_bulk_assign_proxies()
+        elif choice == "6":
+            _handle_clear_account_proxy()
+        elif choice == "0":
+            break
+        else:
+            print("Неверный выбор.")
 
-    if choice == "1":
-        proxy = input("SOCKS5 (socks5://user:pass@host:port): ").strip()
-        if not proxy:
-            print("Отмена.")
+
+def _valid_proxy_or_none(s: str) -> str | None:
+    """Принимает socks5://... или tg://proxy?server=...&port=...&secret=... (MTProxy)."""
+    from proxy_manager import parse_mtproxy_link
+
+    s = s.strip()
+    if not s:
+        return None
+    if s.startswith("socks5://"):
+        return s
+    if parse_mtproxy_link(s):
+        return s
+    print(f"  Пропущено (не socks5:// и не tg://proxy?...): {s}")
+    return None
+
+
+def _show_account_proxies():
+    """Показывает, у какого аккаунта какой прокси (персональный / общий фолбэк / нет)."""
+    from data.db import all_account_proxies
+
+    sessions = get_session_files()
+    if not sessions:
+        print("Нет аккаунтов.")
+        return
+
+    assigned = all_account_proxies()
+    common = load_proxy()
+
+    print(f"\n--- Прокси по аккаунтам ({len(sessions)}) ---")
+    for s in sessions:
+        name = os.path.splitext(os.path.basename(s))[0]
+        if name in assigned:
+            print(f"  {name:<15} персональный: {assigned[name]}")
+        elif common:
+            print(f"  {name:<15} общий (фолбэк): {common}")
+        else:
+            print(f"  {name:<15} нет прокси (прямое соединение)")
+
+    without_any = [os.path.splitext(os.path.basename(s))[0] for s in sessions
+                   if os.path.splitext(os.path.basename(s))[0] not in assigned and not common]
+    if without_any:
+        print(f"\n⚠ Без прокси вообще: {len(without_any)} — все ходят с твоего реального IP.")
+
+
+def _handle_set_account_proxy():
+    sessions = get_session_files()
+    if not sessions:
+        print("Нет аккаунтов.")
+        return
+
+    names = [os.path.splitext(os.path.basename(s))[0] for s in sessions]
+    print("\nАккаунты:")
+    for i, n in enumerate(names, 1):
+        print(f"  {i}. {n}")
+
+    sel = input("\nНомер аккаунта: ").strip()
+    try:
+        idx = int(sel) - 1
+        if not (0 <= idx < len(names)):
+            print("Неверный номер.")
             return
-        if not proxy.startswith("socks5://"):
-            print("Формат: socks5://user:pass@host:port")
+    except ValueError:
+        print("Неверный ввод.")
+        return
+
+    proxy = input("SOCKS5 (socks5://...) или MTProxy (tg://proxy?...): ").strip()
+    proxy = _valid_proxy_or_none(proxy)
+    if not proxy:
+        print("Отмена.")
+        return
+
+    from data.db import set_account_proxy
+    set_account_proxy(names[idx], proxy)
+    print(f"Назначено: {names[idx]} → {proxy}")
+
+
+def _handle_bulk_assign_proxies():
+    """
+    Вставляешь список прокси (по одному на строку) — раздаются по одному
+    на аккаунт, в том же порядке, что в списке аккаунтов. Прокси меньше,
+    чем аккаунтов — хвост останется без персонального (упадёт на общий).
+    """
+    sessions = get_session_files()
+    if not sessions:
+        print("Нет аккаунтов.")
+        return
+
+    names = [os.path.splitext(os.path.basename(s))[0] for s in sessions]
+    print(f"\n--- Массовое назначение прокси ({len(names)} аккаунтов) ---")
+    print("Вставь список прокси, по одному на строку (socks5://... или tg://proxy?...).")
+    text = input_multiline("Список прокси:")
+    proxies = [p for p in (_valid_proxy_or_none(line) for line in text.split("\n")) if p]
+
+    if not proxies:
+        print("Ни одного валидного прокси не найдено. Отмена.")
+        return
+
+    print(f"\nПрокси: {len(proxies)}, аккаунтов: {len(names)}")
+    if len(proxies) < len(names):
+        print(f"  ⚠ Прокси меньше, чем аккаунтов — последним {len(names) - len(proxies)} "
+              f"персональный не достанется (упадут на общий фолбэк).")
+    elif len(proxies) > len(names):
+        print(f"  Лишние {len(proxies) - len(names)} прокси не используются.")
+
+    print("\nПревью назначений:")
+    for name, proxy in zip(names, proxies):
+        print(f"  {name} → {proxy}")
+
+    if input("\nПрименить? (y/n): ").strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    from data.db import set_account_proxy
+    for name, proxy in zip(names, proxies):
+        set_account_proxy(name, proxy)
+    print(f"Готово: назначено {min(len(names), len(proxies))} аккаунтам.")
+
+
+def _handle_clear_account_proxy():
+    from data.db import all_account_proxies, clear_account_proxy
+
+    assigned = all_account_proxies()
+    if not assigned:
+        print("Ни у одного аккаунта нет персонального прокси.")
+        return
+
+    names = list(assigned.keys())
+    print("\nС персональным прокси:")
+    for i, n in enumerate(names, 1):
+        print(f"  {i}. {n}  ({assigned[n]})")
+
+    sel = input("\nНомер (0 = все сразу): ").strip()
+    if sel == "0":
+        if input(f"Убрать персональный прокси у ВСЕХ {len(names)}? (y/n): ").strip().lower() != "y":
+            print("Отменено.")
             return
-        save_proxy(proxy)
-        print(f"Сохранен: {proxy}")
-    elif choice == "2":
-        from data.db import clear_proxy
-        clear_proxy()
-        print("Удален.")
+        for n in names:
+            clear_account_proxy(n)
+        print(f"Убрано у {len(names)} аккаунтов.")
+        return
+
+    try:
+        idx = int(sel) - 1
+        if not (0 <= idx < len(names)):
+            print("Неверный номер.")
+            return
+    except ValueError:
+        print("Неверный ввод.")
+        return
+
+    clear_account_proxy(names[idx])
+    print(f"Убрано у {names[idx]}.")
 
 
 # ========================================================================

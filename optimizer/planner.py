@@ -89,11 +89,16 @@ def wave_size(niche: str, available: int) -> dict:
 
 
 def capacity() -> dict:
-    accounts = [a for a in health.report() if a["status"] == "active"]
+    """Ёмкость на сегодня — только по РЕАЛЬНЫМ аккаунтам (см. health.report_real:
+    account_meta вперемешку хранит демо-данные для дашбордов и купленные-но-
+    неавторизованные аккаунты — план рассылки должен видеть только тех,
+    кто реально может отправить сообщение)."""
+    rows = health.report_real()
+    accounts = [a for a in rows if a["status"] == "active"]
     return {
         "accounts_active": len(accounts),
-        "accounts_resting": len([a for a in health.report() if a["status"] == "resting"]),
-        "accounts_dead": len([a for a in health.report() if a["status"] == "dead"]),
+        "accounts_resting": len([a for a in rows if a["status"] == "resting"]),
+        "accounts_dead": len([a for a in rows if a["status"] == "dead"]),
         "remaining_today": sum(a["remaining_today"] for a in accounts),
         "per_account": {a["account"]: a["remaining_today"] for a in accounts},
     }

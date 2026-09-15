@@ -1,13 +1,22 @@
 import os
 
+# .env подхватываем здесь, чтобы CONFIG был заполнен независимо от точки входа
+# (main.py, uvicorn api.server:app, отдельные скрипты).
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # --- ОСНОВНАЯ КОНФИГУРАЦИЯ ---
+# Секреты берём из .env (см. .env.example). В репозитории их быть не должно.
 
 CONFIG = {
-    "LZT_TOKEN": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzUxMiJ9.eyJzdWIiOjUzODI2MTksImlzcyI6Imx6dCIsImlhdCI6MTc2NDI0MTYzOSwianRpIjoiODg3NjY2Iiwic2NvcGUiOiJiYXNpYyByZWFkIHBvc3QgY29udmVyc2F0ZSBwYXltZW50IGludm9pY2UgY2hhdGJveCBtYXJrZXQiLCJleHAiOjE5MjE5MjE2Mzl9.C1rARs5slMCMZ4nbc4qFqnJnNvVb0bWDaOGmqIXRrjiRslUNygLeWc7QBxTMs8mJ-EUH2szpo5JNmoyXsE7SeVtwyx5KW6h-BZPEGNVZCk36jRoBkwott0vaf8_RGJOizAVoMd7cJs_JSBgGv64sXQSFBZSgjpTLqwo3kjy0WDI",
-    "LZT_MARKET_ID": 24,
-    "LZT_API_BASE_URL": "https://prod-api.lzt.market",
-    "TELEGRAM_API_ID": 31955472,
-    "TELEGRAM_API_HASH": "636863cb9b1482ed12e0649d26fad94f",
+    "LZT_TOKEN": os.getenv("LZT_TOKEN", ""),
+    "LZT_MARKET_ID": int(os.getenv("LZT_MARKET_ID", "24")),
+    "LZT_API_BASE_URL": os.getenv("LZT_API_BASE_URL", "https://prod-api.lzt.market"),
+    "TELEGRAM_API_ID": int(os.getenv("TELEGRAM_API_ID", "0")),
+    "TELEGRAM_API_HASH": os.getenv("TELEGRAM_API_HASH", ""),
 }
 
 # --- ПУТИ ---

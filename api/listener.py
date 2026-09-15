@@ -15,12 +15,18 @@ from telethon import events
 from telethon.tl.types import User as TgUser
 
 from data import analytics as an
+from data import inbox
 from .client_pool import pool
 
 log = logging.getLogger(__name__)
 
 WEBHOOK_URL = os.getenv("CRM_WEBHOOK_URL", "")
 WEBHOOK_TOKEN = os.getenv("CRM_WEBHOOK_TOKEN", "")
+
+# По умолчанию диалог в /inbox заводится только на ОТВЕТ на рассылку.
+# INBOX_ACCEPT_ANY_DM=1 — заводить на ЛЮБОЕ входящее 1:1 (удобно для теста,
+# и на случай, когда пишет тёплый контакт вне трекинга рассылки).
+ACCEPT_ANY_DM = os.getenv("INBOX_ACCEPT_ANY_DM", "").strip().lower() in ("1", "true", "yes", "on")
 
 _http: httpx.AsyncClient | None = None
 
@@ -60,6 +66,24 @@ async def _on_incoming(event):
                                   account=session_name)
     except Exception:  # noqa: BLE001 — аналитика не должна ломать приём сообщений
         log.exception("record_reply failed")
+
+    # Платформа диалогов: чат заводим ТОЛЬКО когда человек ответил на рассылку
+    # (send_id матчнулся) либо диалог с ним уже открыт. Дальше в него копятся
+    # все сообщения — см. data/inbox.py.
+    try:
+        if (send_id is not None
+                or ACCEPT_ANY_DM
+                or inbox.find_conversation_by_peer(str(chat.id))
+                or inbox.ever_sent_to_peer(str(chat.id))):
+            inbox.record_inbound(
+                str(chat.id), session_name,
+                tg_id=msg.id, text=msg.message,
+                sent_at=(msg.date.isoformat() if msg.date else None),
+                username=chat.username, first_name=chat.first_name,
+                last_name=chat.last_name, phone=chat.phone,
+                send_id=send_id)
+    except Exception:  # noqa: BLE001 — платформа диалогов не должна ронять приём
+        log.exception("inbox.record_inbound failed")
 
     payload = {
         "account_name": session_name,
@@ -109,6 +133,27 @@ async def _post_webhook(path: str, payload: dict) -> None:
         log.exception("webhook post failed")
 
 
+async def _on_outgoing(event):
+    """Исходящее, отправленное вручную из самого Telegram. Дописываем в уже
+    открытый диалог — переписки, начатые не через платформу, она не ведёт."""
+    session_name = _which_session(event.client)
+    if session_name is None:
+        return
+    try:
+        chat = await event.get_chat()
+    except Exception:  # noqa: BLE001
+        return
+    if not isinstance(chat, TgUser) or chat.bot:
+        return
+    msg = event.message
+    try:
+        inbox.record_outbound_by_peer(
+            str(chat.id), account=session_name, text=msg.message, tg_id=msg.id,
+            sent_at=(msg.date.isoformat() if msg.date else None))
+    except Exception:  # noqa: BLE001
+        log.exception("inbox.record_outbound_by_peer failed")
+
+
 async def _on_edited(event):
     session_name = _which_session(event.client)
     if session_name is None:
@@ -119,6 +164,10 @@ async def _on_edited(event):
         return
     if not isinstance(chat, TgUser) or chat.bot:
         return
+    try:
+        inbox.update_message_text(str(chat.id), event.message.id, event.message.message)
+    except Exception:  # noqa: BLE001
+        log.exception("inbox.update_message_text failed")
     await _post_webhook("/message-edited", {
         "account_name": session_name,
         "chat_id": str(chat.id),
@@ -140,6 +189,12 @@ async def _on_deleted(event):
             an.record_chat_deleted(str(chat_id_val))
         except Exception:  # noqa: BLE001
             log.exception("record_chat_deleted failed")
+    try:
+        inbox.mark_messages_deleted(
+            str(chat_id_val) if chat_id_val is not None else None,
+            [int(i) for i in event.deleted_ids])
+    except Exception:  # noqa: BLE001
+        log.exception("inbox.mark_messages_deleted failed")
     await _post_webhook("/message-deleted", {
         "account_name": session_name,
         "chat_id": (str(chat_id_val) if chat_id_val is not None else None),
@@ -150,6 +205,7 @@ async def _on_deleted(event):
 def setup() -> None:
     """Регистрирует listener в пуле. Зовётся ОДИН раз при старте."""
     pool.attach_handler(_on_incoming, events.NewMessage(incoming=True))
+    pool.attach_handler(_on_outgoing, events.NewMessage(outgoing=True))
     pool.attach_handler(_on_edited, events.MessageEdited())
     pool.attach_handler(_on_deleted, events.MessageDeleted())
     if WEBHOOK_URL:

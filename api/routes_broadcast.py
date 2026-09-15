@@ -104,7 +104,7 @@ async def start_dm_job(body: StartDmJobIn) -> dict:
 
 
 class StartCommentJobIn(BaseModel):
-    style_prompt: str = Field(min_length=10, description="Инструкция для Gemini: стиль и задача комментирования")
+    style_prompt: str = Field(min_length=10, description="Инструкция для Grok: стиль и задача комментирования")
     keywords: list[str] = Field(min_length=1, description="Ключевые слова для поиска каналов")
     min_subs: int = Field(default=500, ge=0, description="Минимум подписчиков у канала")
     posts_per_channel: int = Field(default=2, ge=1, le=10, description="Сколько постов комментировать в канале")
@@ -114,7 +114,7 @@ class StartCommentJobIn(BaseModel):
 
 @router.post("/comment/start")
 async def start_comment_job(body: StartCommentJobIn) -> dict:
-    """Нейрокомментинг: поиск каналов по ключевым словам + Gemini-комментарии под постами."""
+    """Нейрокомментинг: поиск каналов по ключевым словам + Grok-комментарии под постами."""
     keywords = _clean_targets(body.keywords)
     if not keywords:
         raise HTTPException(status_code=400, detail="keywords is empty after cleanup")

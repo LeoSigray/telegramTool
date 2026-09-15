@@ -2,8 +2,9 @@
 Менеджер списка пользователей (лист 'Users' в targets.xlsx).
 
 Функции:
-  add_users_manually()   — добавить пользователей вручную (user_id / @username)
+  add_users_manually()      — добавить пользователей вручную (user_id / @username)
   parse_members_from_chat() — спарсить участников чата и добавить в Users
+  remove_user()              — удалить запись из Users (после успешной отправки)
 """
 
 import asyncio
@@ -118,6 +119,63 @@ def add_users_manually(entries: list) -> dict:
     return {"added": added, "skipped": skipped}
 
 
+# ─────────────────────────── Удаление после отправки ─────────────────────────
+
+def _header_idx(headers: list, names: list) -> int | None:
+    for name in names:
+        if name in headers:
+            return headers.index(name)
+    return None
+
+
+def remove_user(identifier: str) -> bool:
+    """
+    Удаляет запись из листа 'Users' по user_id или username.
+
+    identifier — как используется при рассылке: '@username', 'username' или
+    user_id (числом/строкой). Колонки определяются по заголовку (порядок
+    'user_id'/'username' в файле не важен).
+
+    Возвращает True, если строка была найдена и удалена.
+    """
+    if not os.path.exists(EXCEL_FILE):
+        return False
+
+    wb = openpyxl.load_workbook(EXCEL_FILE)
+    if USERS_SHEET not in wb.sheetnames:
+        return False
+    ws = wb[USERS_SHEET]
+    if ws.max_row < 2:
+        return False
+
+    headers = [str(c.value).strip().lower() if c.value else ""
+               for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    idx_uid = _header_idx(headers, ["user_id", "id", "userid"])
+    idx_uname = _header_idx(headers, ["username", "юзернейм", "user"])
+
+    ident = str(identifier).strip().lstrip("@")
+    is_numeric = ident.lstrip("-").isdigit()
+
+    row_to_delete = None
+    for row in ws.iter_rows(min_row=2):
+        uid_val = row[idx_uid].value if idx_uid is not None and idx_uid < len(row) else None
+        uname_val = row[idx_uname].value if idx_uname is not None and idx_uname < len(row) else None
+
+        if is_numeric and uid_val is not None and str(uid_val).strip() == ident:
+            row_to_delete = row[0].row
+            break
+        if uname_val and str(uname_val).lstrip("@").strip().lower() == ident.lower():
+            row_to_delete = row[0].row
+            break
+
+    if row_to_delete is None:
+        return False
+
+    ws.delete_rows(row_to_delete, 1)
+    wb.save(EXCEL_FILE)
+    return True
+
+
 # ─────────────────────────── Парсинг участников чата ─────────────────────────
 
 async def _fetch_all_members(client, entity, limit_per_request: int = 200) -> list:
@@ -206,6 +264,7 @@ async def parse_members_from_chat(
 
     total = len(members)
     entries = []
+    no_username = 0
     for i, user in enumerate(members):
         if progress_cb:
             progress_cb(i + 1, total)
@@ -214,14 +273,25 @@ async def parse_members_from_chat(
         if getattr(user, "bot", False):
             continue
 
-        uid = user.id
-        uname = user.username or ""
-        entries.append({"user_id": uid, "username": uname, "comment": comment})
+        # Берём ТОЛЬКО тех, у кого есть @username. Человека без юзернейма
+        # (только числовой user_id) написать нельзя: Telegram не даёт слать
+        # сообщение по голому id, если отправляющий аккаунт раньше с ним не
+        # пересекался (нет access_hash). Парсит один аккаунт, рассылают
+        # другие — у них таких прав нет, и резолв гарантированно падает.
+        # А очередь проваленных резолвов — прямой путь к PeerFlood, поэтому
+        # такие контакты не должны попадать в базу вообще.
+        uname = (user.username or "").strip()
+        if not uname:
+            no_username += 1
+            continue
+
+        entries.append({"user_id": user.id, "username": uname, "comment": comment})
 
     stats = add_users_manually(entries)
     return {
         "parsed": total,
         "added": stats["added"],
         "skipped": stats["skipped"],
+        "no_username": no_username,
         "error": None,
     }

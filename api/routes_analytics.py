@@ -259,14 +259,14 @@ async def generate_templates(body: GenerateTemplatesIn) -> dict:
     на то, что у старых уже есть история, а у новых её пока нет — см.
     MIN_SAMPLES в optimizer/bandit.py).
     """
-    from . import gemini
-    if not gemini.is_configured():
-        raise HTTPException(status_code=503, detail="GEMINI_API_KEY не задан в .env")
+    from . import copywriter
+    if not copywriter.is_configured():
+        raise HTTPException(status_code=503, detail=copywriter.config_hint())
 
     try:
-        variants = await gemini.generate_dm_variants(body.niche, body.info, body.count)
+        variants = await copywriter.generate_dm_variants(body.niche, body.info, body.count)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Gemini: {e}")
+        raise HTTPException(status_code=502, detail=f"llm: {e}")
 
     created = [an.get_template(an.add_template(body.niche, text)) for text in variants]
     return {"ok": True, "niche": body.niche, "templates": created}
@@ -281,6 +281,40 @@ def list_templates(niche: str | None = None) -> dict:
         out["prune_suggestions"] = bandit.prune_suggestions(niche)
         out["min_samples"] = bandit.MIN_SAMPLES
     return out
+
+
+@router.get("/copy/analyze")
+async def copy_analyze(niche: str) -> dict:
+    """
+    AI-редактор текстов: Claude смотрит статистику бандита + реальные ответы
+    людей + отказы по нише и выдаёт разбор, новые варианты и «шкалу тона».
+    Ничего не сохраняет — новые варианты добавляются через /copy/apply.
+    """
+    from . import copywriter
+    from optimizer import copy_optimizer
+    if not copywriter.is_configured():
+        raise HTTPException(status_code=503, detail=copywriter.config_hint())
+    try:
+        return await copy_optimizer.analyze_niche(niche)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+class CopyApplyIn(BaseModel):
+    niche: str = Field(min_length=1)
+    texts: list[str] = Field(min_length=1, description="Тексты новых вариантов")
+
+
+@router.post("/copy/apply")
+def copy_apply(body: CopyApplyIn) -> dict:
+    """Сохранить выбранные варианты AI-редактора как шаблоны ниши → в бандит."""
+    created = []
+    for text in body.texts:
+        t = text.strip()
+        if t:
+            created.append(an.get_template(an.add_template(body.niche, t)))
+    return {"ok": True, "niche": body.niche, "templates": created,
+            "count": len(created)}
 
 
 @router.patch("/templates/{template_id}")

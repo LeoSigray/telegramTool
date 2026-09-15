@@ -171,13 +171,15 @@ const DASHBOARDS = [
   { id: 'subs',         title: 'Подписки',              icon: '📡', widgets: [{type:'subs_rate'}] },
   { id: 'replies',      title: 'Ответы на сообщения',    icon: '💬', widgets: [{type:'replies_view'}] },
   { id: 'spend',        title: 'Потраченные средства',   icon: '💸', widgets: [{type:'spend_view'}] },
+  { id: 'inbox',        title: 'Диалоги',               icon: '📨', widgets: [{type:'inbox_frame'}] },
+  { id: 'copy_ai',      title: 'AI-редактор текстов',    icon: '🧠', widgets: [{type:'copy_ai_view'}] },
 ];
 
 // Дашборды с интерактивными контролами (селекторы бакета/разреза/окна) —
 // сами управляют своим DOM: mount<X>() строит оболочку с контролами ОДИН раз,
 // paint<X>() обновляет только данные. renderAll() их не перерисовывает, чтобы
 // открытый дропдаун не закрывался на каждом опросе. См. refreshCustom().
-const CUSTOM_DASH = new Set(['acquisition', 'acct_quality', 'subs', 'replies', 'spend']);
+const CUSTOM_DASH = new Set(['acquisition', 'acct_quality', 'subs', 'replies', 'spend', 'inbox', 'copy_ai']);
 
 function dashboardHasWidget(id, type){
   const d = DASHBOARDS.find(x => x.id === id);
@@ -588,6 +590,7 @@ const COHORT_METRICS = [
   ['avg_lifetime_sends', 'пробег (сообщений)'],
   ['avg_days_alive',     'дней жизни'],
   ['pct_dead',           '% банов'],
+  ['pct_resting',        '% отдыхает (флуд)'],
   ['reply_rate',         'reply rate'],
   ['sends_per_rub',      'сообщений за ₽'],
   ['replies_per_rub',    'ответов за ₽'],
@@ -634,7 +637,8 @@ function paintCohorts(){
   if(tbl) tbl.innerHTML = `<table><thead><tr>
     <th>${cohortBy === 'price' ? 'Цена' : 'Продавец'}</th><th class="num-r">Аккаунтов</th>
     <th class="num-r">Ср. цена</th><th class="num-r">Пробег</th><th class="num-r">Дней жизни</th>
-    <th class="num-r">% банов</th><th class="num-r">Reply rate</th>
+    <th class="num-r">% банов</th><th class="num-r">% отдыхает</th><th class="num-r">Флуд-событий</th>
+    <th class="num-r">Reply rate</th>
     <th class="num-r">Сообщ./₽</th><th class="num-r">Ответов/₽</th>
     </tr></thead><tbody>` + rows.map(r => `<tr>
       <td>${r.key}${r.enough_data ? '' : ' <span class="pill warn" style="font-size:9px;padding:1px 5px">мало данных</span>'}</td>
@@ -643,6 +647,8 @@ function paintCohorts(){
       <td class="num-r">${fmt(r.avg_lifetime_sends)}</td>
       <td class="num-r">${fmt(r.avg_days_alive)}</td>
       <td class="num-r" style="color:${r.pct_dead>0.3?'var(--bad)':'inherit'}">${pct(r.pct_dead)}</td>
+      <td class="num-r" style="color:${r.pct_resting>0.3?'var(--bad)':'inherit'}">${pct(r.pct_resting)}</td>
+      <td class="num-r" style="color:${r.flood_events>0?'var(--bad)':'inherit'}">${fmt(r.flood_events)}</td>
       <td class="num-r">${pct(r.reply_rate)}</td>
       <td class="num-r">${per(r.sends_per_rub)}</td>
       <td class="num-r">${per(r.replies_per_rub)}</td>
@@ -660,7 +666,7 @@ function drawCohortBars(rows, metric, label){
   const bw = Math.max(10, Math.min(70, plotW/n*0.6));
   const xc = i => pad.l + (i+0.5)*(plotW/n);
   const y = v => pad.t + plotH - (v/max)*plotH;
-  const isPct = metric === 'pct_dead' || metric === 'reply_rate';
+  const isPct = metric === 'pct_dead' || metric === 'pct_resting' || metric === 'reply_rate';
 
   g.strokeStyle = CANVAS_GRID; g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif'; g.lineWidth = 1;
   for(let i=0;i<=4;i++){
@@ -1095,12 +1101,136 @@ function drawSpendEfficiency(series){
     g.fillText(l, x(i) - g.measureText(l).width/2, H-10); }});
 }
 
+/* ─── 6. Диалоги — встроенная платформа переписки (api/inbox.html) ──────
+   Тяжёлую логику мессенджера не дублируем в дашборде: показываем ту же
+   страницу /inbox в iframe. Оболочка монтируется один раз (CUSTOM_DASH),
+   src проставляется, когда токен уже прочитан — иначе iframe открылся бы
+   с формой ввода токена. */
+function renderInboxFrame(){
+  return `<iframe id="inboxFrame" title="Диалоги"
+    style="width:100%;height:calc(100vh - 108px);border:1px solid var(--line);
+           border-radius:16px;box-shadow:var(--shadow);background:#fff"></iframe>`;
+}
+function paintInbox(){
+  const f = $('#inboxFrame');
+  if(f && !f.src && TOKEN) f.src = BACKEND + '/inbox?token=' + encodeURIComponent(TOKEN);
+}
+
+/* ─── 7. AI-редактор текстов ──────────────────────────────────────────
+   Замыкает петлю: бандит → нейросеть смотрит статистику + реальные ответы →
+   инсайты + новые варианты + шкала тона → кнопкой в бандит. Анализ стоит
+   токены, поэтому только по кнопке, без опроса. */
+let copyAiData = null, copyAiState = 'idle', copyAiErr = '', copyAiRendered = '';
+
+function renderCopyAiView(){
+  return `<div class="panel">
+    <h2>AI-редактор текстов рассылки</h2>
+    <div class="wrow">
+      <label for="copyNiche">Ниша</label>
+      <select id="copyNiche"><option value="">— выбери нишу —</option></select>
+      <button id="copyRun" style="margin-left:6px">Анализировать</button>
+      <span id="copyStatus" class="muted" style="margin-left:auto"></span>
+    </div>
+    <div class="sub" style="margin-top:-8px;margin-bottom:14px">
+      Нейросеть смотрит статистику бандита по вариантам + реальные ответы людей + отказы,
+      объясняет что работает и предлагает новые варианты. Один запуск = один запрос к модели.
+    </div>
+    <div id="copyBody"></div>
+  </div>`;
+}
+
+function paintCopyAi(){
+  const sel = $('#copyNiche');
+  if(sel && lastOverview && (lastOverview.niches||[]).length && sel.options.length <= 1){
+    lastOverview.niches.forEach(n => sel.add(new Option(n, n)));
+  }
+  const stamp = copyAiState + '|' + copyAiErr + '|' + (copyAiData ? copyAiData.niche + copyAiData.insights.length : '');
+  if(stamp === copyAiRendered) return;   // не перетираем DOM (и чекбоксы) на пустом опросе
+  copyAiRendered = stamp;
+
+  const body = $('#copyBody'); if(!body) return;
+  const st = $('#copyStatus');
+  if(st) st.textContent = copyAiState === 'loading' ? 'Модель думает…'
+    : (copyAiData ? `видел ${copyAiData.model_input.replies_seen} ответов, ${copyAiData.model_input.variants} вар.` : '');
+
+  if(copyAiState === 'loading'){ body.innerHTML = '<div class="muted">Анализирую нишу… это 10–30 сек.</div>'; return; }
+  if(copyAiErr){ body.innerHTML = `<div class="warnbox">${copyAiErr}</div>`; return; }
+  if(!copyAiData){ body.innerHTML = '<div class="muted">Выбери нишу и нажми «Анализировать».</div>'; return; }
+
+  const d = copyAiData;
+  const ins = (d.insights||[]).map(x => `<li>${escapeHtml(x)}</li>`).join('');
+  const nv = (d.new_variants||[]).map((v,i) => `
+    <div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:rgba(255,255,255,.5)">
+      <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer">
+        <input type="checkbox" class="copyPick" data-i="${i}" checked style="margin-top:3px">
+        <span>
+          <span style="white-space:pre-wrap">${escapeHtml(v.text)}</span>
+          ${v.rationale ? `<span class="muted" style="display:block;margin-top:6px;font-size:12px">↳ ${escapeHtml(v.rationale)}</span>` : ''}
+        </span>
+      </label>
+    </div>`).join('');
+  const tone = d.tone_dial || {};
+  const toneCard = (k,lbl) => tone[k] ? `
+    <div style="flex:1;min-width:200px;border:1px solid var(--line-soft);border-radius:12px;padding:12px;background:rgba(255,255,255,.45)">
+      <div class="k">${lbl}</div>
+      <div style="margin-top:6px;white-space:pre-wrap;font-size:13px">${escapeHtml(tone[k])}</div>
+    </div>` : '';
+
+  body.innerHTML = `
+    <h3 style="margin:6px 0 8px">Что видит модель</h3>
+    <ul style="margin:0 0 18px;padding-left:20px">${ins || '<li class="muted">—</li>'}</ul>
+
+    <h3 style="margin:0 0 8px">Новые варианты</h3>
+    ${nv || '<div class="muted">Модель не предложила новых вариантов.</div>'}
+    ${d.new_variants && d.new_variants.length ? `<button id="copyApply">Добавить выбранные в бандит</button>
+      <span id="copyApplyMsg" class="muted" style="margin-left:10px"></span>` : ''}
+
+    <h3 style="margin:22px 0 8px">Шкала тона (текущий оффер)</h3>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      ${toneCard('human','человечно / разговорно')}${toneCard('neutral','нейтрально')}${toneCard('official','официально-деловой')}
+    </div>`;
+}
+
+function escapeHtml(s){ return (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function runCopyAi(){
+  const niche = ($('#copyNiche')||{}).value;
+  if(!niche){ copyAiErr = 'Сначала выбери нишу.'; copyAiRendered=''; paintCopyAi(); return; }
+  copyAiState = 'loading'; copyAiErr = ''; copyAiRendered = ''; paintCopyAi();
+  try{
+    copyAiData = await api('/analytics/copy/analyze?niche=' + encodeURIComponent(niche));
+    copyAiState = 'done';
+  }catch(e){
+    copyAiErr = 'Ошибка: ' + e.message; copyAiState = 'idle';
+  }
+  copyAiRendered = ''; paintCopyAi();
+}
+
+async function applyCopyAi(){
+  if(!copyAiData) return;
+  const picks = [...document.querySelectorAll('.copyPick:checked')].map(x => copyAiData.new_variants[+x.dataset.i].text);
+  const msg = $('#copyApplyMsg');
+  if(!picks.length){ if(msg) msg.textContent = 'ничего не выбрано'; return; }
+  if(msg) msg.textContent = 'сохраняю…';
+  try{
+    const r = await fetch(BACKEND + '/analytics/copy/apply', {
+      method:'POST', headers:{Authorization:'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({niche: copyAiData.niche, texts: picks}),
+    });
+    if(!r.ok) throw new Error((await r.text()).slice(0,120));
+    const j = await r.json();
+    if(msg) msg.textContent = `добавлено вариантов: ${j.count} — бандит начнёт их сравнивать`;
+  }catch(e){ if(msg) msg.textContent = 'ошибка: ' + e.message; }
+}
+
 function paintCustom(id){
   if(id === 'acquisition') paintAcq();
   else if(id === 'acct_quality') paintCohorts();
   else if(id === 'subs') paintSubs();
   else if(id === 'replies') paintReplies();
   else if(id === 'spend') paintSpend();
+  else if(id === 'inbox') paintInbox();
+  else if(id === 'copy_ai') paintCopyAi();
 }
 
 // маппинг type -> рендерер (WIDGET TYPE REGISTRY)
@@ -1115,6 +1245,8 @@ function renderWidget(w){
   if(w.type === 'subs_rate') return renderSubsRate();
   if(w.type === 'replies_view') return renderRepliesView();
   if(w.type === 'spend_view') return renderSpendView();
+  if(w.type === 'inbox_frame') return renderInboxFrame();
+  if(w.type === 'copy_ai_view') return renderCopyAiView();
   return '';
 }
 
@@ -1170,9 +1302,9 @@ function bindCustomControls(){
   // сегментированный тумблер «траты / эффективность» — это click, не change
   $('#sections').addEventListener('click', (e) => {
     const b = e.target.closest('#spendViewSeg button[data-v]');
-    if(!b) return;
-    spendView = b.dataset.v;
-    paintSpend();
+    if(b){ spendView = b.dataset.v; paintSpend(); return; }
+    if(e.target.closest('#copyRun')){ runCopyAi(); return; }
+    if(e.target.closest('#copyApply')){ applyCopyAi(); return; }
   });
 }
 
