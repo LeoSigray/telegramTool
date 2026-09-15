@@ -1,0 +1,1421 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Аналитика</title>
+<style>
+  /* Светлая "стеклянная" тема — light blue + Apple-style frosted glass
+     (backdrop-filter blur на полупрозрачных панелях поверх голубого
+     градиента). --acc — для заливок/линий на светлой поверхности,
+     --acc-deep — та же синева, но затемнённая, для ТЕКСТА (иначе
+     светло-голубой текст на белом читается плохо — контраст ниже нормы). */
+  :root{
+    --bg1:#dbe9fc; --bg2:#eef3fb; --bg3:#f7fafd;
+    --panel: rgba(255,255,255,.58); --panel-solid:#ffffff;
+    --line: rgba(90,130,200,.22); --line-soft: rgba(90,130,200,.14);
+    --tx:#16213a; --dim:#5f6f92;
+    --ok:#1a9c6b; --warn:#b8790a; --bad:#d43f4f;
+    --acc:#3a86ff; --acc-deep:#1a56db; --sub:#7c5cff;
+    --glass-blur: 22px;
+    --shadow: 0 8px 30px rgba(60,100,180,.14), inset 0 1px 0 rgba(255,255,255,.7);
+    --shadow-sm: 0 2px 10px rgba(60,100,180,.10);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;color:var(--tx);
+       font:14px/1.5 -apple-system,ui-sans-serif,"SF Pro Text","Segoe UI",Roboto,sans-serif;
+       display:flex;flex-direction:column;overflow:hidden;
+       background:
+         radial-gradient(1100px 700px at 12% -10%, rgba(120,170,255,.35), transparent 60%),
+         radial-gradient(900px 650px at 105% 0%, rgba(150,130,255,.22), transparent 55%),
+         linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 45%, var(--bg3) 100%)}
+  header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+         padding:12px 18px;border-bottom:1px solid var(--line);flex:none;
+         background:var(--panel);backdrop-filter:blur(var(--glass-blur)) saturate(180%);
+         -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(180%);
+         box-shadow:var(--shadow-sm)}
+  h1{font-size:14px;margin:0;font-weight:700;letter-spacing:.2px;white-space:nowrap;color:var(--acc-deep)}
+  .sp{flex:1}
+  input,select,button{background:rgba(255,255,255,.65);border:1px solid var(--line);color:var(--tx);
+       border-radius:9px;padding:6px 10px;font-size:12px;font-family:inherit}
+  input:focus,select:focus{outline:none;border-color:var(--acc)}
+  button{cursor:pointer;transition:background .15s,border-color .15s}
+  button:hover{border-color:var(--acc);background:rgba(255,255,255,.85)}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+
+  /* сегментированный тумблер count / count-сек — то, что справа у дашборда */
+  .seg{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;
+       background:rgba(255,255,255,.45)}
+  .seg button{border:none;border-radius:0;background:transparent;padding:6px 11px}
+  .seg button.active{background:var(--acc);color:#fff;font-weight:600}
+  .seg button:hover{border-color:transparent;background:rgba(58,134,255,.12)}
+  .seg button.active:hover{background:var(--acc)}
+
+  .body{flex:1;display:flex;min-height:0}
+
+  /* левая панель — переключатель дашбордов: подпись "Дашборды" + выпадающий список */
+  nav.dash-nav{width:190px;flex:none;border-right:1px solid var(--line);
+       padding:16px 14px;overflow-y:auto;
+       background:var(--panel);backdrop-filter:blur(var(--glass-blur)) saturate(180%);
+       -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(180%)}
+  .dash-nav-label{font-size:11px;font-weight:700;color:var(--dim);
+       text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px}
+  nav.dash-nav select{width:100%;font-size:13px;padding:9px 10px;color:var(--acc-deep);font-weight:600}
+
+  main{flex:1;overflow-y:auto;padding:20px 24px}
+  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));margin-bottom:18px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px 18px;
+       backdrop-filter:blur(var(--glass-blur)) saturate(180%);
+       -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(180%);box-shadow:var(--shadow)}
+  .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.7px}
+  .v{font-size:25px;font-weight:700;margin-top:6px;font-variant-numeric:tabular-nums;color:var(--tx)}
+  .sub{color:var(--dim);font-size:12px;margin-top:3px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;
+         padding:18px 20px;margin-bottom:18px;
+         backdrop-filter:blur(var(--glass-blur)) saturate(180%);
+         -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(180%);box-shadow:var(--shadow)}
+  .panel h2{font-size:13px;margin:0 0 14px;font-weight:700;color:var(--acc-deep);
+            text-transform:uppercase;letter-spacing:.7px}
+  .two{display:grid;gap:18px;grid-template-columns:1fr 1fr}
+  @media(max-width:1000px){.two{grid-template-columns:1fr}}
+  .tbl-scroll{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;color:var(--dim);font-weight:600;font-size:11px;
+     text-transform:uppercase;letter-spacing:.5px;padding:6px 8px;border-bottom:1px solid var(--line)}
+  td{padding:7px 8px;border-bottom:1px solid var(--line-soft);font-variant-numeric:tabular-nums}
+  tr:last-child td{border-bottom:none}
+  .bar{height:9px;border-radius:5px;background:rgba(90,130,200,.12);overflow:hidden}
+  .bar>span{display:block;height:100%;background:var(--acc)}
+  .funnel-row{display:grid;grid-template-columns:130px 1fr 120px;gap:10px;align-items:center;margin-bottom:9px}
+  .funnel-row .lbl{color:var(--dim);font-size:12px}
+  .funnel-row .num{text-align:right;font-variant-numeric:tabular-nums}
+  .funnel-row .num .hint{display:block;color:var(--dim);font-size:10px;font-weight:400}
+  .pill{padding:2px 8px;border-radius:20px;font-size:11px;border:1px solid var(--line)}
+  .pill.ok{color:var(--ok);border-color:rgba(26,156,107,.35);background:rgba(26,156,107,.08)}
+  .pill.warn{color:var(--warn);border-color:rgba(184,121,10,.35);background:rgba(184,121,10,.08)}
+  .pill.bad{color:var(--bad);border-color:rgba(212,63,79,.35);background:rgba(212,63,79,.08)}
+  .ci{position:relative;height:18px;background:rgba(90,130,200,.10);border-radius:4px}
+  .ci>i{position:absolute;top:4px;height:10px;background:rgba(58,134,255,.35);border-radius:3px}
+  .ci>b{position:absolute;top:1px;width:2px;height:16px;background:var(--acc-deep)}
+  .muted{color:var(--dim)}
+  .warnbox{background:rgba(184,121,10,.10);border:1px solid rgba(184,121,10,.3);color:#8a5a06;
+           padding:10px 14px;border-radius:11px;margin-bottom:14px;font-size:13px}
+  code{background:rgba(90,130,200,.10);padding:1px 5px;border-radius:4px;font-size:12px;color:var(--acc-deep)}
+  .dash-section{display:none}
+  .dash-section.active{display:block}
+
+  /* контролы внутри виджета (селектор бакета/разреза/окна) */
+  .wrow{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:2px 0 16px}
+  .wrow label{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+  .wrow select{font-size:12px;padding:5px 9px}
+  .legend{color:var(--dim);font-size:12px;margin-top:8px}
+  .legend b{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px}
+  .num-r{text-align:right;font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Аналитика</h1>
+  <span id="live" class="muted"><span class="dot" style="background:var(--dim)"></span>нет данных</span>
+  <span class="sp"></span>
+  <select id="niche"><option value="">все ниши</option></select>
+  <select id="days">
+    <option value="7">7 дней</option>
+    <option value="14">14 дней</option>
+    <option value="30" selected>30 дней</option>
+    <option value="90">90 дней</option>
+  </select>
+  <!-- переключатель count / count-в-секунду — применяется только к счётчикам событий,
+       не трогает %, ₽ и коэффициенты (см. UNIT в JS) -->
+  <div class="seg" id="modeSeg">
+    <button data-mode="count" class="active">count</button>
+    <button data-mode="rate">count/сек</button>
+  </div>
+</header>
+
+<div class="body">
+  <!-- левая панель — переключатель дашбордов, рендерится из DASHBOARDS[].
+       Адрес бэкенда и токен здесь не вводятся: адрес — фиксированный
+       localhost:9000, токен приложение читает само с диска (bootstrap()
+       ниже) — см. api/auth.py, ~/.telegramtool/token. -->
+  <nav class="dash-nav">
+    <div class="dash-nav-label">Дашборды</div>
+    <select id="dashSelect"></select>
+  </nav>
+
+  <main>
+    <div id="warns"></div>
+    <div id="sections"></div>
+  </main>
+</div>
+
+<script>
+/* ────────────────────────────────────────────────────────────────────
+   Конфиг дашбордов. Каждый дашборд — один график/виджет, не пачка сразу
+   (раньше "Обзор" был один монолитный экран с KPI+воронкой+графиком
+   вместе — теперь это три отдельных пункта слева). Добавить новый
+   дашборд = добавить объект сюда, если он собран из уже существующего
+   типа виджета (kpi_grid/funnel/timeseries/table_templates/table_accounts)
+   — без правки остального кода.
+   ──────────────────────────────────────────────────────────────────── */
+const DASHBOARDS = [
+  { id: 'summary',      title: 'Сводка',                icon: '📊', widgets: [{type:'kpi_grid'}] },
+  { id: 'funnel',       title: 'Воронка',               icon: '🔻', widgets: [{type:'funnel'}] },
+  { id: 'timeseries',   title: 'Динамика',              icon: '📈', widgets: [{type:'timeseries'}] },
+  { id: 'templates',    title: 'A/B тексты',            icon: '✍️', widgets: [{type:'table_templates'}] },
+  { id: 'accounts',     title: 'Аккаунты',              icon: '👤', widgets: [{type:'table_accounts'}] },
+  { id: 'acquisition',  title: 'Закупка аккаунтов',      icon: '🛒', widgets: [{type:'acct_acquisition'}] },
+  { id: 'acct_quality', title: 'Эффективность аккаунтов', icon: '⚖️', widgets: [{type:'acct_cohorts'}] },
+  { id: 'subs',         title: 'Подписки',              icon: '📡', widgets: [{type:'subs_rate'}] },
+  { id: 'replies',      title: 'Ответы на сообщения',    icon: '💬', widgets: [{type:'replies_view'}] },
+  { id: 'spend',        title: 'Потраченные средства',   icon: '💸', widgets: [{type:'spend_view'}] },
+  { id: 'inbox',        title: 'Диалоги',               icon: '📨', widgets: [{type:'inbox_frame'}] },
+  { id: 'copy_ai',      title: 'AI-редактор текстов',    icon: '🧠', widgets: [{type:'copy_ai_view'}] },
+];
+
+// Дашборды с интерактивными контролами (селекторы бакета/разреза/окна) —
+// сами управляют своим DOM: mount<X>() строит оболочку с контролами ОДИН раз,
+// paint<X>() обновляет только данные. renderAll() их не перерисовывает, чтобы
+// открытый дропдаун не закрывался на каждом опросе. См. refreshCustom().
+const CUSTOM_DASH = new Set(['acquisition', 'acct_quality', 'subs', 'replies', 'spend', 'inbox', 'copy_ai']);
+
+function dashboardHasWidget(id, type){
+  const d = DASHBOARDS.find(x => x.id === id);
+  return !!(d && d.widgets.some(w => w.type === type));
+}
+
+// какие величины — счётчики событий (тумблер count/сек их трогает),
+// остальные (%, ₽, коэффициент, снэпшот ёмкости) — нет
+const UNIT = { count: 'count', percent: 'percent', currency: 'currency', ratio: 'ratio', snapshot: 'snapshot' };
+
+const $ = s => document.querySelector(s);
+// Бэкенд всегда localhost:9000 (десктоп-приложение и бэкенд — на одной машине,
+// см. README про Фазу A), токен нигде не вводится — bootstrap()/ensureToken()
+// внизу файла читают его сами с диска через Tauri. Ни то, ни другое в UI не
+// показываем — по прямому запросу убрать поля адреса/токена из приложения.
+const BACKEND = 'http://127.0.0.1:9000';
+let TOKEN = '';
+let MODE = 'count'; // 'count' | 'rate'
+let activeDashboard = DASHBOARDS[0].id;
+let lastOverview = null, lastSeries = null, lastTpl = null, lastAcc = null;
+
+// данные и состояние контролов новых дашбордов
+let lastAcq = null, lastCohorts = null, lastSubs = null, lastReplies = null, lastSpend = null;
+let acqBucket = 'week';                       // day | week | month
+let cohortBy = 'price';                       // price | seller
+let cohortMetric = 'avg_lifetime_sends';      // какая метрика на bar-графике
+let subsHours = 24;                           // окно графика подписок: 24 | 72 | 168
+let subsChannel = '';                         // фильтр по каналу ('' = все)
+let replyNiche = '';                          // фильтр ниши для дашборда ответов
+let replyMetric = 'success_rate';             // success_rate | reject_rate | blocked_rate | answer_rate | lead_rate
+let replyBucket = 'week';                     // day | week
+let spendBucket = 'month';                    // day | week | month
+let spendView = 'money';                      // money (траты) | efficiency (цена лида/сообщения)
+
+$('#niche').onchange = () => { refresh(); refreshChart(); }; // ниша влияет и на график тоже — обновить сразу, не ждать минуту
+$('#days').onchange = refresh;
+
+$('#modeSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-mode]');
+  if(!b) return;
+  MODE = b.dataset.mode;
+  [...$('#modeSeg').children].forEach(x => x.classList.toggle('active', x===b));
+  renderAll(); // просто перерисовать тем же данным — новый запрос не нужен
+});
+
+async function api(path){
+  const r = await fetch(BACKEND + path, {headers:{Authorization:'Bearer '+TOKEN}});
+  if(!r.ok) throw new Error(r.status + ' ' + (await r.text()).slice(0,120));
+  return r.json();
+}
+
+const fmt = n => (n==null?'—':Number(n).toLocaleString('ru-RU'));
+const pct = n => (n==null?'—':(n*100).toFixed(1)+'%');
+const money = n => (n==null?'—':Number(n).toLocaleString('ru-RU',{maximumFractionDigits:2})+' ₽');
+
+function windowSeconds(){
+  return Number($('#days').value || 30) * 86400;
+}
+
+// value+unit → то, что реально печатается на экране, с учётом тумблера MODE
+function displayCount(raw){
+  if(raw == null) return {primary:'—', hint:''};
+  if(MODE === 'count') return {primary: fmt(raw), hint:''};
+  const perSec = raw / windowSeconds();
+  const perHour = perSec * 3600;
+  return {
+    primary: perSec.toFixed(perSec < 0.001 ? 6 : 4) + ' /сек',
+    hint: '≈ ' + perHour.toLocaleString('ru-RU',{maximumFractionDigits:2}) + ' /час',
+  };
+}
+function displayByUnit(raw, unit){
+  if(unit === UNIT.count) return displayCount(raw);
+  if(unit === UNIT.percent) return {primary: pct(raw), hint:''};
+  if(unit === UNIT.currency) return {primary: money(raw), hint:''};
+  if(unit === UNIT.ratio) return {primary: (raw==null?'—':'×'+Number(raw).toFixed(2)), hint:''};
+  return {primary: fmt(raw), hint:''}; // snapshot — как есть, тумблер не применим
+}
+
+function setLive(ok, msg){
+  $('#live').innerHTML = '<span class="dot" style="background:'+
+    (ok?'var(--ok)':'var(--bad)')+'"></span>'+msg;
+}
+
+/* ─────────────────── рендереры виджетов (WIDGET TYPE REGISTRY) ─────────────────── */
+
+function renderKpiGrid(){
+  const ov = lastOverview; if(!ov) return '';
+  const f = ov.funnel, cap = ov.capacity;
+  const cards = [
+    ['Отправлено', f.sent, UNIT.count, f.pending+' ждут ответа'],
+    ['Reply rate', f.reply_rate, UNIT.percent, f.replied+' ответов'],
+    ['Подписки', f.subscribed, UNIT.count, pct(f.subscribe_rate)+' от отправленных'],
+    ['Лидов', f.leads, UNIT.count, '⚠ заглушка — размечается вручную из CRM'],
+    ['Ёмкость сегодня', cap.remaining_today, UNIT.snapshot,
+      cap.accounts_active+' активных, '+cap.accounts_resting+' отдыхают'],
+    ['Цена сообщения', ov.cost_per_message.cost_per_message, UNIT.currency,
+      ov.cost_per_message.is_estimate? 'оценка (нет истории)' :
+      'по '+ov.cost_per_message.observations+' выбывшим'],
+  ];
+  return '<div class="grid">' + cards.map(([k,raw,unit,sub]) => {
+    const d = displayByUnit(raw, unit);
+    return `<div class="card"><div class="k">${k}</div><div class="v">${d.primary}</div>
+      <div class="sub">${d.hint ? d.hint+' · ' : ''}${sub}</div></div>`;
+  }).join('') + '</div>';
+}
+
+function renderFunnel(){
+  const f = lastOverview && lastOverview.funnel; if(!f) return '';
+  const max = Math.max(f.attempted,1);
+  const rows = [
+    ['Попыток', f.attempted, 'var(--dim)', false],
+    ['Доставлено', f.sent, 'var(--acc)', false],
+    ['Пропущено', f.skipped, 'var(--warn)', false],
+    ['Ошибок', f.failed, 'var(--bad)', false],
+    ['Ответили', f.replied, 'var(--ok)', false],
+    ['Подписались', f.subscribed, 'var(--sub)', false],
+    ['Отказы', f.negative, 'var(--bad)', true],
+    ['Лиды', f.leads, 'var(--ok)', true],
+  ];
+  const body = rows.map(([l,n,col,stub]) => {
+    const d = displayCount(n);
+    return `<div class="funnel-row"><div class="lbl">${l}${stub?' <span class="pill warn" style="font-size:9px;padding:1px 5px">заглушка</span>':''}</div>
+     <div class="bar"><span style="width:${(n/max*100).toFixed(1)}%;background:${col}"></span></div>
+     <div class="num">${d.primary}${d.hint?`<span class="hint">${d.hint}</span>`:''}</div></div>`;
+  }).join('');
+  return `<div class="panel"><h2>Воронка</h2>${body}</div>`;
+}
+
+// Зума нет намеренно: график просто всегда показывает последний час
+// с минутной детализацией и сам обновляется раз в минуту (см. refreshChart()
+// внизу файла) — не привязан к глобальному селекту "дней" в шапке, у него
+// своё, фиксированное окно.
+const CHART_WINDOW_MINUTES = 60;
+
+async function fetchTimeseries(){
+  const n = $('#niche').value;
+  const q = (n? '&niche='+encodeURIComponent(n) : '');
+  lastSeries = await api(`/analytics/timeseries?days=${CHART_WINDOW_MINUTES/1440}&granularity=minute${q}`);
+}
+
+function renderTimeseriesPanel(){
+  return `<div class="panel">
+    <h2>Динамика — последний час, по минутам</h2>
+    <canvas id="chart" height="220" style="width:100%"></canvas>
+    <div class="sub" style="margin-top:8px">
+      <span style="color:var(--acc)">■</span> отправлено
+      <span style="color:var(--ok);margin-left:12px">■</span> ответов
+      <span style="color:var(--sub);margin-left:12px">■</span> подписок
+      <span style="color:var(--bad);margin-left:12px">■</span> ошибок
+      <span class="muted" style="margin-left:12px">· обновляется раз в минуту</span>
+    </div></div>`;
+}
+
+function drawChart(series){
+  const cv = $('#chart'); if(!cv) return;
+  const dpr = window.devicePixelRatio||1;
+  const W = cv.clientWidth, H = 220;
+  cv.width = W*dpr; cv.height = H*dpr;
+  const g = cv.getContext('2d'); g.scale(dpr,dpr);
+  g.clearRect(0,0,W,H);
+
+  // Палитра под светлую стеклянную тему: тёмный текст/сетка на почти-белой
+  // подложке (canvas не видит CSS-переменные — дублируем те же тона руками).
+  const AXIS = '#5f6f92', GRID = 'rgba(90,130,200,.16)';
+
+  if(!series || !series.length){ g.fillStyle=AXIS; g.font='13px sans-serif';
+    g.fillText('нет данных за последний час',12,30);
+    return;
+  }
+
+  const pad = {l:44,r:10,t:12,b:24};
+  const val = (d,k) => MODE==='count' ? (d[k]||0) : (d[k]||0)/60; // бакет = минута
+  const max = Math.max(1e-9, ...series.map(d=>Math.max(val(d,'sent'),val(d,'replied'),val(d,'failed'),val(d,'subscribed'))));
+  const x = i => pad.l + i*((W-pad.l-pad.r)/Math.max(1,series.length-1));
+  const y = v => H-pad.b - (v/max)*(H-pad.t-pad.b);
+
+  const step = max/4;
+  g.strokeStyle=GRID; g.lineWidth=1; g.fillStyle=AXIS; g.font='10px sans-serif';
+  for(let i=0;i<=4;i++){
+    const v = step*i, yy = y(v);
+    g.beginPath(); g.moveTo(pad.l,yy); g.lineTo(W-pad.r,yy); g.stroke();
+    g.fillText(MODE==='count' ? Math.round(v) : v.toFixed(4), 4, yy+3);
+  }
+  const draw = (key,col) => {
+    g.strokeStyle=col; g.lineWidth=2.5; g.beginPath();
+    series.forEach((d,i)=>{ const p=[x(i),y(val(d,key))]; i?g.lineTo(...p):g.moveTo(...p); });
+    g.stroke();
+    g.fillStyle=col;
+    series.forEach((d,i)=>{ g.beginPath(); g.arc(x(i),y(val(d,key)),2.5,0,7); g.fill(); });
+  };
+  draw('sent','#3a86ff'); draw('replied','#1a9c6b'); draw('subscribed','#7c5cff'); draw('failed','#d43f4f');
+
+  g.fillStyle=AXIS;
+  series.forEach((d,i)=>{ if(i%Math.max(1,Math.ceil(series.length/6))===0)
+    g.fillText(d.d.slice(11), x(i)-14, H-8); }); // 'YYYY-MM-DD HH:MM' -> 'HH:MM'
+}
+
+function renderTemplates(){
+  const data = lastTpl; if(!data) return '<div class="panel"><h2>A/B текстов</h2><div class="muted">Загрузка…</div></div>';
+  const t = data.templates||[];
+  let body;
+  if(!t.length){
+    body = '<div class="muted">Шаблонов нет. Заведите 2–3 варианта на нишу: '+
+      '<code>POST /analytics/templates</code> — тогда бандит начнёт их сравнивать.</div>';
+  } else {
+    const wp = data.win_probability||{};
+    const maxHi = Math.max(0.05, ...t.map(x=>x.ci_high));
+    body = `<table><thead><tr>
+      <th>Ниша</th><th>Вар.</th><th>Текст</th><th>Отправлено</th><th>Ответов</th>
+      <th style="width:170px">Reply rate (90% интервал)</th><th>Оценка</th><th>P(лучший)</th>
+      </tr></thead><tbody>` + t.map(x=>{
+        const lo = x.ci_low/maxHi*100, hi = x.ci_high/maxHi*100, m = x.mean/maxHi*100;
+        const p = wp[x.variant];
+        return `<tr>
+          <td class="muted">${x.niche}</td>
+          <td><b>${x.variant}</b></td>
+          <td class="muted" title="${(x.text||'').replace(/"/g,'&quot;')}">${(x.text||'').slice(0,46)}${x.text.length>46?'…':''}</td>
+          <td>${displayCount(x.sent).primary}</td>
+          <td>${displayCount(x.replies).primary}</td>
+          <td><div class="ci"><i style="left:${lo}%;width:${Math.max(1,hi-lo)}%"></i>
+              <b style="left:${m}%"></b></div></td>
+          <td>${pct(x.mean)} ${x.enough_data?'':'<span class="pill warn">мало данных</span>'}</td>
+          <td>${p==null?'—':pct(p)}</td></tr>`;
+      }).join('') + '</tbody></table>' +
+      ((data.prune_suggestions||[]).length ?
+        '<div class="warnbox" style="margin-top:14px">Кандидаты на отключение: '+
+        data.prune_suggestions.map(s=>`<b>${s.variant}</b> (${pct(s.reply_rate)} против ${pct(s.leader_reply_rate)} у ${s.leader_variant})`).join(', ')+
+        '</div>' : '');
+  }
+  return `<div class="panel"><h2>A/B текстов — вероятность ответа</h2><div class="tbl-scroll">${body}</div></div>`;
+}
+
+function renderAccounts(){
+  const d = lastAcc; if(!d) return '<div class="panel"><h2>Аккаунты</h2><div class="muted">Загрузка…</div></div>';
+  const a = d.accounts||[];
+  if(!a.length) return '<div class="panel"><h2>Аккаунты</h2><div class="muted">Аккаунтов нет.</div></div>';
+  const badge = s => s==='active' ? '<span class="pill ok">активен</span>'
+    : s==='resting' ? '<span class="pill warn">отдыхает</span>'
+    : '<span class="pill bad">выбыл</span>';
+  const body = `<div class="tbl-scroll"><table><thead><tr>
+    <th>Аккаунт</th><th>Статус</th><th>Возраст</th><th>Лимит сегодня</th>
+    <th>Отправлено</th><th>Осталось</th><th>Множитель</th><th>Ошибки 3д</th><th>Всего за жизнь</th>
+    </tr></thead><tbody>` + a.map(x=>`<tr>
+      <td>${x.account}</td><td>${badge(x.status)}</td>
+      <td class="muted">${x.age_days} д</td>
+      <td>${displayCount(x.daily_cap).primary}</td>
+      <td>${displayCount(x.sent_today).primary}</td>
+      <td>${displayCount(x.remaining_today).primary}</td>
+      <td style="color:${x.cap_multiplier<0.8?'var(--warn)':'inherit'}">×${x.cap_multiplier}</td>
+      <td style="color:${x.error_rate_3d>0.1?'var(--bad)':'inherit'}">${pct(x.error_rate_3d)}</td>
+      <td class="muted">${fmt(x.lifetime_sends)}</td></tr>`).join('') +
+    `</tbody></table></div><div class="sub" style="margin-top:10px">
+      База ${d.config.base_daily}/день, потолок ${d.config.hard_cap}. Множитель падает вдвое
+      при FloodWait/PeerFlood и восстанавливается на 10% за чистый день.</div>`;
+  return `<div class="panel"><h2>Аккаунты</h2>${body}</div>`;
+}
+
+/* ═══════════════ Новые дашборды (self-managed, см. CUSTOM_DASH) ═══════════════
+   Оболочка (h2 + контролы + canvas/таблица) строится один раз в renderAll(),
+   дальше paint*() обновляет только данные. Контролы слушаются делегированием
+   на #sections (bindCustomControls в init), поэтому переживают перерисовку. */
+
+const SRC_COLOR = { lzt:'#3a86ff', tdata:'#7c5cff', session:'#1a9c6b', own:'#8b95a5', unknown:'#b8790a' };
+const CANVAS_AXIS = '#5f6f92', CANVAS_GRID = 'rgba(90,130,200,.16)';
+
+function canvasCtx(id, H){
+  const cv = $('#'+id); if(!cv) return null;
+  const dpr = window.devicePixelRatio||1, W = cv.clientWidth||600;
+  cv.width = W*dpr; cv.height = H*dpr;
+  const g = cv.getContext('2d'); g.scale(dpr,dpr); g.clearRect(0,0,W,H);
+  return {g, W, H};
+}
+function emptyCanvas(id, H, msg){
+  const c = canvasCtx(id, H); if(!c) return;
+  c.g.fillStyle = CANVAS_AXIS; c.g.font = '13px sans-serif';
+  c.g.fillText(msg, 12, 28);
+}
+
+/* ─── 1. Закупка аккаунтов ─────────────────────────────────────────────── */
+
+function renderAcqAcquisition(){
+  return `<div class="panel">
+    <h2>Закупка аккаунтов</h2>
+    <div class="wrow">
+      <label for="acqBucket">Бакет</label>
+      <select id="acqBucket">
+        <option value="day">день</option>
+        <option value="week" selected>неделя</option>
+        <option value="month">месяц</option>
+      </select>
+      <span id="acqTotals" class="muted" style="margin-left:auto"></span>
+    </div>
+    <canvas id="acqChart" height="260" style="width:100%"></canvas>
+    <div class="legend">
+      <span><b style="background:#3a86ff"></b>куплено за бакет</span>
+      <span style="margin-left:14px"><b style="background:#d43f4f"></b>выбыло за бакет</span>
+      <span style="margin-left:14px"><b style="background:#1a9c6b"></b>живо (накопительно, правая ось)</span>
+      <span style="margin-left:14px"><b style="background:#16213a"></b>куплено всего (накопительно, правая ось)</span>
+      <span id="acqSrcLegend"></span>
+    </div>
+    <div id="acqNote" class="sub" style="margin-top:10px"></div>
+  </div>`;
+}
+
+function paintAcq(){
+  if(!$('#acqChart')) return;
+  const bsel = $('#acqBucket'); if(bsel && bsel.value !== acqBucket) bsel.value = acqBucket;
+  const data = lastAcq;
+  if(!data){ emptyCanvas('acqChart', 260, 'загрузка…'); return; }
+  const series = data.series || [];
+  const t = data.totals || {};
+  const el = $('#acqTotals');
+  if(el) el.textContent = `всего ${fmt(t.accounts)} · живо ${fmt((t.accounts||0)-(t.accounts_dead||0))} · выбыло ${fmt(t.accounts_dead)} · потрачено ${money(t.spend)}`;
+  const srcLeg = $('#acqSrcLegend');
+  if(srcLeg){
+    const srcs = [...new Set(series.flatMap(d => Object.keys(d.by_source||{})))];
+    srcLeg.innerHTML = srcs.length > 1
+      ? '<span style="margin-left:14px;color:var(--dim)">источник:</span> ' +
+        srcs.map(s => `<span style="margin-left:6px"><b style="background:${SRC_COLOR[s]||'#8b95a5'}"></b>${s}</span>`).join('')
+      : '';
+  }
+  const note = $('#acqNote');
+  if(note){
+    if(!t.spend) note.innerHTML = 'Цена аккаунтов не проставлена — траты по нулям. '+
+      '<code>POST /analytics/accounts/backfill</code> или пункт 12 в меню «Управление аккаунтами».';
+    else note.textContent = '';
+  }
+  drawAcqChart(series);
+}
+
+function drawAcqChart(series){
+  if(!series.length){ emptyCanvas('acqChart', 260, 'нет закупок за период'); return; }
+  const c = canvasCtx('acqChart', 260); if(!c) return;
+  const {g, W, H} = c;
+  const pad = {l:40, r:44, t:14, b:34};
+  const plotW = W-pad.l-pad.r, plotH = H-pad.t-pad.b;
+
+  const sources = [...new Set(series.flatMap(d => Object.keys(d.by_source||{})))];
+  const maxBar = Math.max(1, ...series.map(d => Math.max(d.bought||0, d.dead||0)));
+  const maxCum = Math.max(1, ...series.map(d => Math.max(d.bought_cum||0, d.alive_cum||0)));
+  const n = series.length;
+  const slot = plotW / n;
+  const bw = Math.max(3, Math.min(26, slot * 0.30));   // ширина одной колонки пары
+  const xc = i => pad.l + (i + 0.5) * slot;
+  const yL = v => pad.t + plotH - (v/maxBar) * plotH;
+  const yR = v => pad.t + plotH - (v/maxCum) * plotH;
+  const barBottom = pad.t + plotH;
+
+  // сетка + левая ось (бары)
+  g.strokeStyle = CANVAS_GRID; g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif'; g.lineWidth = 1;
+  for(let i=0;i<=4;i++){
+    const v = Math.round(maxBar*i/4), y = yL(v);
+    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(W-pad.r, y); g.stroke();
+    g.fillText(v, 6, y+3);
+  }
+  // правая ось (накопительно)
+  g.fillStyle = '#16213a';
+  for(let i=0;i<=4;i++){
+    const v = Math.round(maxCum*i/4), y = yR(v);
+    g.fillText(v, W-pad.r+6, y+3);
+  }
+
+  // сгруппированная пара: «куплено» (слева, стопкой по source) и «выбыло» (справа)
+  series.forEach((d,i) => {
+    const xBought = xc(i) - bw - 1;
+    const xDead = xc(i) + 1;
+    if(sources.length > 1 && d.by_source){
+      let acc = 0;
+      sources.forEach(s => {
+        const val = d.by_source[s]||0; if(!val) return;
+        g.fillStyle = SRC_COLOR[s] || '#8b95a5';
+        g.fillRect(xBought, yL(acc+val), bw, (val/maxBar)*plotH);
+        acc += val;
+      });
+    } else if(d.bought){
+      g.fillStyle = '#3a86ff';
+      g.fillRect(xBought, yL(d.bought), bw, barBottom - yL(d.bought));
+    }
+    if(d.dead){
+      g.fillStyle = '#d43f4f';
+      g.fillRect(xDead, yL(d.dead), bw, barBottom - yL(d.dead));
+    }
+  });
+
+  // линии накопительно (правая ось)
+  const line = (key, col, width) => {
+    g.strokeStyle = col; g.lineWidth = width; g.beginPath();
+    series.forEach((d,i) => { const p = [xc(i), yR(d[key]||0)]; i ? g.lineTo(...p) : g.moveTo(...p); });
+    g.stroke();
+    g.fillStyle = col;
+    series.forEach((d,i) => { g.beginPath(); g.arc(xc(i), yR(d[key]||0), 2.4, 0, 7); g.fill(); });
+  };
+  line('bought_cum', '#16213a', 1.6);
+  line('alive_cum', '#1a9c6b', 2.4);
+
+  // подписи X (убираем ведущий '2026-')
+  g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif';
+  const stepX = Math.max(1, Math.ceil(n/8));
+  series.forEach((d,i) => { if(i%stepX===0){
+    const lbl = String(d.t).replace(/^\d{4}-/, '');
+    g.fillText(lbl, xc(i) - g.measureText(lbl).width/2, H-10);
+  }});
+}
+
+/* ─── 2. Эффективность аккаунтов (разрез по цене / продавцу) ────────────── */
+
+const COHORT_METRICS = [
+  ['avg_lifetime_sends', 'пробег (сообщений)'],
+  ['avg_days_alive',     'дней жизни'],
+  ['pct_dead',           '% банов'],
+  ['pct_resting',        '% отдыхает (флуд)'],
+  ['reply_rate',         'reply rate'],
+  ['sends_per_rub',      'сообщений за ₽'],
+  ['replies_per_rub',    'ответов за ₽'],
+];
+
+function renderAcctCohorts(){
+  return `<div class="panel">
+    <h2>Эффективность аккаунтов</h2>
+    <div class="wrow">
+      <label for="cohortBy">Разрез</label>
+      <select id="cohortBy">
+        <option value="price" selected>по цене</option>
+        <option value="seller">по продавцу</option>
+      </select>
+      <label for="cohortMetric" style="margin-left:6px">Метрика на графике</label>
+      <select id="cohortMetric">
+        ${COHORT_METRICS.map(([k,l]) => `<option value="${k}">${l}</option>`).join('')}
+      </select>
+    </div>
+    <canvas id="cohortChart" height="210" style="width:100%"></canvas>
+    <div id="cohortTable" class="tbl-scroll" style="margin-top:14px"></div>
+    <div class="sub" style="margin-top:10px">«за ₽» — суммарный выхлоп на потраченный рубль:
+      прямой ответ на вопрос, дешевле ли дешёвые аккаунты по факту. Корзины &lt;5 аккаунтов помечены — статистика шумная.</div>
+  </div>`;
+}
+
+function paintCohorts(){
+  if(!$('#cohortChart')) return;
+  const b1 = $('#cohortBy'); if(b1 && b1.value !== cohortBy) b1.value = cohortBy;
+  const b2 = $('#cohortMetric'); if(b2 && b2.value !== cohortMetric) b2.value = cohortMetric;
+  const data = lastCohorts;
+  const tbl = $('#cohortTable');
+  if(!data){ emptyCanvas('cohortChart', 210, 'загрузка…'); return; }
+  const rows = data.cohorts || [];
+  if(!rows.length){
+    emptyCanvas('cohortChart', 210, 'нет аккаунтов');
+    if(tbl) tbl.innerHTML = '<div class="muted">Нет аккаунтов с метаданными. Заполните через бэкофилл (пункт 12 в меню) или <code>POST /analytics/accounts/costs</code>.</div>';
+    return;
+  }
+  const metricLabel = (COHORT_METRICS.find(m => m[0]===cohortMetric)||[])[1] || cohortMetric;
+  drawCohortBars(rows, cohortMetric, metricLabel);
+
+  const per = v => v == null ? '—' : v.toFixed(2);
+  if(tbl) tbl.innerHTML = `<table><thead><tr>
+    <th>${cohortBy === 'price' ? 'Цена' : 'Продавец'}</th><th class="num-r">Аккаунтов</th>
+    <th class="num-r">Ср. цена</th><th class="num-r">Пробег</th><th class="num-r">Дней жизни</th>
+    <th class="num-r">% банов</th><th class="num-r">% отдыхает</th><th class="num-r">Флуд-событий</th>
+    <th class="num-r">Reply rate</th>
+    <th class="num-r">Сообщ./₽</th><th class="num-r">Ответов/₽</th>
+    </tr></thead><tbody>` + rows.map(r => `<tr>
+      <td>${r.key}${r.enough_data ? '' : ' <span class="pill warn" style="font-size:9px;padding:1px 5px">мало данных</span>'}</td>
+      <td class="num-r">${fmt(r.accounts)}</td>
+      <td class="num-r">${money(r.avg_cost)}</td>
+      <td class="num-r">${fmt(r.avg_lifetime_sends)}</td>
+      <td class="num-r">${fmt(r.avg_days_alive)}</td>
+      <td class="num-r" style="color:${r.pct_dead>0.3?'var(--bad)':'inherit'}">${pct(r.pct_dead)}</td>
+      <td class="num-r" style="color:${r.pct_resting>0.3?'var(--bad)':'inherit'}">${pct(r.pct_resting)}</td>
+      <td class="num-r" style="color:${r.flood_events>0?'var(--bad)':'inherit'}">${fmt(r.flood_events)}</td>
+      <td class="num-r">${pct(r.reply_rate)}</td>
+      <td class="num-r">${per(r.sends_per_rub)}</td>
+      <td class="num-r">${per(r.replies_per_rub)}</td>
+    </tr>`).join('') + '</tbody></table>';
+}
+
+function drawCohortBars(rows, metric, label){
+  const c = canvasCtx('cohortChart', 210); if(!c) return;
+  const {g, W, H} = c;
+  const pad = {l:44, r:12, t:16, b:40};
+  const plotW = W-pad.l-pad.r, plotH = H-pad.t-pad.b;
+  const vals = rows.map(r => r[metric] == null ? 0 : r[metric]);
+  const max = Math.max(1e-9, ...vals);
+  const n = rows.length;
+  const bw = Math.max(10, Math.min(70, plotW/n*0.6));
+  const xc = i => pad.l + (i+0.5)*(plotW/n);
+  const y = v => pad.t + plotH - (v/max)*plotH;
+  const isPct = metric === 'pct_dead' || metric === 'pct_resting' || metric === 'reply_rate';
+
+  g.strokeStyle = CANVAS_GRID; g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif'; g.lineWidth = 1;
+  for(let i=0;i<=4;i++){
+    const v = max*i/4, yy = y(v);
+    g.beginPath(); g.moveTo(pad.l, yy); g.lineTo(W-pad.r, yy); g.stroke();
+    g.fillText(isPct ? (v*100).toFixed(0)+'%' : (max<10 ? v.toFixed(1) : Math.round(v)), 4, yy+3);
+  }
+  g.fillText(label, pad.l, 11);
+
+  rows.forEach((r,i) => {
+    const v = r[metric] == null ? 0 : r[metric];
+    const x = xc(i) - bw/2;
+    g.fillStyle = r.enough_data ? '#3a86ff' : 'rgba(58,134,255,.35)';
+    g.fillRect(x, y(v), bw, plotH - (y(v)-pad.t));
+    g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif';
+    const txt = r[metric]==null ? '—' : (isPct ? (v*100).toFixed(0)+'%' : (v<10 ? v.toFixed(1) : fmt(Math.round(v))));
+    g.fillText(txt, xc(i) - g.measureText(txt).width/2, y(v) - 4);
+    const lbl = String(r.key).length > 12 ? String(r.key).slice(0,11)+'…' : String(r.key);
+    g.fillText(lbl, xc(i) - g.measureText(lbl).width/2, H-24);
+    g.fillStyle = '#9aa7c2';
+    g.fillText('n='+r.accounts, xc(i) - g.measureText('n='+r.accounts).width/2, H-11);
+    g.fillStyle = CANVAS_AXIS;
+  });
+}
+
+/* ─── 3. Подписки — темп по 10-минутным бакетам ────────────────────────── */
+
+function renderSubsRate(){
+  return `<div class="panel">
+    <h2>Подписки — темп по бакетам</h2>
+    <div class="wrow">
+      <label for="subsWindow">Окно</label>
+      <select id="subsWindow">
+        <option value="24" selected>24 часа</option>
+        <option value="72">3 дня</option>
+        <option value="168">7 дней</option>
+      </select>
+      <label for="subsChannel" style="margin-left:6px">Канал</label>
+      <select id="subsChannel"><option value="">все каналы</option></select>
+      <span id="subsMeta" class="muted" style="margin-left:auto"></span>
+    </div>
+    <canvas id="subsChart" height="240" style="width:100%"></canvas>
+    <div class="legend">
+      <span><b style="background:#3a86ff"></b>подписок за бакет</span>
+      <span style="margin-left:14px"><b style="background:#1a9c6b"></b>всего (накопительно)</span>
+      <span class="muted" style="margin-left:14px">· по реальному времени вступления · обновление раз в 20 сек</span>
+    </div>
+  </div>`;
+}
+
+function paintSubs(){
+  if(!$('#subsChart')) return;
+  const wsel = $('#subsWindow'); if(wsel && +wsel.value !== subsHours) wsel.value = String(subsHours);
+  const data = lastSubs;
+  if(!data){ emptyCanvas('subsChart', 240, 'загрузка…'); return; }
+
+  // наполняем список каналов один раз
+  const csel = $('#subsChannel');
+  if(csel && (data.channels||[]).length && csel.options.length <= 1){
+    data.channels.forEach(ch => csel.add(new Option(ch, ch)));
+  }
+  if(csel && csel.value !== subsChannel) csel.value = subsChannel;
+
+  const series = data.series || [];
+  const meta = $('#subsMeta');
+  if(meta){
+    const total = series.reduce((s,d) => s + (d.subs||0), 0);
+    meta.textContent = `бакет ${data.bucket_minutes} мин · ${fmt(total)} подписок за окно`;
+  }
+  drawSubsChart(series, data.bucket_minutes || 10);
+}
+
+function drawSubsChart(series, bucketMin){
+  if(!series.length){ emptyCanvas('subsChart', 240, 'нет подписок за окно'); return; }
+  const c = canvasCtx('subsChart', 240); if(!c) return;
+  const {g, W, H} = c;
+  const pad = {l:40, r:44, t:14, b:30};
+  const plotW = W-pad.l-pad.r, plotH = H-pad.t-pad.b;
+  const perSec = MODE === 'rate';
+  const barVal = d => perSec ? (d.subs||0)/(bucketMin*60) : (d.subs||0);
+  const maxBar = Math.max(perSec ? 1e-6 : 1, ...series.map(barVal));
+  const maxCum = Math.max(1, ...series.map(d => d.subs_cum||0));
+  const n = series.length;
+  const bw = Math.max(2, Math.min(24, plotW/n*0.7));
+  const xc = i => pad.l + (i+0.5)*(plotW/n);
+  const yL = v => pad.t + plotH - (v/maxBar)*plotH;
+  const yR = v => pad.t + plotH - (v/maxCum)*plotH;
+
+  g.strokeStyle = CANVAS_GRID; g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif'; g.lineWidth = 1;
+  for(let i=0;i<=4;i++){
+    const v = maxBar*i/4, y = yL(v);
+    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(W-pad.r, y); g.stroke();
+    g.fillText(perSec ? v.toFixed(4) : Math.round(v), 4, y+3);
+  }
+  g.fillStyle = '#1a9c6b';
+  for(let i=0;i<=4;i++){ const v = Math.round(maxCum*i/4); g.fillText(v, W-pad.r+6, yR(v)+3); }
+
+  series.forEach((d,i) => {
+    g.fillStyle = '#3a86ff';
+    const v = barVal(d), top = yL(v);
+    g.fillRect(xc(i)-bw/2, top, bw, pad.t+plotH-top);
+  });
+
+  g.strokeStyle = '#1a9c6b'; g.lineWidth = 2.4; g.beginPath();
+  series.forEach((d,i) => { const p = [xc(i), yR(d.subs_cum||0)]; i ? g.lineTo(...p) : g.moveTo(...p); });
+  g.stroke();
+
+  g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif';
+  const stepX = Math.max(1, Math.ceil(n/8));
+  series.forEach((d,i) => { if(i%stepX===0){
+    const hhmm = String(d.t).slice(11);  // 'YYYY-MM-DDTHH:MM' -> 'HH:MM'
+    g.fillText(hhmm, xc(i)-14, H-10);
+  }});
+}
+
+/* ─── 4. Ответы на сообщения ───────────────────────────────────────────── */
+
+const REPLY_METRICS = [
+  ['success_rate', 'успех'],
+  ['reject_rate',  'отказ'],
+  ['blocked_rate', 'блок'],
+  ['answer_rate',  'ответили (успех+отказ)'],
+  ['lead_rate',    'лид'],
+];
+const VARIANT_COLORS = ['#3a86ff', '#1a9c6b', '#7c5cff', '#d99a2b', '#d43f4f', '#5f6f92'];
+// цвета исходов — общие для ленты и стековой разбивки
+const OUTCOME_COLOR = { success:'#1a9c6b', lead:'#127a53', rejected:'#d43f4f', blocked:'#8a5a06', no_reply:'#9aa7c2', pending:'#b8790a' };
+const OUTCOME_BADGE = {
+  lead:     ['лид', OUTCOME_COLOR.lead],
+  success:  ['успех', OUTCOME_COLOR.success],
+  rejected: ['отказ', OUTCOME_COLOR.rejected],
+  blocked:  ['блок', OUTCOME_COLOR.blocked],
+  no_reply: ['молчит', OUTCOME_COLOR.no_reply],
+  pending:  ['ждём', OUTCOME_COLOR.pending],
+  // старые имена на случай непереразмеченных строк
+  replied:  ['успех', OUTCOME_COLOR.success],
+  negative: ['отказ', OUTCOME_COLOR.rejected],
+};
+
+function renderRepliesView(){
+  return `<div class="panel">
+    <h2>Ответы на сообщения</h2>
+    <div class="wrow">
+      <label for="replyNiche">Ниша</label>
+      <select id="replyNiche"><option value="">все ниши</option></select>
+      <label for="replyMetric" style="margin-left:6px">Метрика тренда</label>
+      <select id="replyMetric">
+        ${REPLY_METRICS.map(([k,l]) => `<option value="${k}">${l}</option>`).join('')}
+      </select>
+      <label for="replyBucket" style="margin-left:6px">Бакет</label>
+      <select id="replyBucket"><option value="day">день</option><option value="week" selected>неделя</option></select>
+    </div>
+    <canvas id="replyChart" height="220" style="width:100%"></canvas>
+    <div class="legend" id="replyLegend"></div>
+    <h3 style="margin:22px 0 8px;font-family:'IBM Plex Sans',sans-serif">Разбивка исхода по вариантам</h3>
+    <div id="replyBreakdown"></div>
+    <div id="replyVariants" class="tbl-scroll" style="margin-top:16px"></div>
+    <h3 style="margin:22px 0 6px;font-family:'IBM Plex Sans',sans-serif">Последние ответы</h3>
+    <div class="sub" style="margin-bottom:8px">Живой сигнал для подбора текста — и данные, на которых потом будет учиться нейронка-редактор.</div>
+    <div id="replyFeed"></div>
+  </div>`;
+}
+
+function paintReplies(){
+  if(!$('#replyChart')) return;
+  const d = lastReplies;
+  if(!d){ emptyCanvas('replyChart', 220, 'загрузка…'); return; }
+
+  const nsel = $('#replyNiche');
+  if(nsel && (d.niches||[]).length && nsel.options.length <= 1)
+    d.niches.forEach(n => nsel.add(new Option(n, n)));
+  if(nsel && nsel.value !== replyNiche) nsel.value = replyNiche;
+  const msel = $('#replyMetric'); if(msel && msel.value !== replyMetric) msel.value = replyMetric;
+  const bsel = $('#replyBucket'); if(bsel && bsel.value !== replyBucket) bsel.value = replyBucket;
+
+  drawReplyTrend(d.trend, replyMetric);
+
+  // легенда вариантов
+  const vars = d.trend.variants || [];
+  const leg = $('#replyLegend');
+  if(leg) leg.innerHTML = vars.map((v,i) =>
+    `<span style="margin-right:14px"><b style="background:${VARIANT_COLORS[i%VARIANT_COLORS.length]}"></b>вариант ${v}</span>`).join('')
+    + '<span class="muted" style="margin-left:6px">· свежие бакеты (моложе 72 ч) ещё дозревают</span>';
+
+  const rows = d.by_variant || [];
+  const wp = d.win_probability || {};
+
+  // разбивка исхода — стековая полоса на вариант (успех / отказ / блок / молчит)
+  const bd = $('#replyBreakdown');
+  if(bd) bd.innerHTML = !rows.length ? '<div class="muted">—</div>'
+    : rows.filter(r => r.decided > 0).map(r => {
+      const seg = (n,col,lbl) => n ? `<span title="${lbl}: ${n}" style="width:${(n/r.decided*100).toFixed(1)}%;background:${col};display:block;height:100%"></span>` : '';
+      return `<div style="display:grid;grid-template-columns:120px 1fr 64px;gap:10px;align-items:center;margin-bottom:6px">
+        <div style="font-size:12px;color:var(--dim)">${r.niche} · <b style="color:var(--tx)">${r.variant}</b></div>
+        <div style="display:flex;height:14px;border-radius:4px;overflow:hidden;background:var(--line-soft)">
+          ${seg(r.success,OUTCOME_COLOR.success,'успех')}${seg(r.rejected,OUTCOME_COLOR.rejected,'отказ')}${seg(r.blocked,OUTCOME_COLOR.blocked,'блок')}${seg(r.no_reply,OUTCOME_COLOR.no_reply,'молчит')}
+        </div>
+        <div class="num-r" style="font-size:12px">${fmt(r.decided)}</div>
+      </div>`;
+    }).join('')
+    + '<div class="legend" style="margin-top:8px">'
+      + `<span><b style="background:${OUTCOME_COLOR.success}"></b>успех</span>`
+      + `<span style="margin-left:12px"><b style="background:${OUTCOME_COLOR.rejected}"></b>отказ → стоп-лист</span>`
+      + `<span style="margin-left:12px"><b style="background:${OUTCOME_COLOR.blocked}"></b>блок / удалил чат</span>`
+      + `<span style="margin-left:12px"><b style="background:${OUTCOME_COLOR.no_reply}"></b>молчит</span></div>`;
+
+  // сводная таблица по вариантам
+  const vt = $('#replyVariants');
+  if(vt) vt.innerHTML = !rows.length ? '<div class="muted">Нет отправок с шаблонами. Заведите варианты текста: <code>POST /analytics/templates</code>.</div>'
+    : `<table><thead><tr>
+      <th>Ниша</th><th>Вар.</th><th>Текст</th><th>Отпр.</th><th>Решено</th>
+      <th>Успех %</th><th>Отказ %</th><th>Блок %</th><th>Лид %</th><th>P(лучший)</th>
+      </tr></thead><tbody>` + rows.map(r => `<tr>
+        <td class="muted">${r.niche}</td><td><b>${r.variant}</b></td>
+        <td class="muted" title="${(r.text||'').replace(/"/g,'&quot;')}">${(r.text||'').slice(0,42)}${(r.text||'').length>42?'…':''}</td>
+        <td class="num-r">${fmt(r.sent)}</td>
+        <td class="num-r">${fmt(r.decided)}${r.pending?` <span class="muted">+${r.pending} ждём</span>`:''} ${r.decided>=d.min_samples?'':'<span class="pill warn">мало</span>'}</td>
+        <td class="num-r" style="color:var(--ok)">${pct(r.success_rate)}</td>
+        <td class="num-r" style="color:${r.reject_rate>0.15?'var(--bad)':'inherit'}">${pct(r.reject_rate)}</td>
+        <td class="num-r" style="color:${r.blocked_rate>0.05?'var(--warn)':'inherit'}">${pct(r.blocked_rate)}</td>
+        <td class="num-r">${pct(r.lead_rate)}</td>
+        <td class="num-r">${wp[r.variant]==null?'—':pct(wp[r.variant])}</td>
+      </tr>`).join('') + '</tbody></table>';
+
+  // лента ответов
+  const feed = $('#replyFeed');
+  const recent = d.recent || [];
+  if(feed) feed.innerHTML = !recent.length ? '<div class="muted">Ответов пока нет.</div>'
+    : recent.map(r => {
+      const [lbl,col] = OUTCOME_BADGE[r.outcome] || [r.outcome, '#5f6f92'];
+      const when = r.replied_at ? new Date(r.replied_at).toLocaleString('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : '';
+      return `<div style="padding:9px 0;border-bottom:1px solid var(--line-soft)">
+        <div style="font-size:12px;color:var(--dim);display:flex;gap:10px;flex-wrap:wrap">
+          <span>${r.target||''}</span>
+          <span>вариант <b style="color:var(--tx)">${r.variant||'—'}</b></span>
+          <span>${r.niche||''}</span>
+          <span style="color:${col}">■ ${lbl}</span>
+          <span style="margin-left:auto">${when}</span>
+        </div>
+        <div style="margin-top:2px">${(r.reply_text||'').replace(/</g,'&lt;').slice(0,240)}</div>
+      </div>`;
+    }).join('');
+}
+
+function drawReplyTrend(trend, metric){
+  const series = (trend && trend.series) || [];
+  const vars = (trend && trend.variants) || [];
+  if(!series.length){ emptyCanvas('replyChart', 220, 'нет данных за период'); return; }
+  const c = canvasCtx('replyChart', 220); if(!c) return;
+  const {g, W, H} = c;
+  const pad = {l:40, r:12, t:14, b:26};
+  const plotW = W-pad.l-pad.r, plotH = H-pad.t-pad.b;
+  const val = (d,v) => { const pv = d.per_variant[v]; return pv ? pv[metric] : null; };
+  let max = 0.05;
+  series.forEach(d => vars.forEach(v => { const x = val(d,v); if(x!=null && x>max) max = x; }));
+  const n = series.length;
+  const x = i => pad.l + (n===1 ? plotW/2 : i*(plotW/(n-1)));
+  const y = p => pad.t + plotH - (p/max)*plotH;
+
+  g.strokeStyle = CANVAS_GRID; g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif'; g.lineWidth = 1;
+  for(let i=0;i<=4;i++){ const v = max*i/4, yy = y(v);
+    g.beginPath(); g.moveTo(pad.l,yy); g.lineTo(W-pad.r,yy); g.stroke();
+    g.fillText((v*100).toFixed(0)+'%', 6, yy+3);
+  }
+  vars.forEach((v,vi) => {
+    const col = VARIANT_COLORS[vi%VARIANT_COLORS.length];
+    const line = series.map((d,i) => ({ i, p: val(d,v) })).filter(o => o.p != null);
+    if(!line.length) return;
+    g.strokeStyle = col; g.fillStyle = col; g.lineWidth = 2.4;
+    // сплошная линия до предпоследней точки
+    if(line.length > 1){
+      g.setLineDash([]); g.beginPath();
+      line.slice(0, -1).forEach((o,k) => { const px = x(o.i), py = y(o.p);
+        k ? g.lineTo(px,py) : g.moveTo(px,py); });
+      const pre = line[line.length-2];
+      g.lineTo(x(pre.i), y(pre.p));
+      g.stroke();
+      // последний сегмент пунктиром — бакет ещё дозревает
+      const last = line[line.length-1];
+      g.setLineDash([4,3]); g.beginPath();
+      g.moveTo(x(pre.i), y(pre.p)); g.lineTo(x(last.i), y(last.p)); g.stroke();
+      g.setLineDash([]);
+    }
+    line.forEach(o => { g.beginPath(); g.arc(x(o.i), y(o.p), 2.6, 0, 7); g.fill(); });
+  });
+  g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif';
+  const step = Math.max(1, Math.ceil(n/8));
+  series.forEach((d,i) => { if(i%step===0){
+    const lbl = String(d.t).replace(/^\d{4}-/, '');
+    g.fillText(lbl, x(i) - g.measureText(lbl).width/2, H-9);
+  }});
+}
+
+/* ─── 5. Потраченные средства ──────────────────────────────────────────── */
+
+function renderSpendView(){
+  return `<div class="panel">
+    <h2>Потраченные средства</h2>
+    <div class="wrow">
+      <div class="seg" id="spendViewSeg">
+        <button data-v="money" class="active">траты</button>
+        <button data-v="efficiency">эффективность денег</button>
+      </div>
+      <label for="spendBucket" style="margin-left:6px">Бакет</label>
+      <select id="spendBucket">
+        <option value="week">неделя</option><option value="month" selected>месяц</option>
+      </select>
+      <span id="spendTotals" class="muted" style="margin-left:auto"></span>
+    </div>
+    <canvas id="spendChart" height="250" style="width:100%"></canvas>
+    <div class="legend" id="spendLegend"></div>
+    <div id="spendSellers" class="tbl-scroll" style="margin-top:16px"></div>
+  </div>`;
+}
+
+function paintSpend(){
+  if(!$('#spendChart')) return;
+  const d = lastSpend;
+  if(!d){ emptyCanvas('spendChart', 250, 'загрузка…'); return; }
+  const bsel = $('#spendBucket'); if(bsel && bsel.value !== spendBucket) bsel.value = spendBucket;
+  [...($('#spendViewSeg')?.children||[])].forEach(b => b.classList.toggle('active', b.dataset.v === spendView));
+
+  const t = d.totals || {};
+  const el = $('#spendTotals');
+  if(el) el.textContent = `всего ${money(t.spend)} · ${fmt(t.accounts)} аккаунтов · цена лида ~${money(d.cpl_modeled)}`;
+
+  const leg = $('#spendLegend');
+  if(spendView === 'money'){
+    drawSpendMoney(d.series);
+    const srcs = [...new Set((d.series||[]).flatMap(s => Object.keys(s.by_source||{})))];
+    if(leg) leg.innerHTML = '<span><b style="background:#3a86ff"></b>потрачено за бакет</span>'
+      + '<span style="margin-left:14px"><b style="background:#16213a"></b>накопительно</span>'
+      + (srcs.length>1 ? '<span style="margin-left:14px;color:var(--dim)">источник:</span> '
+        + srcs.map(s => `<span style="margin-left:6px"><b style="background:${SRC_COLOR[s]||'#8b95a5'}"></b>${s}</span>`).join('') : '');
+  } else {
+    drawSpendEfficiency(d.series);
+    if(leg) leg.innerHTML = '<span><b style="background:#d43f4f"></b>цена лида ₽ (running)</span>'
+      + '<span style="margin-left:14px"><b style="background:#3a86ff"></b>цена сообщения ₽ (running)</span>'
+      + '<span class="muted" style="margin-left:8px">· потрачено ÷ выхлоп нарастающим итогом</span>';
+  }
+
+  const sellers = d.by_seller || [];
+  const st = $('#spendSellers');
+  if(st) st.innerHTML = !sellers.length ? ''
+    : `<table><thead><tr><th>Продавец</th><th class="num-r">Аккаунтов</th><th class="num-r">Потрачено</th><th class="num-r">Средний чек</th></tr></thead><tbody>`
+      + sellers.map(s => `<tr><td>${s.seller}</td><td class="num-r">${fmt(s.accounts)}</td><td class="num-r">${money(s.spend)}</td><td class="num-r">${money(s.avg_cost)}</td></tr>`).join('')
+      + '</tbody></table>';
+}
+
+function drawSpendMoney(series){
+  if(!series.length){ emptyCanvas('spendChart', 250, 'нет трат за период'); return; }
+  const c = canvasCtx('spendChart', 250); if(!c) return;
+  const {g, W, H} = c;
+  const pad = {l:52, r:48, t:14, b:28};
+  const plotW = W-pad.l-pad.r, plotH = H-pad.t-pad.b;
+  const srcs = [...new Set(series.flatMap(s => Object.keys(s.by_source||{})))];
+  const maxBar = Math.max(1, ...series.map(s => s.spend||0));
+  const maxCum = Math.max(1, ...series.map(s => s.spend_cum||0));
+  const n = series.length, slot = plotW/n;
+  const bw = Math.max(6, Math.min(46, slot*0.5));
+  const xc = i => pad.l + (i+0.5)*slot;
+  const yL = v => pad.t + plotH - (v/maxBar)*plotH;
+  const yR = v => pad.t + plotH - (v/maxCum)*plotH;
+  const bottom = pad.t + plotH;
+
+  g.strokeStyle = CANVAS_GRID; g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif'; g.lineWidth = 1;
+  for(let i=0;i<=4;i++){ const v = maxBar*i/4, yy = yL(v);
+    g.beginPath(); g.moveTo(pad.l,yy); g.lineTo(W-pad.r,yy); g.stroke();
+    g.fillText(Math.round(v)+'₽', 4, yy+3);
+  }
+  g.fillStyle = '#16213a';
+  for(let i=0;i<=4;i++){ const v = Math.round(maxCum*i/4); g.fillText(v+'₽', W-pad.r+5, yR(v)+3); }
+
+  series.forEach((s,i) => {
+    const x = xc(i) - bw/2;
+    if(srcs.length > 1){
+      let acc = 0;
+      srcs.forEach(src => { const v = s.by_source[src]||0; if(!v) return;
+        g.fillStyle = SRC_COLOR[src]||'#8b95a5';
+        g.fillRect(x, yL(acc+v), bw, (v/maxBar)*plotH); acc += v;
+      });
+    } else { g.fillStyle = '#3a86ff'; g.fillRect(x, yL(s.spend||0), bw, bottom - yL(s.spend||0)); }
+  });
+  g.strokeStyle = '#16213a'; g.lineWidth = 2; g.beginPath();
+  series.forEach((s,i) => { const p = [xc(i), yR(s.spend_cum||0)]; i?g.lineTo(...p):g.moveTo(...p); });
+  g.stroke();
+  g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif';
+  const step = Math.max(1, Math.ceil(n/8));
+  series.forEach((s,i) => { if(i%step===0){ const l = String(s.t).replace(/^\d{4}-/,'');
+    g.fillText(l, xc(i) - g.measureText(l).width/2, H-10); }});
+}
+
+function drawSpendEfficiency(series){
+  const pts = series.filter(s => s.cpm_running != null);
+  if(!pts.length){ emptyCanvas('spendChart', 250, 'нет данных: нужны и траты, и отправки'); return; }
+  const c = canvasCtx('spendChart', 250); if(!c) return;
+  const {g, W, H} = c;
+  const pad = {l:50, r:50, t:14, b:28};
+  const plotW = W-pad.l-pad.r, plotH = H-pad.t-pad.b;
+  const cpl = pts.map(s => s.cpl_running).filter(v => v!=null);
+  const cpm = pts.map(s => s.cpm_running);
+  const maxL = Math.max(0.01, ...cpl);
+  const maxM = Math.max(0.001, ...cpm);
+  const n = pts.length;
+  const x = i => pad.l + (n===1?plotW/2:i*(plotW/(n-1)));
+  const yL = v => pad.t + plotH - (v/maxL)*plotH;
+  const yR = v => pad.t + plotH - (v/maxM)*plotH;
+
+  g.strokeStyle = CANVAS_GRID; g.fillStyle = '#d43f4f'; g.font = '10px sans-serif'; g.lineWidth = 1;
+  for(let i=0;i<=4;i++){ const v = maxL*i/4, yy = yL(v);
+    g.beginPath(); g.moveTo(pad.l,yy); g.lineTo(W-pad.r,yy); g.strokeStyle=CANVAS_GRID; g.stroke();
+    g.fillText(Math.round(v)+'₽', 4, yy+3);
+  }
+  g.fillStyle = '#3a86ff';
+  for(let i=0;i<=4;i++){ const v = maxM*i/4; g.fillText(v.toFixed(2), W-pad.r+5, yR(v)+3); }
+
+  const line = (arr, yfn, col) => {
+    g.strokeStyle = col; g.fillStyle = col; g.lineWidth = 2.4; g.beginPath();
+    let started = false;
+    pts.forEach((s,i) => { const v = arr(s); if(v==null) return;
+      const p = [x(i), yfn(v)]; started ? g.lineTo(...p) : (g.moveTo(...p), started = true); });
+    g.stroke();
+    pts.forEach((s,i) => { const v = arr(s); if(v==null) return;
+      g.beginPath(); g.arc(x(i), yfn(v), 2.6, 0, 7); g.fill(); });
+  };
+  line(s => s.cpl_running, yL, '#d43f4f');
+  line(s => s.cpm_running, yR, '#3a86ff');
+
+  g.fillStyle = CANVAS_AXIS; g.font = '10px sans-serif';
+  const step = Math.max(1, Math.ceil(n/8));
+  pts.forEach((s,i) => { if(i%step===0){ const l = String(s.t).replace(/^\d{4}-/,'');
+    g.fillText(l, x(i) - g.measureText(l).width/2, H-10); }});
+}
+
+/* ─── 6. Диалоги — встроенная платформа переписки (api/inbox.html) ──────
+   Тяжёлую логику мессенджера не дублируем в дашборде: показываем ту же
+   страницу /inbox в iframe. Оболочка монтируется один раз (CUSTOM_DASH),
+   src проставляется, когда токен уже прочитан — иначе iframe открылся бы
+   с формой ввода токена. */
+function renderInboxFrame(){
+  return `<iframe id="inboxFrame" title="Диалоги"
+    style="width:100%;height:calc(100vh - 108px);border:1px solid var(--line);
+           border-radius:16px;box-shadow:var(--shadow);background:#fff"></iframe>`;
+}
+function paintInbox(){
+  const f = $('#inboxFrame');
+  if(f && !f.src && TOKEN) f.src = BACKEND + '/inbox?token=' + encodeURIComponent(TOKEN);
+}
+
+/* ─── 7. AI-редактор текстов ──────────────────────────────────────────
+   Замыкает петлю: бандит → нейросеть смотрит статистику + реальные ответы →
+   инсайты + новые варианты + шкала тона → кнопкой в бандит. Анализ стоит
+   токены, поэтому только по кнопке, без опроса. */
+let copyAiData = null, copyAiState = 'idle', copyAiErr = '', copyAiRendered = '';
+
+function renderCopyAiView(){
+  return `<div class="panel">
+    <h2>AI-редактор текстов рассылки</h2>
+    <div class="wrow">
+      <label for="copyNiche">Ниша</label>
+      <select id="copyNiche"><option value="">— выбери нишу —</option></select>
+      <button id="copyRun" style="margin-left:6px">Анализировать</button>
+      <span id="copyStatus" class="muted" style="margin-left:auto"></span>
+    </div>
+    <div class="sub" style="margin-top:-8px;margin-bottom:14px">
+      Нейросеть смотрит статистику бандита по вариантам + реальные ответы людей + отказы,
+      объясняет что работает и предлагает новые варианты. Один запуск = один запрос к модели.
+    </div>
+    <div id="copyBody"></div>
+  </div>`;
+}
+
+function paintCopyAi(){
+  const sel = $('#copyNiche');
+  if(sel && lastOverview && (lastOverview.niches||[]).length && sel.options.length <= 1){
+    lastOverview.niches.forEach(n => sel.add(new Option(n, n)));
+  }
+  const stamp = copyAiState + '|' + copyAiErr + '|' + (copyAiData ? copyAiData.niche + copyAiData.insights.length : '');
+  if(stamp === copyAiRendered) return;   // не перетираем DOM (и чекбоксы) на пустом опросе
+  copyAiRendered = stamp;
+
+  const body = $('#copyBody'); if(!body) return;
+  const st = $('#copyStatus');
+  if(st) st.textContent = copyAiState === 'loading' ? 'Модель думает…'
+    : (copyAiData ? `видел ${copyAiData.model_input.replies_seen} ответов, ${copyAiData.model_input.variants} вар.` : '');
+
+  if(copyAiState === 'loading'){ body.innerHTML = '<div class="muted">Анализирую нишу… это 10–30 сек.</div>'; return; }
+  if(copyAiErr){ body.innerHTML = `<div class="warnbox">${copyAiErr}</div>`; return; }
+  if(!copyAiData){ body.innerHTML = '<div class="muted">Выбери нишу и нажми «Анализировать».</div>'; return; }
+
+  const d = copyAiData;
+  const ins = (d.insights||[]).map(x => `<li>${escapeHtml(x)}</li>`).join('');
+  const nv = (d.new_variants||[]).map((v,i) => `
+    <div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:rgba(255,255,255,.5)">
+      <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer">
+        <input type="checkbox" class="copyPick" data-i="${i}" checked style="margin-top:3px">
+        <span>
+          <span style="white-space:pre-wrap">${escapeHtml(v.text)}</span>
+          ${v.rationale ? `<span class="muted" style="display:block;margin-top:6px;font-size:12px">↳ ${escapeHtml(v.rationale)}</span>` : ''}
+        </span>
+      </label>
+    </div>`).join('');
+  const tone = d.tone_dial || {};
+  const toneCard = (k,lbl) => tone[k] ? `
+    <div style="flex:1;min-width:200px;border:1px solid var(--line-soft);border-radius:12px;padding:12px;background:rgba(255,255,255,.45)">
+      <div class="k">${lbl}</div>
+      <div style="margin-top:6px;white-space:pre-wrap;font-size:13px">${escapeHtml(tone[k])}</div>
+    </div>` : '';
+
+  body.innerHTML = `
+    <h3 style="margin:6px 0 8px">Что видит модель</h3>
+    <ul style="margin:0 0 18px;padding-left:20px">${ins || '<li class="muted">—</li>'}</ul>
+
+    <h3 style="margin:0 0 8px">Новые варианты</h3>
+    ${nv || '<div class="muted">Модель не предложила новых вариантов.</div>'}
+    ${d.new_variants && d.new_variants.length ? `<button id="copyApply">Добавить выбранные в бандит</button>
+      <span id="copyApplyMsg" class="muted" style="margin-left:10px"></span>` : ''}
+
+    <h3 style="margin:22px 0 8px">Шкала тона (текущий оффер)</h3>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      ${toneCard('human','человечно / разговорно')}${toneCard('neutral','нейтрально')}${toneCard('official','официально-деловой')}
+    </div>`;
+}
+
+function escapeHtml(s){ return (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function runCopyAi(){
+  const niche = ($('#copyNiche')||{}).value;
+  if(!niche){ copyAiErr = 'Сначала выбери нишу.'; copyAiRendered=''; paintCopyAi(); return; }
+  copyAiState = 'loading'; copyAiErr = ''; copyAiRendered = ''; paintCopyAi();
+  try{
+    copyAiData = await api('/analytics/copy/analyze?niche=' + encodeURIComponent(niche));
+    copyAiState = 'done';
+  }catch(e){
+    copyAiErr = 'Ошибка: ' + e.message; copyAiState = 'idle';
+  }
+  copyAiRendered = ''; paintCopyAi();
+}
+
+async function applyCopyAi(){
+  if(!copyAiData) return;
+  const picks = [...document.querySelectorAll('.copyPick:checked')].map(x => copyAiData.new_variants[+x.dataset.i].text);
+  const msg = $('#copyApplyMsg');
+  if(!picks.length){ if(msg) msg.textContent = 'ничего не выбрано'; return; }
+  if(msg) msg.textContent = 'сохраняю…';
+  try{
+    const r = await fetch(BACKEND + '/analytics/copy/apply', {
+      method:'POST', headers:{Authorization:'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({niche: copyAiData.niche, texts: picks}),
+    });
+    if(!r.ok) throw new Error((await r.text()).slice(0,120));
+    const j = await r.json();
+    if(msg) msg.textContent = `добавлено вариантов: ${j.count} — бандит начнёт их сравнивать`;
+  }catch(e){ if(msg) msg.textContent = 'ошибка: ' + e.message; }
+}
+
+function paintCustom(id){
+  if(id === 'acquisition') paintAcq();
+  else if(id === 'acct_quality') paintCohorts();
+  else if(id === 'subs') paintSubs();
+  else if(id === 'replies') paintReplies();
+  else if(id === 'spend') paintSpend();
+  else if(id === 'inbox') paintInbox();
+  else if(id === 'copy_ai') paintCopyAi();
+}
+
+// маппинг type -> рендерер (WIDGET TYPE REGISTRY)
+function renderWidget(w){
+  if(w.type === 'kpi_grid') return renderKpiGrid();
+  if(w.type === 'funnel') return renderFunnel();
+  if(w.type === 'timeseries') return renderTimeseriesPanel();
+  if(w.type === 'table_templates') return renderTemplates();
+  if(w.type === 'table_accounts') return renderAccounts();
+  if(w.type === 'acct_acquisition') return renderAcqAcquisition();
+  if(w.type === 'acct_cohorts') return renderAcctCohorts();
+  if(w.type === 'subs_rate') return renderSubsRate();
+  if(w.type === 'replies_view') return renderRepliesView();
+  if(w.type === 'spend_view') return renderSpendView();
+  if(w.type === 'inbox_frame') return renderInboxFrame();
+  if(w.type === 'copy_ai_view') return renderCopyAiView();
+  return '';
+}
+
+/* ─────────────────── левая навигация — из DASHBOARDS[], выпадающий список ─────────────────── */
+
+function buildNav(){
+  const sel = $('#dashSelect');
+  sel.innerHTML = DASHBOARDS.map(d =>
+    `<option value="${d.id}" ${d.id===activeDashboard?'selected':''}>${d.icon} ${d.title}</option>`).join('');
+  sel.onchange = () => { activeDashboard = sel.value; buildSections(); renderAll(); refreshCustom(); };
+}
+
+function buildSections(){
+  $('#sections').innerHTML = DASHBOARDS.map(d =>
+    `<div class="dash-section ${d.id===activeDashboard?'active':''}" id="sec-${d.id}"></div>`).join('');
+}
+
+function renderAll(){
+  const d = DASHBOARDS.find(x => x.id === activeDashboard);
+  if(!d) return;
+  const el = $('#sec-' + d.id);
+  if(!el) return;
+  if(CUSTOM_DASH.has(d.id)){
+    // оболочку с контролами строим один раз — иначе открытый дропдаун
+    // закрывался бы на каждом опросе; дальше только paint данных
+    if(!el.dataset.mounted){
+      el.innerHTML = d.widgets.map(renderWidget).join('');
+      el.dataset.mounted = '1';
+    }
+    paintCustom(d.id);
+    return;
+  }
+  el.innerHTML = d.widgets.map(renderWidget).join('');
+  // canvas графика перерисовывается отдельно от innerHTML (2D-контекст, не HTML)
+  if(dashboardHasWidget(activeDashboard, 'timeseries')) drawChart(lastSeries);
+}
+
+/* контролы новых дашбордов — делегирование на #sections (стабильный родитель),
+   поэтому слушатели переживают перерисовку оболочки */
+function bindCustomControls(){
+  $('#sections').addEventListener('change', (e) => {
+    const t = e.target;
+    if(t.id === 'acqBucket'){ acqBucket = t.value; refreshCustom(); }
+    else if(t.id === 'cohortBy'){ cohortBy = t.value; refreshCustom(); }
+    else if(t.id === 'cohortMetric'){ cohortMetric = t.value; paintCohorts(); }
+    else if(t.id === 'subsWindow'){ subsHours = Number(t.value); refreshCustom(); }
+    else if(t.id === 'subsChannel'){ subsChannel = t.value; refreshCustom(); }
+    else if(t.id === 'replyNiche'){ replyNiche = t.value; refreshCustom(); }
+    else if(t.id === 'replyMetric'){ replyMetric = t.value; paintReplies(); }
+    else if(t.id === 'replyBucket'){ replyBucket = t.value; refreshCustom(); }
+    else if(t.id === 'spendBucket'){ spendBucket = t.value; refreshCustom(); }
+  });
+  // сегментированный тумблер «траты / эффективность» — это click, не change
+  $('#sections').addEventListener('click', (e) => {
+    const b = e.target.closest('#spendViewSeg button[data-v]');
+    if(b){ spendView = b.dataset.v; paintSpend(); return; }
+    if(e.target.closest('#copyRun')){ runCopyAi(); return; }
+    if(e.target.closest('#copyApply')){ applyCopyAi(); return; }
+  });
+}
+
+async function fetchCustom(id){
+  if(id === 'acquisition'){
+    lastAcq = await api(`/analytics/accounts/acquisition?bucket=${acqBucket}`);
+  } else if(id === 'acct_quality'){
+    lastCohorts = await api(`/analytics/accounts/cohorts?by=${cohortBy}`);
+  } else if(id === 'subs'){
+    const q = subsChannel ? '&channel='+encodeURIComponent(subsChannel) : '';
+    lastSubs = await api(`/analytics/subscriptions/timeseries?bucket_minutes=10&hours=${subsHours}${q}`);
+  } else if(id === 'replies'){
+    const q = replyNiche ? '&niche='+encodeURIComponent(replyNiche) : '';
+    lastReplies = await api(`/analytics/replies?days=60&bucket=${replyBucket}${q}`);
+  } else if(id === 'spend'){
+    lastSpend = await api(`/analytics/spend?bucket=${spendBucket}`);
+  }
+}
+
+async function refreshCustom(){
+  if(!CUSTOM_DASH.has(activeDashboard)) return;
+  await ensureToken();
+  if(!TOKEN){ setLive(false,'бэкенд не найден — запустите ./run_api.sh'); return; }
+  try{
+    await fetchCustom(activeDashboard);
+    renderAll();
+    setLive(true, 'обновлено '+new Date().toLocaleTimeString('ru-RU'));
+  }catch(e){ setLive(false, 'ошибка: '+e.message); }
+}
+
+/* ─────────────────── токен: без UI, читается напрямую с диска ─────────────────── */
+
+// Тот же файл, что пишет api/auth.py на бэкенде (~/.telegramtool/token) —
+// см. main.rs (read_local_token). Работает только внутри настоящего
+// Tauri-окна (window.__TAURI__ определён только там); в обычном браузере
+// (например при локальной разработке дашборда) тихо не срабатывает.
+// Вызывается не только один раз при старте, а на каждом refresh(), пока
+// TOKEN пуст — так что если бэкенд ещё не запускался в момент открытия
+// приложения, достаточно просто запустить его: токен подхватится сам
+// на следующем опросе, без перезапуска приложения.
+async function ensureToken(){
+  if(TOKEN) return;
+  if(window.__TAURI__){
+    try{
+      const t = await window.__TAURI__.core.invoke('read_local_token');
+      if(t){ TOKEN = t; return; }
+    }catch(e){ /* бэкенд ещё не запускался ни разу — файла нет, это нормально */ }
+  }
+  // Фолбэк для запуска в обычном браузере (локальная разработка/проверка
+  // дашбордов без Tauri): токен из ?token=... или localStorage. В настоящем
+  // Tauri-окне сюда не доходит. Консистентно с веб-версией api/dashboard.html.
+  try{
+    const urlTok = new URLSearchParams(location.search).get('token');
+    if(urlTok){ TOKEN = urlTok; localStorage.setItem('tt_token', urlTok); return; }
+    const stored = localStorage.getItem('tt_token');
+    if(stored) TOKEN = stored;
+  }catch(e){ /* localStorage может быть недоступен — не критично */ }
+}
+
+/* ─────────────────── загрузка данных ─────────────────── */
+
+// KPI/воронка/шаблоны/аккаунты — раз в 5 сек, как раньше.
+async function refresh(){
+  await ensureToken();
+  if(!TOKEN){ setLive(false,'бэкенд не найден — запустите ./run_api.sh'); return; }
+  const n = $('#niche').value, days = $('#days').value;
+  const q = (n? '&niche='+encodeURIComponent(n) : '');
+  try{
+    const [ov, tpl, acc] = await Promise.all([
+      api(`/analytics/overview?days=${days}${q}`),
+      api(`/analytics/templates?${n?'niche='+encodeURIComponent(n):''}`),
+      api('/analytics/accounts'),
+    ]);
+    lastOverview = ov; lastTpl = tpl; lastAcc = acc;
+
+    if($('#niche').options.length <= 1 && ov.niches.length)
+      ov.niches.forEach(x=>$('#niche').add(new Option(x,x)));
+
+    renderAll();
+
+    const w = [];
+    if(ov.cpl.note) w.push(ov.cpl.note);
+    if(!ov.capacity.accounts_active) w.push('Нет активных аккаунтов — рассылка не пойдёт.');
+    if(ov.cost_per_message.is_estimate && ov.totals.spend===0)
+      w.push('Стоимость аккаунтов не задана — CPL считается неверно. POST /analytics/accounts/{name}/cost');
+    $('#warns').innerHTML = w.map(x=>`<div class="warnbox">${x}</div>`).join('');
+
+    setLive(true, 'обновлено '+new Date().toLocaleTimeString('ru-RU'));
+  }catch(e){ setLive(false, 'ошибка: '+e.message); }
+}
+
+// График — отдельно, раз в минуту (без зума: просто фиксированное окно
+// в минутной детализации, которая только раз в минуту и обновляется на бэкенде).
+async function refreshChart(){
+  try{
+    await ensureToken(); // на случай, если это сработало раньше, чем refresh()
+    if(!TOKEN) return;
+    await fetchTimeseries();
+    if(dashboardHasWidget(activeDashboard, 'timeseries')) drawChart(lastSeries);
+  }catch(e){ /* не валим остальной дашборд, если график не смог обновиться */ }
+}
+
+buildNav();
+buildSections();
+bindCustomControls();
+refresh();
+refreshChart();
+refreshCustom();
+setInterval(refresh, 5000);
+setInterval(refreshChart, 60000);
+setInterval(refreshCustom, 20000);   // «Подписки» ощущаются живыми; закупка/эффективность — тоже недорого
+</script>
+</body>
+</html>

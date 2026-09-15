@@ -1,0 +1,20 @@
+[package]
+name = "telegramtool-dashboard"
+version = "0.1.0"
+description = "Десктоп-обёртка дашборда telegramTool"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Фаза B (авто-старт локального бэкенда как sidecar-процесса):
+# tauri-plugin-shell = "2"
+
+# [lib]-секции нет намеренно: она нужна только под mobile-таргеты Tauri
+# (там app-логика живёт в отдельном lib-крейте, см. src/lib.rs в шаблонах
+# `tauri android/ios init`). Для чисто десктопного Phase A хватает main.rs —
+# бинарник собирается напрямую из него.
