@@ -1538,6 +1538,7 @@ def handle_parsing():
         print("  3. Всё сразу (папки + ZIP)")
         print("  4. Импорт из parsed_chats.xlsx")
         print("  5. Статистика по категориям")
+        print("  6. Умный парсинг людей (по каналу клиента → Excel)")
         print("  0. Назад")
 
         choice = input("\nВыбор: ").strip()
@@ -1553,10 +1554,52 @@ def handle_parsing():
             handle_import_parsed()
         elif choice == "5":
             _show_category_stats()
+        elif choice == "6":
+            handle_smart_parse()
         elif choice == "0":
             break
         else:
             print("Неверный выбор.")
+
+
+def handle_smart_parse():
+    """Умный парсинг людей: канал клиента → источники → запросы → Excel (parsing/smart)."""
+    from parsing.smart.run import run_smart_parse
+    from parsing.smart.settings import Params
+
+    def _ask_int(prompt: str, default: int) -> int:
+        raw = input(f"{prompt} (Enter = {default}): ").strip()
+        try:
+            return int(raw) if raw else default
+        except ValueError:
+            return default
+
+    print("\n--- Умный парсинг людей ---")
+    print("  Находит в чатах людей, которые сами пишут о потребности по теме клиента,")
+    print("  и сохраняет их в Excel, отсортированными по оценке PQI.")
+    channel = input("Канал клиента (@name или ссылка): ").strip()
+    if not channel:
+        print("Отменено.")
+        return
+    brief = input("Бриф: что продаёт и кому (Enter — пропустить): ").strip()
+    days = _ask_int("Окно свежести, дней", 14)
+    max_sources = _ask_int("Сколько чатов читать", 30)
+    llm_budget = _ask_int("Лимит вызовов бесплатного LLM (0 — без LLM)", 25)
+    offline = input("Только пересчитать уже собранное, без Telegram? (y/N): ").strip().lower() == "y"
+
+    params = Params(channel=channel, brief=brief, days=days, max_sources=max_sources,
+                    llm_budget=max(llm_budget, 0), no_llm=llm_budget <= 0, offline=offline)
+    print(f"\nКанал @{params.channel}, окно {days} дн., чатов до {max_sources}, "
+          f"LLM: {'нет' if params.no_llm else f'до {llm_budget} вызовов'}")
+    print("Начать? (y/n): ", end="")
+    if input().strip().lower() != "y":
+        print("Отменено.")
+        return
+    try:
+        path = asyncio.run(run_smart_parse(params))
+        print(f"\nГотово! Excel: {path}")
+    except Exception as e:  # noqa: BLE001
+        print(f"\nОшибка умного парсинга: {e}")
 
 
 def handle_parse_folders():

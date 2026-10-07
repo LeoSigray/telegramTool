@@ -8,6 +8,7 @@ tgcrypto>=1.2.5
 gspread>=6.0.0
 google-auth>=2.0.0
 pandas>=2.0.0
+pymorphy3>=2.0.0  # леммы для умного парсинга (parsing/smart); без него работает упрощённый стеммер
 
 # HTTP API (опционально, нужны только для api/server.py)
 fastapi>=0.115.0
