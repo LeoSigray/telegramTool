@@ -5,7 +5,7 @@ import sqlite3
 from telethon import TelegramClient
 
 from config import CONFIG, SESSIONS_DIR
-from proxy_manager import client_kwargs_for
+from proxy_manager import client_kwargs_or_die as client_kwargs_for
 
 
 def fix_session_version(session_path: str) -> bool:
@@ -109,11 +109,20 @@ def create_client(session_path):
     session_name = os.path.splitext(session_path)[0]  # без .session
     account = os.path.basename(session_name)
 
+    # Отпечаток «человеческого устройства» — только если аккаунту его назначили
+    # (при покупке или при запуске прогрева). У остальных поведение прежнее.
+    try:
+        from warmup.devices import device_kwargs
+        device = device_kwargs(account)
+    except Exception:  # noqa: BLE001 — отпечаток не должен мешать подключению
+        device = {}
+
     client = TelegramClient(
         session_name,
         CONFIG["TELEGRAM_API_ID"],
         CONFIG["TELEGRAM_API_HASH"],
         **client_kwargs_for(account),
+        **device,
     )
     return client
 

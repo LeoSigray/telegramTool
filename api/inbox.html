@@ -47,6 +47,11 @@
   .seg button{flex:1;border:none;background:transparent;padding:6px 8px;font-size:12px;
        cursor:pointer;color:var(--dim)}
   .seg button.active{background:var(--acc);color:#fff;font-weight:600}
+  .oldbtn{width:100%;margin-top:9px;border:1px dashed var(--line);background:rgba(255,255,255,.55);
+       border-radius:9px;padding:6px 8px;font-size:12px;cursor:pointer;color:var(--acc-deep)}
+  .oldbtn:hover{border-color:var(--acc)}
+  .oldbtn:disabled{opacity:.6;cursor:default}
+  .oldst{font-size:11px;color:var(--dim);margin-top:5px;line-height:1.35;display:none}
   .rows{flex:1;overflow-y:auto;min-height:0}
   .row{display:grid;grid-template-columns:40px 1fr auto;gap:10px;align-items:center;
        padding:10px 14px;cursor:pointer;border-bottom:1px solid var(--line-soft)}
@@ -128,6 +133,8 @@
         <button data-s="closed">Закрытые</button>
         <button data-s="all">Все</button>
       </div>
+      <button class="oldbtn" id="oldBtn" title="Загрузить в мессенджер ответы, которые пришли раньше, чем он был включён">⬇ Загрузить старые ответы</button>
+      <div class="oldst" id="oldSt"></div>
     </div>
     <div class="rows" id="rows"><div class="empty">Загрузка…</div></div>
   </div>
@@ -426,10 +433,46 @@ $('#search').addEventListener('input', e => {
   searchDebounce = setTimeout(() => { search = e.target.value.trim(); loadList(); }, 300);
 });
 
+/* ── загрузка старых ответов ──────────────────────────────────────── */
+let oldTimer = null;
+function showOldStatus(s){
+  const el = $('#oldSt'), btn = $('#oldBtn');
+  if(!s.running && !s.finished) return;          // загрузку ещё не запускали
+  el.style.display = 'block';
+  if(s.running){
+    btn.disabled = true; btn.textContent = 'Загружаю…';
+    el.textContent = `Аккаунтов обработано ${s.done||0} из ${s.total||0}` + (s.current ? ` (сейчас ${s.current})` : '') +
+      ` · найдено новых диалогов: ${s.new||0}`;
+    return;
+  }
+  btn.disabled = false; btn.textContent = '⬇ Загрузить старые ответы';
+  clearInterval(oldTimer); oldTimer = null;
+  if(s.error){ el.textContent = 'Ошибка: ' + s.error; return; }
+  const bad = Object.entries(s.accounts||{}).filter(([,r]) => r.error || r.flood_wait_s).length;
+  el.textContent = `Готово: за ${s.days} дн. найдено ответов ${s.messages||0}, новых диалогов ${s.new||0}.` +
+    ((s.skipped||[]).length ? ` Сейчас заняты рассылкой/прогревом (их ответы подтянутся сами, когда освободятся): ${s.skipped.length}.` : '') +
+    (bad ? ` С ошибкой/лимитом Telegram: ${bad} — повторите позже.` : '');
+  loadList();
+}
+async function pollOld(){
+  try{ showOldStatus(await api('/inbox/import-old')); }catch(e){ /* сеть мигнула — следующий опрос */ }
+}
+$('#oldBtn').onclick = async () => {
+  const v = prompt('За сколько последних дней загрузить старые ответы?', '30');
+  if(v === null) return;
+  const days = Math.max(1, Math.min(365, parseInt(v, 10) || 30));
+  try{
+    const r = await api('/inbox/import-old?days=' + days, {method:'POST'});
+    showOldStatus(r);
+    clearInterval(oldTimer); oldTimer = setInterval(pollOld, 2500);
+  }catch(e){ toast(e.message); }
+};
+
 /* ── старт ────────────────────────────────────────────────────────── */
 async function boot(){
   if(!await ensureToken()){ $('#tokenbox').style.display = 'flex'; return; }
   await loadList();
+  pollOld();                                       // если загрузка старых уже идёт/закончилась — показать
   clearInterval(listTimer);
   listTimer = setInterval(loadList, 8000);
 }

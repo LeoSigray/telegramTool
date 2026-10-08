@@ -24,7 +24,7 @@ from config import SESSIONS_DIR, DATA_DIR
 from data.analytics import expire_pending, init_analytics
 from data.db import init_db, migrate_from_files, sync_all_to_db
 from data.inbox import init_inbox
-from optimizer import health
+from optimizer import health as optimizer_health   # не "health": ниже есть маршрут /health, он затенял бы модуль
 
 from . import (channel_watch, listener, routes_accounts, routes_analytics,
                routes_broadcast, routes_bulk, routes_inbox)
@@ -43,7 +43,7 @@ async def _maintenance_loop() -> None:
         try:
             await asyncio.sleep(MAINTENANCE_INTERVAL_SEC)
             expired = expire_pending()
-            swept = health.sweep()
+            swept = optimizer_health.sweep()
             log.info("[maintenance] expired=%d restored=%d throttled=%d",
                      expired, swept["restored"], swept["throttled"])
             try:
@@ -69,7 +69,14 @@ async def lifespan(app: FastAPI):
     # 2. чиним старые версии sessions
     migrate_all_sessions()
     # 3. поднимаем все клиенты в пул (get_session_files внутри уже читает из БД)
-    await pool.start_all()
+    # API_ONLY_ACCOUNTS="+380981257112,+380981257044" — подключить только эти аккаунты. Нужно, когда рядом
+    # в другом окне идёт прогрев: один аккаунт = одно подключение, иначе конфликт сессий.
+    pool.allowed = {a.strip() for a in os.getenv("API_ONLY_ACCOUNTS", "").split(",") if a.strip()} or None
+    # По умолчанию мессенджер держит ВСЕ свободные аккаунты (чтобы слушать ответы постоянно) и сам отпускает
+    # те, что нужны прогреву (статус «идёт») или арендованы консольной рассылкой (accounts/leases.py), а потом
+    # забирает обратно. API_SKIP_WARMUP=0 — не отпускать прогревные (не рекомендуется: будет конфликт сессий).
+    skip_warmup = os.getenv("API_SKIP_WARMUP", "1").strip().lower() not in ("0", "false", "no", "off")
+    await pool.sync_ownership(skip_warmup)
     # 4. регистрируем аккаунты в аналитике (чтобы у каждого была карточка)
     for name in pool.list_active():
         from data.analytics import ensure_account
@@ -78,10 +85,27 @@ async def lifespan(app: FastAPI):
     listener.setup()
     # 6. фоновое обслуживание оптимизатора
     maintenance = asyncio.create_task(_maintenance_loop())
+
+    async def _ownership_loop():
+        """Каждые ~5 секунд: отдать аккаунты тем, кому нужнее, и подключить освободившиеся."""
+        while True:
+            await asyncio.sleep(5)
+            try:
+                await pool.sync_ownership(skip_warmup)
+                for name in pool.list_active():
+                    from data.analytics import ensure_account
+                    ensure_account(name)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                log.exception("[ownership] iteration failed")
+
+    ownership = asyncio.create_task(_ownership_loop())
     log.info("ready: %d active accounts in pool", len(pool.clients))
     try:
         yield
     finally:
+        ownership.cancel()
         maintenance.cancel()
         await listener.shutdown()
         await pool.shutdown()

@@ -93,6 +93,24 @@ def resolve(task: str) -> tuple[str, str]:
     return provider, model
 
 
+def fallbacks() -> list[tuple[str, str]]:
+    """
+    Запасные модели из LLM_FALLBACK (через запятую, формат как у LLM_FAST: провайдер:модель).
+    Пробуются по порядку, если основная не ответила (лимит 429, сбой, пустой ответ).
+    Пропускаются те, для которых нет ключа.
+    """
+    out: list[tuple[str, str]] = []
+    for part in os.getenv("LLM_FALLBACK", "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        prov, _, model = part.partition(":")
+        prov = prov.strip().lower()
+        if _has_key(prov):
+            out.append((prov, model.strip() or part))
+    return out
+
+
 def provider(task: str = "fast") -> str:
     return resolve(task)[0]
 
@@ -218,39 +236,58 @@ async def _openai_compat_complete(prov: str, model: str, prompt: str, *,
         headers["HTTP-Referer"] = "https://github.com/telegramtool"
         headers["X-Title"] = "telegramTool"
 
-    last_error: Exception | None = None
-    for attempt in range(1, _RETRY_ATTEMPTS + 1):
+    token_key = "max_completion_tokens" if "max_completion_tokens" in body else "max_tokens"
+
+    async def _post() -> dict:
+        """Один запрос с повторами при сетевых сбоях и временной перегрузке провайдера."""
+        last_error: Exception | None = None
+        for attempt in range(1, _RETRY_ATTEMPTS + 1):
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as c:
+                    r = await c.post(f"{base}/chat/completions", json=body, headers=headers)
+            except httpx.HTTPError as e:
+                last_error = RuntimeError(f"сеть/{prov}: {e}")
+                if attempt < _RETRY_ATTEMPTS:
+                    await asyncio.sleep(_RETRY_DELAY_SEC)
+                    continue
+                raise last_error
+
+            try:
+                data = r.json()
+            except ValueError:
+                data = None
+
+            if r.status_code >= 400 or _is_retryable(r.status_code, data):
+                last_error = RuntimeError(
+                    f"{prov} {r.status_code}: {(data if data is not None else r.text)!s:.250}")
+                if _is_retryable(r.status_code, data) and attempt < _RETRY_ATTEMPTS:
+                    await asyncio.sleep(_RETRY_DELAY_SEC)
+                    continue
+                raise last_error
+            return data
+        raise last_error  # pragma: no cover
+
+    data = await _post()
+    for budget in (None, 1500, 3500):
         try:
-            async with httpx.AsyncClient(timeout=120.0) as c:
-                r = await c.post(f"{base}/chat/completions", json=body, headers=headers)
-        except httpx.HTTPError as e:
-            last_error = RuntimeError(f"сеть/{prov}: {e}")
-            if attempt < _RETRY_ATTEMPTS:
-                await asyncio.sleep(_RETRY_DELAY_SEC)
-                continue
-            raise last_error
-
-        try:
-            data = r.json()
-        except ValueError:
-            data = None
-
-        if r.status_code >= 400 or _is_retryable(r.status_code, data):
-            last_error = RuntimeError(
-                f"{prov} {r.status_code}: {(data if data is not None else r.text)!s:.250}")
-            if _is_retryable(r.status_code, data) and attempt < _RETRY_ATTEMPTS:
-                await asyncio.sleep(_RETRY_DELAY_SEC)
-                continue
-            raise last_error
-        break  # успех — data готов, выходим из цикла попыток
-
-    try:
-        text = (data["choices"][0]["message"]["content"] or "").strip()
-    except (KeyError, IndexError, TypeError):
-        raise RuntimeError(f"{prov}: неожиданный ответ: {str(data)[:250]}")
-    if not text:
-        raise RuntimeError(f"{prov} вернул пустой ответ")
-    return text
+            choice = data["choices"][0]
+            text = (choice["message"]["content"] or "").strip()
+        except (KeyError, IndexError, TypeError):
+            raise RuntimeError(f"{prov}: неожиданный ответ: {str(data)[:250]}")
+        truncated = choice.get("finish_reason") == "length"
+        if text and not truncated:
+            return text
+        if text and budget == 3500:
+            return text        # шире уже некуда — отдаём что есть
+        # Пустой content при finish_reason=length — это reasoning-модель (nemotron,
+        # deepseek-r1, gpt-oss...): весь лимит ушёл на «размышления», до ответа не дошла.
+        # Повторяем с большим запасом (размышления бывают и на 600+ токенов).
+        if not truncated or budget == 3500:
+            break
+        nxt = {None: 1500, 1500: 3500}[budget]
+        body[token_key] = max(nxt, max_tokens)
+        data = await _post()
+    raise RuntimeError(f"{prov} вернул пустой ответ")
 
 
 # ── точка входа ──────────────────────────────────────────────────────────
@@ -264,9 +301,20 @@ async def complete(prompt: str, *, task: str = "smart", system: str | None = Non
     if not prompt or not prompt.strip():
         raise RuntimeError("пустой промт")
 
-    prov, model = resolve(task)
     effort = _TASK_EFFORT.get(task)
+    chain = [resolve(task)] + [f for f in fallbacks() if f != resolve(task)]
+    errors: list[str] = []
+    for prov, model in chain:
+        try:
+            return await _complete_one(prov, model, prompt, system=system,
+                                       max_tokens=max_tokens, effort=effort)
+        except RuntimeError as e:
+            errors.append(str(e) if len(chain) == 1 else f"[{prov}] {e}")
+    raise RuntimeError(" | ".join(errors))
 
+
+async def _complete_one(prov: str, model: str, prompt: str, *, system: str | None,
+                        max_tokens: int, effort: str | None) -> str:
     if prov == "claude":
         return await _claude_complete(model, prompt, system=system,
                                       max_tokens=max_tokens, effort=effort)

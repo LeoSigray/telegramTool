@@ -17,6 +17,7 @@ CONFIG = {
     "LZT_API_BASE_URL": os.getenv("LZT_API_BASE_URL", "https://prod-api.lzt.market"),
     "TELEGRAM_API_ID": int(os.getenv("TELEGRAM_API_ID", "0")),
     "TELEGRAM_API_HASH": os.getenv("TELEGRAM_API_HASH", ""),
+    "DARKSTORE_API_KEY": os.getenv("DARKSTORE_API_KEY", ""),
 }
 
 # --- ПУТИ ---
@@ -39,7 +40,25 @@ CHAT_DELAY_MAX = 120
 INVITE_DELAY_MIN = 5
 INVITE_DELAY_MAX = 15
 
-DM_LIMIT_PER_ACCOUNT = 20
+DM_LIMIT_PER_ACCOUNT = 20          # максимум за ОДИН запуск рассылки с аккаунта
+
+# Суточный лимит ЛС на аккаунт (скользящие 24 часа, считается по базе — переживает перезапуски)
+DM_DAILY_LIMIT_PER_ACCOUNT = 20
+
+# Окно активности: рассылка идёт только днём по локальному времени аккаунта.
+# Часовой пояс берётся из прогрева (если аккаунт на нём был), иначе DM_DEFAULT_TZ_H (США, восточное).
+DM_WINDOW_ENABLED = False          # окно 10–22 по времени аккаунта; выключено (True — включить)
+DM_WINDOW_H = (10, 22)
+DM_DEFAULT_TZ_H = -5.0
+
+# «Человеческая» отправка: пауза -> «печатает…» (длина текста / скорость) -> отправка
+DM_TYPING = True
+DM_PRE_TYPING_S = (1.0, 3.0)       # пауза перед началом набора
+DM_TYPING_CPS = (7.0, 12.0)        # скорость набора, символов в секунду
+DM_TYPING_MIN_S, DM_TYPING_MAX_S = 2.0, 18.0
+
+# Лёгкая вариация текста: каждое сообщение с аккаунта чуть отличается (см. data/message_variants.py)
+DM_VARY_TEXT = True
 CHAT_LIMIT_PER_ACCOUNT = 10
 INVITE_LIMIT_PER_ACCOUNT = 40
 

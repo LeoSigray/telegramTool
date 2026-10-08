@@ -1,5 +1,16 @@
 import asyncio
 import os
+import sys
+
+# Терминал/SSH-клиент иногда присылает не-UTF8 байты (например, Windows-консоль без
+# chcp 65001 при вставке кириллицы) — раньше это роняло ВСЮ программу с
+# UnicodeDecodeError на первом же input() посреди меню. Заменяем битые байты на "�"
+# вместо падения: текст может получиться с парой "кракозябр", но программа не падает,
+# и видно, что вставилось неправильно — можно стереть и вставить заново.
+try:
+    sys.stdin.reconfigure(errors="replace")
+except Exception:  # noqa: BLE001 — например, stdin подменён в тестах
+    pass
 
 # Загружаем .env до всех остальных импортов
 try:
@@ -39,29 +50,9 @@ AVATARS_DIR = "foricons"
 
 
 def _ensure_min_photo_size(img_path: str, min_side: int = 800) -> str:
-    """
-    Гарантирует минимум min_side×min_side и конвертирует в JPEG.
-    Telegram принимает аватарки от 800×800 (меньше — 'Photo is too small').
-    Всегда возвращает путь к JPEG-файлу (tmp или оригинал если уже подходит).
-    """
-    from PIL import Image
-    import tempfile
-
-    with Image.open(img_path) as img:
-        # Конвертируем в RGB: убирает alpha-канал, поддерживает JPEG
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-
-        w, h = img.size
-        if w < min_side or h < min_side:
-            scale = min_side / min(w, h)
-            new_w, new_h = int(w * scale), int(h * scale)
-            img = img.resize((new_w, new_h), Image.LANCZOS)
-            print(f"    [resize] {w}×{h} → {new_w}×{new_h}", flush=True)
-
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-        img.save(tmp.name, "JPEG", quality=95)
-        return tmp.name
+    """Тонкая обёртка: сама логика теперь в accounts/photos.py (её же использует прогрев)."""
+    from accounts.photos import ensure_min_photo_size
+    return ensure_min_photo_size(img_path, min_side)
 
 
 # ========================================================================
@@ -70,7 +61,10 @@ def _ensure_min_photo_size(img_path: str, min_side: int = 800) -> str:
 
 def show_menu():
     proxy = load_proxy()
-    proxy_status = f"[{proxy}]" if proxy else "[не установлен]"
+    if proxy and "://" in proxy:
+        from proxy_watch import mask
+        proxy = mask(proxy)          # логин/пароль на экран не выводим
+    proxy_status = f"[{proxy}]" if proxy else "!!! НЕ ЗАДАН — подключение аккаунтов запрещено !!!"
 
     print("\n" + "=" * 50)
     print("       TELEGRAM AUTOMATOR")
@@ -84,6 +78,7 @@ def show_menu():
     print("  4. Парсинг чатов")
     print("  5. База людей (Users)")
     print("  6. Настройки прокси")
+    print("  7. Прогрев аккаунтов")
     print("  0. Выход")
     print("-" * 50)
 
@@ -139,10 +134,26 @@ def pick_message_text() -> str | None:
 #  Аккаунты
 # ========================================================================
 
+def _buy_accounts_menu():
+    """Выбор магазина для покупки Telegram-аккаунтов."""
+    print("\n--- Где купить аккаунты ---")
+    print("  1. LZT.market")
+    print("  2. DarkStore (dark.shopping)")
+    print("  0. Назад")
+    ch = input("Выбор: ").strip()
+    if ch == "1":
+        buy_accounts_interactive()
+    elif ch == "2":
+        from accounts.darkstore_buyer import buy_interactive
+        buy_interactive("telegram")
+    elif ch != "0":
+        print("Неверный выбор.")
+
+
 def handle_accounts():
     while True:
         print("\n--- Управление аккаунтами ---")
-        print("  1. Купить аккаунты (LZT.market)")
+        print("  1. Купить аккаунты (LZT.market / DarkStore)")
         print("  2. Импортировать tdata")
         print("  3. Импортировать .session файлы")
         print("  4. Список аккаунтов")
@@ -156,9 +167,10 @@ def handle_accounts():
         print(" 12. Бэкофилл аналитики закупки (цена/продавец/дата из файлов)")
         print(" 13. Подтянуть ВСЕ купленные с LZT (по истории заказов)")
         print(f" 14. Случайные аватарки из {AVATARS_DIR}/ (2 шт. на аккаунт)")
-        print(" 15. Имена LINKTECH (фикс. имя/фамилия всем аккаунтам)")
-        print(" 16. Очистить имя и фамилию (всем аккаунтам)")
-        print(" 17. Очистить аватарки (всем аккаунтам)")
+        print(" 15. Имена LINKTECH (фикс. имя/фамилия)")
+        print(" 16. Очистить имя и фамилию")
+        print(" 17. Очистить аватарки")
+        print("     ↑ пункты 14-17 спрашивают, каким аккаунтам применить")
         print(" 18. Авторизация в аккаунт (повторный вход для одного)")
         print(" 19. Сбросить здоровье аккаунтов (снять отдых и штрафы)")
         print("  0. Назад")
@@ -166,7 +178,7 @@ def handle_accounts():
         choice = input("\nВыбор: ").strip()
 
         if choice == "1":
-            buy_accounts_interactive()
+            _buy_accounts_menu()
         elif choice == "2":
             import_tdata_interactive()
         elif choice == "3":
@@ -442,21 +454,35 @@ def _handle_bulk_avatars_zip():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def _pick_accounts(title: str, show_limits: bool = False, show_warmup: bool = False) -> set[str] | None:
+    """Выбор аккаунтов номерами через пробел (реализация — в accounts/picker.py)."""
+    from accounts.picker import pick_accounts
+    return pick_accounts(title, show_limits, show_warmup=show_warmup)
+
+
+def _drop_warmup_busy(names: set[str]) -> set[str]:
+    """Убирает аккаунты, занятые прогревом (статус «идёт»); на паузе — можно. Печатает, что убрано."""
+    from accounts.picker import warmup_busy
+    busy = warmup_busy(names)
+    if busy:
+        print(f"\n⚠ Не трогаю аккаунты НА ПРОГРЕВЕ (ими занят прогрев): {', '.join(sorted(busy))}")
+        print("  Хочешь использовать их в рассылке — поставь на паузу: Прогрев → 5, подожди ~30 секунд "
+              "(прогрев сам отпустит аккаунт), затем запусти рассылку.")
+    return set(names) - busy
+
+
 def _handle_random_avatars_folder():
     """
-    Ставит каждому аккаунту 2 случайные разные фотографии из AVATARS_DIR
+    Ставит выбранным аккаунтам 2 случайные разные фотографии из AVATARS_DIR
     как аватарки профиля (доп. фото профиля, не замена). Выбор пары —
     отдельно и заново для каждого аккаунта.
     """
     import random
     from telethon.tl.functions.photos import UploadProfilePhotoRequest
 
-    sessions = get_session_files()
-    if not sessions:
-        print("Нет аккаунтов.")
+    only = _pick_accounts(f"Случайные аватарки из {AVATARS_DIR}/ — выбор аккаунтов")
+    if not only:
         return
-
-    print(f"\n--- Случайные аватарки из {AVATARS_DIR}/ ---")
 
     if not os.path.isdir(AVATARS_DIR):
         print(f"Папка не найдена: {AVATARS_DIR}")
@@ -471,8 +497,8 @@ def _handle_random_avatars_folder():
         print(f"В папке {AVATARS_DIR}/ меньше 2 фото ({len(images)}) — нечего случайно выбирать.")
         return
 
-    print(f"Фото в папке: {len(images)}")
-    print(f"Аккаунтов:    {len(sessions)}")
+    print(f"\nФото в папке: {len(images)}")
+    print(f"Аккаунтов:    {len(only)}")
     print("Каждому аккаунту — 2 случайные разные фотографии из папки.")
     print("Начать? (y/n): ", end="")
     if input().strip().lower() != "y":
@@ -481,7 +507,7 @@ def _handle_random_avatars_folder():
     async def _run():
         from api.client_pool import pool
         print("\nПодключаем аккаунты...")
-        await pool.start_all()
+        await pool.start_all(only=only)
         active = pool.list_active()
         if not active:
             print("Ни один аккаунт не авторизован.")
@@ -513,22 +539,18 @@ def _handle_random_avatars_folder():
 
 
 def _handle_generate_names():
-    """Сгенерировать имена/фамилии нейросетью и применить ко всем аккаунтам."""
+    """Сгенерировать имена/фамилии нейросетью и применить к выбранным аккаунтам."""
     from api.copywriter import is_configured, generate_names, config_hint
-
-    sessions = get_session_files()
-    if not sessions:
-        print("Нет аккаунтов.")
-        return
 
     if not is_configured():
         print(f"\n⚠  {config_hint()}")
         return
 
-    print("\n--- Сгенерировать имена/фамилии ---")
-    print(f"Аккаунтов: {len(sessions)}\n")
+    only = _pick_accounts("Сгенерировать имена/фамилии — выбор аккаунтов")
+    if not only:
+        return
 
-    print("Какие поля генерировать?")
+    print("\nКакие поля генерировать?")
     print("  1. Имя и фамилия")
     print("  2. Только имя")
     print("  3. Только фамилия")
@@ -544,17 +566,17 @@ def _handle_generate_names():
     print("Например: «русские мужские», «западные женские, 25-35 лет», «нейтральные»")
     prompt = input("Промт (Enter = без уточнений): ").strip()
 
-    print(f"\nГенерирую {len(sessions)} вариантов... ", end="", flush=True)
+    print(f"\nГенерирую {len(only)} вариантов... ", end="", flush=True)
 
     async def _run():
         from api.client_pool import pool
         from api.routes_accounts import ProfileIn, _apply_profile
 
-        # Генерируем имена (не нужен пул — только Grok)
+        # Генерируем имена (не нужен пул — только нейросеть)
         try:
-            generated = await generate_names(prompt, count=len(sessions), fields=fields)
+            generated = await generate_names(prompt, count=len(only), fields=fields)
         except Exception as e:
-            print(f"✗\nОшибка Grok: {e}")
+            print(f"✗\nОшибка нейросети: {e}")
             return
 
         print(f"✓ ({len(generated)} вариантов)\n")
@@ -564,13 +586,13 @@ def _handle_generate_names():
             parts = [names.get("first_name", ""), names.get("last_name", "")]
             print(f"  {i:>2}. {' '.join(p for p in parts if p)}")
 
-        print(f"\nПрименить ко всем {len(sessions)} аккаунтам? (y/n): ", end="")
+        print(f"\nПрименить к {len(only)} аккаунт(ам)? (y/n): ", end="")
         if input().strip().lower() != "y":
             print("Отменено.")
             return
 
         print("\nПодключаем аккаунты...")
-        await pool.start_all()
+        await pool.start_all(only=only)
         active = pool.list_active()
         if not active:
             print("Ни один аккаунт не авторизован.")
@@ -605,17 +627,14 @@ LINKTECH_LAST_NAME = "Михаил Кадяев"
 
 
 def _handle_set_linktech_names():
-    """Ставит фиксированные имя+фамилию LINKTECH всем аккаунтам."""
-    sessions = get_session_files()
-    if not sessions:
-        print("Нет аккаунтов.")
+    """Ставит фиксированные имя+фамилию LINKTECH выбранным аккаунтам."""
+    only = _pick_accounts("Имена LINKTECH — выбор аккаунтов")
+    if not only:
         return
 
-    print("\n--- Имена LINKTECH ---")
-    print(f"Аккаунтов: {len(sessions)}")
-    print(f"Имя:     {LINKTECH_FIRST_NAME}")
+    print(f"\nИмя:     {LINKTECH_FIRST_NAME}")
     print(f"Фамилия: {LINKTECH_LAST_NAME}")
-    print(f"\nПрименить ко всем {len(sessions)} аккаунтам? (y/n): ", end="")
+    print(f"\nПрименить к {len(only)} аккаунт(ам)? (y/n): ", end="")
     if input().strip().lower() != "y":
         print("Отменено.")
         return
@@ -625,7 +644,7 @@ def _handle_set_linktech_names():
         from api.routes_accounts import ProfileIn, _apply_profile
 
         print("\nПодключаем аккаунты...")
-        await pool.start_all()
+        await pool.start_all(only=only)
         active = pool.list_active()
         if not active:
             print("Ни один аккаунт не авторизован.")
@@ -659,15 +678,12 @@ _EMPTY_FIRST_NAME = "⁣"
 
 
 def _handle_clear_names():
-    """Ставит визуально пустые имя+фамилию всем аккаунтам."""
-    sessions = get_session_files()
-    if not sessions:
-        print("Нет аккаунтов.")
+    """Ставит визуально пустые имя+фамилию выбранным аккаунтам."""
+    only = _pick_accounts("Очистить имя и фамилию — выбор аккаунтов")
+    if not only:
         return
 
-    print("\n--- Очистить имя и фамилию ---")
-    print(f"Аккаунтов: {len(sessions)}")
-    print(f"\nОчистить имя и фамилию у всех {len(sessions)} аккаунтов? (y/n): ", end="")
+    print(f"\nОчистить имя и фамилию у {len(only)} аккаунт(ов)? (y/n): ", end="")
     if input().strip().lower() != "y":
         print("Отменено.")
         return
@@ -677,7 +693,7 @@ def _handle_clear_names():
         from api.routes_accounts import ProfileIn, _apply_profile
 
         print("\nПодключаем аккаунты...")
-        await pool.start_all()
+        await pool.start_all(only=only)
         active = pool.list_active()
         if not active:
             print("Ни один аккаунт не авторизован.")
@@ -703,15 +719,12 @@ def _handle_clear_names():
 
 
 def _handle_clear_avatars():
-    """Удаляет все фото профиля у всех аккаунтов."""
-    sessions = get_session_files()
-    if not sessions:
-        print("Нет аккаунтов.")
+    """Удаляет все фото профиля у выбранных аккаунтов."""
+    only = _pick_accounts("Очистить аватарки — выбор аккаунтов")
+    if not only:
         return
 
-    print("\n--- Очистить аватарки ---")
-    print(f"Аккаунтов: {len(sessions)}")
-    print(f"\nУдалить ВСЕ фото профиля у всех {len(sessions)} аккаунтов? (y/n): ", end="")
+    print(f"\nУдалить ВСЕ фото профиля у {len(only)} аккаунт(ов)? (y/n): ", end="")
     if input().strip().lower() != "y":
         print("Отменено.")
         return
@@ -722,7 +735,7 @@ def _handle_clear_avatars():
         from telethon.tl.functions.photos import DeletePhotosRequest
 
         print("\nПодключаем аккаунты...")
-        await pool.start_all()
+        await pool.start_all(only=only)
         active = pool.list_active()
         if not active:
             print("Ни один аккаунт не авторизован.")
@@ -1181,6 +1194,8 @@ def handle_broadcasting():
         print("  1. Рассылка в личные сообщения (ЛС)")
         print("  2. Рассылка по чатам")
         print("  3. Инвайтинг в группу")
+        print("  4. Тестирование (рассылка только с выбранных аккаунтов)")
+        print("  5. Проверка доставки: один контакт по очереди со всех аккаунтов")
         print("  0. Назад")
 
         choice = input("\nВыбор: ").strip()
@@ -1190,27 +1205,187 @@ def handle_broadcasting():
             handle_chat_sending()
         elif choice == "3":
             handle_inviting()
+        elif choice == "4":
+            handle_test_broadcast()
+        elif choice == "5":
+            handle_single_target_test()
         elif choice == "0":
             break
         else:
             print("Неверный выбор.")
 
 
-def _run_job_console(job, runner_coro):
+def handle_test_broadcast():
+    """
+    Тестовая рассылка по выбранным аккаунтам: показывает пронумерованный
+    список, принимает номера через пробел, и дальше гонит ОБЫЧНУЮ рассылку
+    в ЛС (тот же код, та же статистика), но ТОЛЬКО с этих аккаунтов —
+    остальные даже не подключаются.
+    """
+    only = _pick_accounts("Тестирование: выбор аккаунтов", show_limits=True, show_warmup=True)
+    if not only:
+        return
+    only = _drop_warmup_busy(only)
+    if not only:
+        print("Не осталось аккаунтов, свободных от прогрева. Отменено.")
+        return
+
+    print(f"\nРассылка пойдёт только с этих аккаунтов ({len(only)}).")
+    if input("Продолжить? (y/n): ").strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    handle_dm_sending(only_accounts=only)
+
+
+def handle_single_target_test():
+    """
+    Проверка доставки: один и тот же контакт получает сообщение по очереди с каждого
+    выбранного аккаунта (сперва один, после паузы следующий) — чтобы увидеть, какие
+    аккаунты реально доходят, а какие и с какой ошибкой отваливаются.
+
+    Это не рассылка по людям: подходит только для своего тестового контакта
+    (второй номер, коллега, тестовый бот), который знает, что будут тестовые сообщения.
+    Писать так настоящему человеку/лиду нельзя — несколько разных аккаунтов одному и тому
+    же человеку выглядит как травля или обход блокировки, а не как тест.
+    """
+    only = _pick_accounts("Проверка доставки: выбор аккаунтов", show_limits=True, show_warmup=True)
+    if not only:
+        return
+    only = _drop_warmup_busy(only)
+    if not only:
+        print("Не осталось аккаунтов, свободных от прогрева. Отменено.")
+        return
+    accounts = sorted(only)
+
+    print("\n⚠ Только для своего тестового контакта (второй номер, коллега, тестовый бот),")
+    print("  который знает про тестовые сообщения. Не для настоящих лидов/клиентов.")
+    target = input("Получатель (@username или +телефон): ").strip()
+    if not target:
+        print("Пусто. Отменено.")
+        return
+
+    message = pick_message_text()
+    if not message:
+        print("Пустое сообщение. Отмена.")
+        return
+    print(f"\nСообщение:\n---\n{message}\n---")
+    print(f"Отправит по очереди {len(accounts)} аккаунтов одному получателю ({target}): "
+          f"{', '.join(accounts)}")
+    if input("Продолжить? (y/n): ").strip().lower() != "y":
+        print("Отменено.")
+        return
+
+    from api.dm_runner import run_single_target_job
+    from api.jobs import jobs as job_manager
+
+    job = job_manager.create(kind="dm-single-target", message=message, targets=[], parallel=1, optimize=False)
+    _run_job_console(job, run_single_target_job(job, accounts, target), only_accounts=only)
+
+
+def _print_per_account_stats(job):
+    """
+    Сводка по каждому аккаунту в конце рассылки.
+
+    Живые строки «⏹ [акк] готово…» печатаются по ходу дела и при длинном
+    прогоне уезжают вверх — здесь они собираются в одну таблицу.
+    Счётчики берём из job.targets (там у каждой цели проставлен
+    used_account и финальный статус) — это источник правды, совпадающий
+    с общими Отправлено/Пропущено/Ошибок. Причину завершения — из лога.
+    """
+    per_acc: dict[str, dict[str, int]] = {}
+
+    def slot(name: str) -> dict[str, int]:
+        return per_acc.setdefault(name, {"sent": 0, "skipped": 0, "failed": 0})
+
+    for t in job.targets:
+        acc = getattr(t, "used_account", None)
+        if not acc:
+            continue
+        counters = slot(acc)
+        if t.status in counters:
+            counters[t.status] += 1
+
+    # Чем аккаунт закончил. Порядок важен: account_paused/dead приходит ДО
+    # account_finished, поэтому финальное событие не должно затирать причину.
+    finished_by: dict[str, str] = {}
+    for e in job.log:
+        ev, acc = e.get("event"), e.get("account")
+        if not acc:
+            continue
+        if ev in ("account_paused", "account_dead"):
+            finished_by[acc] = e.get("reason") or e.get("error") or ev
+            slot(acc)
+        elif ev in ("account_skipped", "account_failed"):
+            finished_by[acc] = e.get("reason") or e.get("error") or ev
+            slot(acc)
+        elif ev == "account_finished":
+            finished_by.setdefault(acc, e.get("stop_reason") or "завершил штатно")
+            slot(acc)
+
+    if not per_acc:
+        return
+
+    print("\nСтатистика по аккаунтам:")
+    print(f"  {'аккаунт':<14} {'отправлено':>10} {'пропущено':>10} {'ошибок':>7}  чем закончил")
+    for acc in sorted(per_acc):
+        c = per_acc[acc]
+        print(f"  {acc:<14} {c['sent']:>10} {c['skipped']:>10} {c['failed']:>7}  "
+              f"{finished_by.get(acc, '—')}")
+    tot = {k: sum(c[k] for c in per_acc.values()) for k in ("sent", "skipped", "failed")}
+    print(f"  {'-' * 14} {'-' * 10} {'-' * 10} {'-' * 7}")
+    print(f"  {'ИТОГО':<14} {tot['sent']:>10} {tot['skipped']:>10} {tot['failed']:>7}")
+
+
+def _run_job_console(job, runner_coro, only_accounts: set[str] | None = None):
     """
     Запускает job через пул клиентов. Выводит итог — в т.ч. сколько целей
     НЕ обработано (застряло в очереди, если все аккаунты остановились раньше
     времени) и почему аккаунты останавливались (FloodWait/PeerFlood/бан) —
     раньше это молча терялось: печатались только sent/skipped/failed, и было
     непонятно, почему из 50 адресатов ушло сообщение только одному.
+
+    only_accounts — поднимать в пул только эти аккаунты (режим тестирования).
     """
+    from proxy_manager import proxy_guard
+    names = only_accounts if only_accounts is not None else [
+        os.path.splitext(os.path.basename(p))[0] for p in get_session_files()]
+    if not proxy_guard(names, "рассылку"):
+        print("Отменено.")
+        runner_coro.close()
+        return
+
     async def _run():
         from api.client_pool import pool
+        from api import listener
+        listener.setup()      # ответы на рассылку записываются в «Диалоги» и во время консольной рассылки
         print("\nПодключаем аккаунты...")
-        await pool.start_all()
+
+        def _connect_progress(i, total, name, status):
+            # Подключение идёт ПО ОДНОМУ и на прокси может занимать десятки секунд на
+            # аккаунт — без этой строки на экране минутами ничего не происходит и
+            # непонятно, работает ли вообще программа.
+            print(f"  [{i}/{total}] {name}: {status}", flush=True)
+
+        await pool.start_all(only=only_accounts, on_progress=_connect_progress)
+        if pool.busy:
+            from accounts import session_lock as _sl
+            holders = {_sl.describe_holder(_sl.holder_pid(a)) for a in pool.busy} - {""}
+            print(f"\n⚠ Заняты другим процессом: {len(pool.busy)} акк. — рассылка пойдёт только с остальными.")
+            if "мессенджер (Диалоги)" in holders:
+                print("  Их держит мессенджер (Диалоги) и не успел отпустить. Подожди ~10 секунд и запусти рассылку "
+                      "заново (если мессенджер на старом коде без отдачи аккаунтов — обнови: кнопка «Залить код на сервер»).")
+            elif holders:
+                print(f"  Держит: {', '.join(sorted(holders))} — закрой/останови его, если нужны эти аккаунты.")
         active = pool.list_active()
         if not active:
-            print("Ни один аккаунт не авторизован.")
+            print("Ни один аккаунт не подключился — рассылка не запускалась.")
+            print("  Если ошибки выше про proxy/authentication — проблема в прокси,")
+            print("  а не в аккаунтах: проверь срок аренды и логин/пароль (1 → 6 → 3).")
+            # Корутину рассылки надо закрыть явно, иначе Python ругается
+            # "coroutine 'run_dm_job' was never awaited" — мы её создали,
+            # но до await дело не дошло.
+            runner_coro.close()
             await pool.shutdown()
             return
         print(f"Активных: {len(active)}")
@@ -1225,8 +1400,18 @@ def _run_job_console(job, runner_coro):
         attempted = job.sent + job.failed + job.skipped
         backlog = job.total - attempted
 
+        from datetime import datetime, timezone
         print(f"\n{'='*40}")
+        print(f"ОБЩИЙ ИТОГ РАССЫЛКИ  [{datetime.now():%d.%m %H:%M:%S}]")
         print(f"Статус:         {job.status}")
+        if job.started_at:
+            from data.analytics import fmt_wait
+            _secs = ((job.finished_at or datetime.now(timezone.utc)) - job.started_at).total_seconds()
+            print(f"Длительность:   {fmt_wait(_secs)}")
+        _worked = len({e.get('account') for e in job.log if e.get('event') == 'account_finished'})
+        _acc_total = next((e.get('accounts') for e in job.log if e.get('event') == 'job_started'), None)
+        if _acc_total:
+            print(f"Аккаунтов:      писали {_worked} из {_acc_total} (остальные заняты/отдыхают/исчерпали лимит — см. ниже)")
         print(f"Всего в списке: {job.total}")
         print(f"Отправлено:     {job.sent}")
         print(f"Пропущено:      {job.skipped}")
@@ -1234,6 +1419,8 @@ def _run_job_console(job, runner_coro):
         if backlog > 0:
             print(f"⚠ НЕ обработано: {backlog} — не дошла очередь "
                   f"(все аккаунты остановились раньше, см. причины ниже)")
+
+        _print_per_account_stats(job)
 
         reasons = [
             f"  [{e.get('account')}] {e.get('event')}: {e.get('reason') or e.get('error') or ''}"
@@ -1247,11 +1434,51 @@ def _run_job_console(job, runner_coro):
 
         await pool.shutdown()
 
-    asyncio.run(_run())
+    async def _run_outer():
+        # Берём аккаунты у мессенджера: он их отпустит на время рассылки и заберёт обратно после неё
+        from accounts import leases
+        loop = asyncio.get_event_loop()
+        print("Беру аккаунты у мессенджера (если он запущен; если аккаунты свободны — займёт секунду, "
+              "если заняты — до 40 секунд)...")
+        missing = await loop.run_in_executor(None, lambda: leases.take(list(names), "broadcast", wait_s=40))
+        if missing:
+            print(f"  Не освободились за 40 с: {len(missing)} акк. (их держит другое окно/программа) — они будут пропущены.")
+
+        async def _beat():
+            while True:
+                await asyncio.sleep(30)
+                leases.touch("broadcast")
+
+        beat = asyncio.create_task(_beat())
+        try:
+            await _run()
+        finally:
+            beat.cancel()
+            leases.release("broadcast")
+
+    asyncio.run(_run_outer())
 
 
-def handle_dm_sending():
-    print("\n--- Рассылка в ЛС ---")
+def handle_dm_sending(only_accounts: set[str] | None = None):
+    """
+    only_accounts — если задан, рассылка пойдёт только с этих аккаунтов
+    (через пункт «Тестирование»). Остальная логика одна и та же, чтобы тест
+    гонял ровно тот же путь, что и боевая рассылка.
+    """
+    if only_accounts is None:
+        # «Рассылка по всем»: аккаунты НА ПРОГРЕВЕ не трогаем (ими занят прогрев), на паузе — можно
+        all_names = {os.path.splitext(os.path.basename(s))[0] for s in get_session_files()}
+        free = _drop_warmup_busy(all_names)
+        if free != all_names:
+            if not free:
+                print("Все аккаунты сейчас на прогреве — рассылать нечем. Поставь нужные на паузу (Прогрев → 5).")
+                return
+            only_accounts = free
+    if only_accounts:
+        print("\n--- Тестовая рассылка в ЛС ---")
+        print(f"Аккаунты в тесте ({len(only_accounts)}): {', '.join(sorted(only_accounts))}")
+    else:
+        print("\n--- Рассылка в ЛС ---")
     print(f"Юзеры из {EXCEL_FILE} (лист 'Users')")
 
     users = load_users()
@@ -1317,6 +1544,7 @@ def handle_dm_sending():
             print("Пустое сообщение. Отмена.")
             return
         print(f"\nСообщение:\n---\n{message}\n---")
+        _print_send_settings(message)
         print(f"Отправить {len(targets)} контактам? (y/n): ", end="")
         if input().strip().lower() != "y":
             print("Отменено.")
@@ -1330,7 +1558,33 @@ def handle_dm_sending():
     job = job_manager.create(kind="dm", message=message, targets=targets, parallel=1,
                              niche=niche or None, optimize=optimize, plan=plan,
                              target_channel=target_channel)
-    _run_job_console(job, run_dm_job(job))
+    _run_job_console(job, run_dm_job(job, only_accounts=only_accounts),
+                     only_accounts=only_accounts)
+
+
+def _print_send_settings(message: str) -> None:
+    """Перед запуском показываем, как будет идти отправка: окно, лимиты, «печатает», вариации текста."""
+    import config as c
+    from api import text_variants
+
+    lo, hi = c.DM_WINDOW_H
+    print("\n--- Как пойдёт отправка ---")
+    if c.DM_WINDOW_ENABLED:
+        print(f"  • только днём {lo}:00–{hi}:00 по времени аккаунта (часовой пояс из прогрева, иначе "
+              f"UTC{c.DM_DEFAULT_TZ_H:+g}); вне окна аккаунт ждёт открытия")
+    print(f"  • пауза между сообщениями с аккаунта: {c.DM_DELAY_MIN}–{c.DM_DELAY_MAX} с")
+    print(f"  • лимит: {c.DM_DAILY_LIMIT_PER_ACCOUNT} за 24 часа на аккаунт (и не больше "
+          f"{c.DM_LIMIT_PER_ACCOUNT} за один запуск)")
+    if c.DM_TYPING:
+        print("  • перед отправкой аккаунт «печатает…» (время зависит от длины текста)")
+    if c.DM_VARY_TEXT:
+        if text_variants.can_vary(message):
+            print("  • каждое следующее сообщение с аккаунта чуть отличается. Примеры:")
+            for i, v in enumerate(text_variants.preview(message, 3), 1):
+                print(f"      [{i}] {v[:120].replace(chr(10), ' ')}…")
+        else:
+            print("  • в тексте нет слов из словаря вариаций — все сообщения будут одинаковыми "
+                  "(словарь: data/message_variants.py)")
 
 
 def _prepare_niche_dm(niche: str, raw_targets: list[str]):
@@ -2114,9 +2368,13 @@ def _handle_clear_account_proxy():
 #  Main
 # ========================================================================
 
-def main():
-    os.makedirs(SESSIONS_DIR, exist_ok=True)
+def handle_warmup():
+    """Главное меню → 7. Реализация — в warmup/menu.py."""
+    from warmup.menu import handle_warmup as _handle_warmup
+    _handle_warmup()
 
+
+def telegram_menu():
     while True:
         show_menu()
         choice = input("\nВыбор: ").strip()
@@ -2133,6 +2391,33 @@ def main():
             handle_users_base()
         elif choice == "6":
             handle_proxy()
+        elif choice == "7":
+            handle_warmup()
+        elif choice == "0":
+            return
+        else:
+            print("Неверный выбор.")
+
+
+def main():
+    """Выбор платформы при запуске: VK или Telegram."""
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+
+    while True:
+        print("\n" + "=" * 50)
+        print("       РАССЫЛКА — ВЫБОР ПЛАТФОРМЫ")
+        print("=" * 50)
+        print("  1. VK")
+        print("  2. Telegram")
+        print("  0. Выход")
+        print("-" * 50)
+        choice = input("\nВыбор: ").strip()
+
+        if choice == "1":
+            from vk.menu import handle_vk
+            handle_vk()
+        elif choice == "2":
+            telegram_menu()
         elif choice == "0":
             print("Выход.")
             break
@@ -2151,4 +2436,10 @@ if __name__ == "__main__":
     # При выходе синхронизируем обновлённые сессии обратно в БД
     atexit.register(lambda: sync_all_to_db(SESSIONS_DIR))
     migrate_all_sessions()
-    main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "warmup-resume":
+        # Без меню и вопросов — для сервера/systemd: продолжить прогрев активных аккаунтов
+        from warmup.menu import resume_headless
+        resume_headless()
+    else:
+        main()

@@ -599,6 +599,43 @@ def sends_today(account: str) -> int:
         return r["n"]
 
 
+def sends_last_hours(account: str, hours: float = 24) -> int:
+    """Отправлено с аккаунта за последние hours часов (скользящее окно, а не «с полуночи UTC»)."""
+    since = _ago(hours / 24)
+    with _conn() as c:
+        r = c.execute("SELECT COUNT(*) n FROM sends WHERE account=? AND status='sent' AND sent_at >= ?",
+                      (account, since)).fetchone()
+        return r["n"]
+
+
+def daily_window(account: str, limit: int, hours: float = 24) -> tuple[int, float]:
+    """
+    Скользящий суточный лимит аккаунта: (сколько отправлено за последние hours часов,
+    через сколько секунд освободится место под новую отправку; 0 — лимит не исчерпан).
+    Окно скользящее: место освобождается, когда самая старая из «блокирующих» отправок стареет до hours часов.
+    """
+    since = _ago(hours / 24)
+    with _conn() as c:
+        stamps = [r["sent_at"] for r in c.execute(
+            "SELECT sent_at FROM sends WHERE account=? AND status='sent' AND sent_at >= ? ORDER BY sent_at ASC",
+            (account, since))]
+    n = len(stamps)
+    if limit <= 0 or n < limit:
+        return n, 0.0
+    blocking = datetime.fromisoformat(stamps[n - limit])
+    if blocking.tzinfo is None:
+        blocking = blocking.replace(tzinfo=timezone.utc)
+    wait = (blocking + timedelta(hours=hours) - datetime.now(timezone.utc)).total_seconds()
+    return n, max(0.0, wait)
+
+
+def fmt_wait(seconds: float) -> str:
+    """12345 -> '3 ч 26 мин' (для сообщений «через сколько освободится»)."""
+    m = int(seconds // 60) + (1 if seconds % 60 else 0)
+    h, m = divmod(m, 60)
+    return (f"{h} ч {m:02d} мин" if h else f"{m} мин")
+
+
 def account_error_rate(account: str, days: float = 3) -> tuple[int, int]:
     """(ошибок, всего попыток) за окно — для контура троттлинга."""
     since = _ago(days)

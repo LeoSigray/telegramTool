@@ -94,6 +94,26 @@ def save_session_from_file(path: str) -> bool:
         return False
 
 
+def _file_newer_than_db(path: str, db_updated_at: str | None) -> bool:
+    """True, если файл изменён позже записи в БД (updated_at — UTC 'YYYY-MM-DD HH:MM:SS')."""
+    try:
+        from datetime import datetime, timezone
+        db_ts = datetime.strptime(db_updated_at, "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=timezone.utc).timestamp()
+        return os.path.getmtime(path) > db_ts
+    except Exception:  # noqa: BLE001 — не смогли сравнить: поведение как раньше
+        return False
+
+
+_SESSIONS_IN_USE = False
+
+
+def mark_sessions_in_use(on: bool = True) -> None:
+    """Пока клиенты подключены, существующие .session-файлы с диска не перезаписываем (см. load_sessions_to_disk)."""
+    global _SESSIONS_IN_USE
+    _SESSIONS_IN_USE = on
+
+
 def load_sessions_to_disk(sessions_dir: str) -> list[str]:
     """
     Выгружает все сессии из БД в папку sessions_dir.
@@ -104,10 +124,29 @@ def load_sessions_to_disk(sessions_dir: str) -> list[str]:
     try:
         with _conn() as c:
             rows = c.execute(
-                "SELECT name, session_data FROM sessions"
+                "SELECT name, session_data, updated_at FROM sessions"
             ).fetchall()
         for row in rows:
             path = os.path.join(sessions_dir, f"{row['name']}.session")
+            # Файл на диске новее копии в БД (БД обновляется только при штатном
+            # выходе, а Telethon дописывает файл при каждой работе) — не затираем:
+            # иначе свежая сессия после перелогина откатилась бы к устаревшей копии.
+            if os.path.exists(path):
+                if _file_newer_than_db(path, row["updated_at"]):
+                    paths.append(path)
+                    continue
+                # Файл уже открыт Telethon'ом (идёт работа) или совпадает с копией в БД — не перезаписываем:
+                # запись под открытым sqlite-файлом даёт «database is locked» и подключение умирает посреди рассылки.
+                if _SESSIONS_IN_USE:
+                    paths.append(path)
+                    continue
+                try:
+                    with open(path, "rb") as cur:
+                        if cur.read() == row["session_data"]:
+                            paths.append(path)
+                            continue
+                except OSError:
+                    pass
             with open(path, "wb") as f:
                 f.write(row["session_data"])
             paths.append(path)

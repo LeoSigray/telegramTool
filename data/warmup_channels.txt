@@ -1,0 +1,41 @@
+# Каналы для прогрева — по одному на строку: @name, t.me/name или https://t.me/name.
+# Строки с # — комментарии. Прогрев подписывает аккаунты по 1–3 канала в день из
+# этого списка (на каждый аккаунт — случайные, без повторов), поэтому каналов
+# нужно НЕ МЕНЬШЕ 8–10: иначе у всех аккаунтов получится один и тот же набор,
+# а это готовая связка «одна ферма».
+#
+# Что брать: крупные новостные/развлекательные/тематические каналы, подписка на
+# которые у обычного человека не вызывает вопросов. Список заполните сами —
+# я не могу проверить из этой среды, что конкретные каналы существуют и
+# публичны, а несуществующий @name просто будет пропущен при подписке.
+#
+# Два заведомо существующих — для проверки, что механизм работает:
+@telegram
+@durov
+@naebnet
+@whackdoor
+@rhymestg
+@trends
+@exilemusic13
+@real_DonaldJTrump
+@yurydud
+@zubarefff
+@telegram
+@bloomberg
+@hiaimediaen
+@Official_AngelOne
+@TommyRobinsonNews
+@nytimes
+@Sky_sports_football_updates
+@OANNTV
+@cointelegraph
+@disclosetv
+@WhiteHouse
+@binance_announcements
+@WatcherGuru
+@cointelegraph
+@whale_alert_io
+@hacker_news_feed
+@ProgrammerHumor
+@footballnews
+@netflix

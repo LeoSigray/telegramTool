@@ -109,6 +109,65 @@ def backfill() -> dict:
     return inbox.seed_from_sends()
 
 
+_import_state: dict = {"running": False}
+_import_task = None   # ссылка на фоновую задачу, чтобы её не убрал сборщик мусора
+
+
+async def _run_import(days: float) -> None:
+    """Фоновая загрузка старых ответов со всех подключённых сейчас аккаунтов."""
+    import asyncio
+    import glob
+    import time
+    from config import SESSIONS_DIR
+    from . import inbox_catchup
+    from .client_pool import pool
+    st = _import_state
+    st.update(running=True, days=days, started=time.time(), finished=None, error=None,
+              done=0, total=0, current=None, accounts={}, new=0, messages=0, skipped=[],
+              seeded=inbox.seed_from_sends())
+    try:
+        names = pool.list_active()
+        st["total"] = len(names)
+        all_names = {os.path.splitext(os.path.basename(p))[0] for p in glob.glob(os.path.join(SESSIONS_DIR, "*.session"))}
+        st["skipped"] = sorted(all_names - set(names) - pool.unauthorized)   # сейчас заняты рассылкой/прогревом
+        for name in names:
+            client = pool.clients.get(name)
+            if client is None:
+                continue
+            st["current"] = name
+            try:
+                r = await inbox_catchup.import_history(client, name, days)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                r = {"error": f"{type(e).__name__}: {str(e)[:100]}"}
+            st["accounts"][name] = r
+            st["done"] += 1
+            st["new"] += r.get("new", 0)
+            st["messages"] += r.get("messages", 0)
+    except Exception as e:  # noqa: BLE001
+        st["error"] = f"{type(e).__name__}: {str(e)[:150]}"
+    finally:
+        st.update(running=False, current=None, finished=time.time())
+
+
+@router.post("/import-old")
+async def import_old(days: float = Query(default=30, ge=1, le=365)) -> dict:
+    """Загрузить в «Диалоги» старые ответы за последние days дней (работает в фоне, прогресс — GET /inbox/import-old)."""
+    import asyncio
+    global _import_task
+    if _import_state.get("running"):
+        return {"started": False, **_import_state}
+    _import_task = asyncio.get_event_loop().create_task(_run_import(days))
+    await asyncio.sleep(0)
+    return {"started": True, **_import_state}
+
+
+@router.get("/import-old")
+def import_old_status() -> dict:
+    return dict(_import_state)
+
+
 @page_router.get("/inbox", include_in_schema=False)
 def inbox_page() -> FileResponse:
     path = os.path.join(os.path.dirname(__file__), "inbox.html")

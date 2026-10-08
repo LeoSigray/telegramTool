@@ -202,8 +202,15 @@ async def _on_deleted(event):
     })
 
 
+_setup_done = False
+
+
 def setup() -> None:
-    """Регистрирует listener в пуле. Зовётся ОДИН раз при старте."""
+    """Регистрирует listener в пуле. Безопасно звать повторно: обработчики вешаются один раз на процесс."""
+    global _setup_done
+    if _setup_done:
+        return
+    _setup_done = True
     pool.attach_handler(_on_incoming, events.NewMessage(incoming=True))
     pool.attach_handler(_on_outgoing, events.NewMessage(outgoing=True))
     pool.attach_handler(_on_edited, events.MessageEdited())

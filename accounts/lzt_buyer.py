@@ -10,6 +10,19 @@ import requests
 
 from config import CONFIG, ACCOUNTS_DIR, SESSIONS_DIR
 
+# Происхождение аккаунта (поле item_origin у объявления LZT.market) и параметр
+# сервера origin[] — значения проверены на живом API, а не взяты из головы.
+#   autoreg           — автореги: массовая автоматическая регистрация
+#   self_registration — саморег: аккаунт зарегистрирован вручную
+# Значения регистрозависимы и точные: с опечаткой (напр. "selfreg") сервер не
+# ругается, а молча отдаёт всё подряд — поэтому ключи держим в одном месте.
+ORIGIN_AUTOREG = "autoreg"
+ORIGIN_SELFREG = "self_registration"
+ORIGIN_LABELS = {
+    ORIGIN_AUTOREG: "автореги",
+    ORIGIN_SELFREG: "саморег",
+}
+
 
 def _strip_html(s: str) -> str:
     """LZT кладёт сообщения об ошибке в HTML (<div>, <a href=...>). Вытаскиваем
@@ -128,6 +141,9 @@ class LZTMarketAPI:
         self.base_url = CONFIG["LZT_API_BASE_URL"].rstrip("/")
         self._balance_id = None
         self.last_error: str | None = None
+        # item_id лотов, по которым LZT ответил «Сессия недействительна» —
+        # ждать от них код входа бессмысленно.
+        self.dead_items: set[str] = set()
 
     def _request(self, method, endpoint, data=None):
         url = f"{self.base_url}{endpoint}"
@@ -233,56 +249,90 @@ class LZTMarketAPI:
         return out
 
     def search_accounts(self, min_price=0, max_price=25, page=1,
-                        country: str | None = None, wanted: int = 3):
+                        country: str | None = None, wanted: int = 3,
+                        origins: list[str] | None = None):
         """
         country — ISO-2 код (см. accounts/countries.py) или None = любая страна.
+        origins — список значений item_origin ("autoreg", "self_registration")
+                  или None = любое происхождение.
 
-        LZT.market не фильтрует по стране на своей стороне — проверено
-        эмпирически (country[]/telegram_country[] игнорируются сервером
-        или дают 0 результатов независимо от значения). Поэтому при
-        country != None листаем страницы сами и фильтруем по полю
-        telegram_country в ответе, пока не наберём ~wanted*3 совпадений
-        или не упрёмся в потолок страниц (антизлоупотребление — не бесконечно
-        листать при редкой стране).
+        Страна: фильтрует сам сервер — параметр country[]=US (проверено вживую:
+        выдача целиком из нужной страны, totalItems падает с ~194 тыс. до ~37 тыс.).
+        Параметры telegram_country / telegram_country[] / country — игнорируются.
+        Дополнительно перепроверяем telegram_country у каждого объявления на
+        нашей стороне — чтобы не купить не ту страну, если сервер вдруг
+        проигнорирует значение.
+
+        Происхождение: тут сервер фильтрует САМ (параметр origin[], проверено —
+        выдача целиком из нужного origin, при нескольких значениях это
+        объединение). Но неизвестное значение он молча игнорирует и отдаёт
+        всё подряд, поэтому дополнительно перепроверяем item_origin у каждого
+        объявления на нашей стороне — иначе опечатка в значении незаметно
+        превратилась бы в покупку не того типа.
         """
-        if not country:
-            print(f"Ищу аккаунты Telegram (цена {min_price}–{max_price} руб.)...")
-            params = {"pmin": min_price, "pmax": max_price, "page": page,
+        from .countries import country_label
+
+        what = []
+        if origins:
+            what.append("/".join(ORIGIN_LABELS.get(o, o) for o in origins))
+        if country:
+            what.append(country_label(country))
+        what_s = f" ({', '.join(what)})" if what else ""
+
+        def base_params(p: int) -> dict:
+            params = {"pmin": min_price, "pmax": max_price, "page": p,
                       "order_by": "price_to_up", "spam": "no"}
-            result = self._request("GET", "/telegram", params)
-            if result and result.get("items"):
-                print(f"Найдено {len(result['items'])} аккаунтов.")
-                return result["items"]
+            if origins:
+                params["origin[]"] = list(origins)
+            if country:
+                params["country[]"] = [country]
+            return params
+
+        def passes(it: dict) -> bool:
+            if origins and it.get("item_origin") not in origins:
+                return False
+            if country and it.get("telegram_country") != country:
+                return False
+            return True
+
+        if not country:
+            # Страну на нашей стороне искать не надо — одной страницы достаточно
+            # (origin, если задан, уже отфильтрован сервером).
+            print(f"Ищу аккаунты Telegram{what_s}, цена {min_price}–{max_price} руб....")
+            result = self._request("GET", "/telegram", base_params(page))
+            items = [it for it in (result or {}).get("items", []) if passes(it)]
+            if items:
+                print(f"Найдено {len(items)} аккаунтов.")
+                return items
             if self.last_error:
                 print(f"Поиск не выполнен — LZT вернул ошибку (см. выше): {self.last_error}")
             else:
-                print("Аккаунты не найдены — в этом диапазоне цен на LZT сейчас ничего нет.")
+                print("Аккаунты не найдены — в этом диапазоне цен на LZT сейчас "
+                      "ничего подходящего нет.")
             return []
 
-        from .countries import country_label
-        label = country_label(country)
-        print(f"Ищу аккаунты Telegram ({label}, цена {min_price}–{max_price} руб.)...")
+        print(f"Ищу аккаунты Telegram{what_s}, цена {min_price}–{max_price} руб....")
 
         MAX_PAGES = 15  # ~ограничение по rate-limit LZT (120 запросов/окно) и по времени
         target = max(wanted * 3, 10)
-        matched = []
+        matched: list[dict] = []
         scanned = 0
+        last_page = 0
         for p in range(1, MAX_PAGES + 1):
-            params = {"pmin": min_price, "pmax": max_price, "page": p,
-                      "order_by": "price_to_up", "spam": "no"}
-            result = self._request("GET", "/telegram", params)
+            result = self._request("GET", "/telegram", base_params(p))
             if not result or not result.get("items"):
                 break
+            last_page = p
             items = result["items"]
             scanned += len(items)
-            matched.extend(it for it in items if it.get("telegram_country") == country)
+            matched.extend(it for it in items if passes(it))
             if len(matched) >= target or not result.get("hasNextPage"):
                 break
 
-        print(f"Просмотрено {scanned} объявлений на {min(p, MAX_PAGES)} стр., "
-              f"из них {label}: {len(matched)}.")
+        print(f"Просмотрено {scanned} объявлений на {last_page} стр., "
+              f"подходящих: {len(matched)}.")
         if not matched:
-            print(f"Аккаунтов из {label} в этом диапазоне цен сейчас нет "
+            print(f"Подходящих аккаунтов{what_s} в этом диапазоне цен сейчас нет "
                   f"(или их слишком мало на просмотренных {MAX_PAGES} страницах).")
         return matched
 
@@ -356,7 +406,7 @@ async def login_via_code(item: dict, api: "LZTMarketAPI") -> str | None:
     from telethon.errors import (
         SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError,
     )
-    from proxy_manager import client_kwargs_for
+    from proxy_manager import client_kwargs_or_die as client_kwargs_for
 
     item_id  = str(item.get("item_id", "unknown"))
     phone    = str(item.get("telegram_phone", "")).strip()
@@ -377,11 +427,21 @@ async def login_via_code(item: dict, api: "LZTMarketAPI") -> str | None:
     # Тот же прокси, что будет использоваться потом при рассылке — если вход
     # и дальнейшая работа идут с разных IP, это само по себе подозрительно
     # для Telegram (сессия "переехала").
+    # Первый вход нового аккаунта — единственный момент, когда «человеческий»
+    # отпечаток устройства задаётся без подозрений: сессия создаётся уже с ним
+    # и дальше всегда подключается с тем же (отпечаток хранится в БД).
+    try:
+        from warmup.devices import device_kwargs
+        device = device_kwargs(item_id, create=True)
+    except Exception:  # noqa: BLE001
+        device = {}
+
     client = TelegramClient(
         session_path,
         CONFIG["TELEGRAM_API_ID"],
         CONFIG["TELEGRAM_API_HASH"],
         **client_kwargs_for(item_id),
+        **device,
     )
 
     try:
@@ -395,7 +455,14 @@ async def login_via_code(item: dict, api: "LZTMarketAPI") -> str | None:
 
         # Запоминаем время самого свежего из уже лежащих кодов — всё, что придёт
         # ПОСЛЕ него, и есть наш код (а не код от прежнего владельца / прошлой попытки).
+        api.last_error = None
         existing = api._get_login_codes(int(item_id))
+        if "недействительна" in (api.last_error or "").lower():
+            api.dead_items.add(item_id)
+            print(f"  [!] {item_id}: аккаунт мёртв на стороне LZT/Telegram "
+                  f"(сессия продавца завершена) — код входа не придёт, не жду.")
+            await client.disconnect()
+            return None
         last_date = max((float(c.get("date") or 0) for c in existing), default=0.0)
 
         print(f"  Отправляю код на {phone}...")
@@ -477,7 +544,7 @@ async def login_via_code(item: dict, api: "LZTMarketAPI") -> str | None:
         # Выкидываем чужие сессии (панель продавца / прежний владелец часто держат
         # активный вход и убивают наш). Свежую сессию Telegram сбросить не даёт
         # (FreshResetAuthorisationForbidden) — тогда чистим по одной, кроме своей.
-        await _kick_other_sessions(client)
+        await _kick_other_sessions(client, item_id)
 
         # Проверяем, что нас не разлогинили в процессе
         if not await client.is_user_authorized():
@@ -497,44 +564,58 @@ async def login_via_code(item: dict, api: "LZTMarketAPI") -> str | None:
         return None
 
 
-async def _kick_other_sessions(client) -> None:
-    """Завершает все сессии аккаунта, кроме текущей. Best-effort.
+async def _kick_other_sessions(client, account: str | None = None) -> str:
+    """Завершает все сессии аккаунта, кроме текущей (продавец, панель LZT, прежний владелец).
 
-    Telegram запрещает сброс, если текущая сессия младше 24ч
-    (FreshResetAuthorisationForbidden) — тогда просто выходим, панель продавца
-    к этому моменту обычно уже неактивна.
+    Telegram запрещает сброс, пока текущая сессия младше 24ч
+    (FreshResetAuthorisationForbidden). Тогда аккаунт ставится в очередь
+    «отложенного сброса» — он выполнится сам при первом подключении после 24ч
+    (см. accounts/session_guard.py, вызывается из пула).
     """
+    from . import session_guard as sg
     try:
-        from telethon.tl.functions.auth import ResetAuthorizationsRequest
-        from telethon.tl.functions.account import (
-            GetAuthorizationsRequest, ResetAuthorizationRequest,
-        )
-        try:
-            await client(ResetAuthorizationsRequest())
-            print("  [session] Все чужие сессии сброшены")
-            return
-        except Exception:  # noqa: BLE001 — не вышло скопом, пробуем поштучно
-            pass
-        auths = await client(GetAuthorizationsRequest())
-        killed = 0
-        for a in auths.authorizations:
-            if getattr(a, "current", False):
-                continue
-            try:
-                await client(ResetAuthorizationRequest(hash=a.hash))
-                killed += 1
-            except Exception:  # noqa: BLE001
-                pass
-        print(f"  [session] Завершено чужих сессий: {killed}" if killed
-              else "  [session] Чужие сессии не сброшены (свежий вход — Telegram не даёт)")
+        status, killed = await sg.kick_other_sessions(client)
     except Exception as e:  # noqa: BLE001
         print(f"  [session] Чистка чужих сессий пропущена: {e}")
+        return sg.ERROR
+    if status == sg.ALL:
+        print("  [session] Все чужие сессии сброшены")
+        if account:
+            sg.clear_pending(account)
+    elif status == sg.FRESH:
+        print("  [session] Свежая сессия (<24ч) — Telegram не даёт сбросить чужие. "
+              "Сброс выполнится автоматически при первом запуске после 24 часов.")
+        if account:
+            sg.mark_pending(account)
+    else:
+        print(f"  [session] Чужие сессии сброшены не все (завершено: {killed}) — повторю позже.")
+        if account:
+            sg.mark_pending(account)
+    return status
+
+
+async def _kick_via_session_file(session_file: str) -> str:
+    """Подключается готовой .session и сбрасывает чужие сессии аккаунта."""
+    from telethon import TelegramClient
+    from proxy_manager import client_kwargs_or_die as client_kwargs_for
+    account = os.path.splitext(os.path.basename(session_file))[0]
+    client = TelegramClient(session_file[:-len(".session")],
+                            CONFIG["TELEGRAM_API_ID"], CONFIG["TELEGRAM_API_HASH"],
+                            **client_kwargs_for(account))
+    try:
+        await client.connect()
+        return await _kick_other_sessions(client, account)
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _session_is_authorized(session_file: str) -> bool:
     """Быстрая проверка .session на живой авторизованный ключ."""
     from telethon import TelegramClient
-    from proxy_manager import client_kwargs_for
+    from proxy_manager import client_kwargs_or_die as client_kwargs_for
 
     account = os.path.splitext(os.path.basename(session_file))[0]
 
@@ -559,6 +640,35 @@ def _session_is_authorized(session_file: str) -> bool:
         return False
 
 
+def _session_from_key(item: dict, api: "LZTMarketAPI") -> str | None:
+    """Собирает .session из auth_key лота; если ключ живой — сразу сбрасывает чужие сессии."""
+    from accounts.convert_accounts import convert_account
+    item_id = str(item.get("item_id", "unknown"))
+    data_src = dict(item)
+    if item_id.isdigit() and not data_src.get("telegram_json"):
+        data_src.update({k: v for k, v in (api.get_item(int(item_id)) or {}).items() if v})
+    made = convert_account(item_id, {
+        "login": (data_src.get("login") or "").split(":")[0],
+        "telegram_json": data_src.get("telegram_json") or "",
+        "telegram_dc_id": data_src.get("telegram_dc_id"),
+    })
+    if not made:
+        return None
+    if not _session_is_authorized(made):
+        try:
+            os.remove(made)  # мёртвый ключ — битую .session не оставляем
+        except OSError:
+            pass
+        print("  Ключ из LZT не принят Telegram — пробую вход по коду.")
+        return None
+    print("  [session] Сессия из ключа LZT — рабочая")
+    try:
+        asyncio.run(_kick_via_session_file(made))
+    except Exception as e:  # noqa: BLE001
+        print(f"  [session] Сброс чужих сессий не выполнен: {e}")
+    return made
+
+
 def create_session_for_item(item: dict, api: "LZTMarketAPI", attempts: int = 3) -> str | None:
     """
     Создаёт рабочую .session для аккаунта через вход по коду от LZT.
@@ -569,7 +679,18 @@ def create_session_for_item(item: dict, api: "LZTMarketAPI", attempts: int = 3) 
     item_id = str(item.get("item_id", "unknown"))
     session_file = os.path.join(SESSIONS_DIR, f"{item_id}.session")
 
+    # Быстрый путь: сессия из auth_key, который LZT отдаёт вместе с аккаунтом.
+    # Эта сессия «старая» (не младше 24ч), поэтому Telegram разрешает сразу
+    # сбросить все чужие сессии — продавец и панель LZT выкидываются в момент покупки.
+    if os.path.exists(session_file) and _session_is_authorized(session_file):
+        return session_file        # живую сессию (в т.ч. по коду) не подменяем ключом
+    keyed = _session_from_key(item, api)
+    if keyed:
+        return keyed
+
     for attempt in range(1, attempts + 1):
+        if item_id in api.dead_items:
+            break
         print(f"  Создаю сессию через вход с кодом LZT (попытка {attempt}/{attempts})...")
 
         # Убираем мёртвую .session от прошлой попытки (AuthKeyUnregistered и т.п.) —
@@ -694,6 +815,11 @@ def pull_purchased_accounts(*, login: bool = True, only_missing: bool = True,
 
 def buy_accounts_interactive():
     from .countries import normalize_country_query, country_label
+    from proxy_manager import proxy_guard
+
+    # Вход в купленный аккаунт идёт через Telegram — только через прокси (жёсткий режим).
+    if not proxy_guard(["_new_account"], "покупку и вход в аккаунты"):
+        return
 
     api = LZTMarketAPI()
 
@@ -705,27 +831,59 @@ def buy_accounts_interactive():
         print("Некорректный ввод.")
         return
 
+    # ── Страна ────────────────────────────────────────────────────────────
+    # Раньше любой непонятный ввод молча превращался в «любая страна» — и деньги
+    # тратились без фильтра (так и купили KZ, когда ждали США). Теперь незнакомый
+    # ввод НЕ принимается молча: переспрашиваем. Название страны можно вписать
+    # сразу, не выбирая пункт 2.
     print("\nСтрана аккаунта:")
     print("  1. Любая страна")
-    print("  2. Определённая страна")
-    country_choice = input("Выбор (Enter = любая): ").strip()
-
+    print("  2. Определённая страна (или сразу впишите название: США, Индия...)")
     country = None
-    if country_choice == "2":
-        while True:
+    while True:
+        choice = input("Выбор (Enter = любая): ").strip()
+        if choice in ("", "1"):
+            break
+        if choice == "2":
             raw = input("Введите страну (например: США, Россия, Индия): ").strip()
-            if not raw:
-                print("Отмена — беру любую страну.")
-                break
-            country = normalize_country_query(raw)
-            if country:
-                print(f"Понял как: {country_label(country)} ({country})")
-                break
-            print(f"  Не распознал страну «{raw}» — попробуй иначе "
-                  f"(например, официальное название или как в паспорте на английском).")
+        else:
+            raw = choice                       # впечатали название сразу
+        country = normalize_country_query(raw) if raw else None
+        if country:
+            print(f"Понял как: {country_label(country)} ({country})")
+            break
+        print(f"  Не распознал «{raw}». Впишите страну иначе (напр. США / Индия) "
+              f"или 1 — любая.")
+
+    # ── Тип ───────────────────────────────────────────────────────────────
+    print("\nТип аккаунта:")
+    print("  1. Любой (включая phishing — угнанные аккаунты, часто мёртвые)")
+    print("  2. Автореги")
+    print("  3. Саморег")
+    print("  4. Автореги + саморег")
+    origin_map = {"1": None, "": None, "2": [ORIGIN_AUTOREG], "3": [ORIGIN_SELFREG],
+                  "4": [ORIGIN_AUTOREG, ORIGIN_SELFREG]}
+    while True:
+        oc = input("Выбор (Enter = любой): ").strip().lower()
+        if oc in origin_map:
+            origins = origin_map[oc]
+            break
+        if oc.startswith("авто"):
+            origins = [ORIGIN_AUTOREG]
+            break
+        if oc.startswith("само"):
+            origins = [ORIGIN_SELFREG]
+            break
+        print(f"  Не понял «{oc}» — введите 1, 2, 3 или 4.")
+
+    # ── Что именно будем искать — вслух, до траты денег ───────────────────
+    f_country = country_label(country) if country else "любая"
+    f_origin = "/".join(ORIGIN_LABELS[o] for o in origins) if origins else "любой"
+    print(f"\nФильтры: страна — {f_country}, тип — {f_origin}, цена {min_price}–{max_price} руб., "
+          f"купить до {count} шт.")
 
     accounts = api.search_accounts(min_price=min_price, max_price=max_price,
-                                   country=country, wanted=count)
+                                   country=country, wanted=count, origins=origins)
     if not accounts:
         if api.last_error and "парол" in api.last_error.lower():
             print("\n  ┌─────────────────────────────────────────────────────────────┐")
@@ -736,16 +894,41 @@ def buy_accounts_interactive():
             print("  └─────────────────────────────────────────────────────────────┘")
         return
 
+    # Подтверждение: покупка — это деньги и без возврата. Показываем, что
+    # реально нашлось, и спрашиваем, прежде чем купить хоть один аккаунт.
+    cheapest = accounts[:min(count, len(accounts))]
+    total = sum(a.get("price", 0) for a in cheapest)
+    print(f"\nНайдено подходящих: {len(accounts)}. Будут куплены первые {len(cheapest)} "
+          f"(самые дешёвые), примерно на {total} руб.:")
+    for a in cheapest:
+        print(f"  {a['item_id']} | {a.get('price')} руб. | "
+              f"{ORIGIN_LABELS.get(a.get('item_origin'), a.get('item_origin'))} | "
+              f"{a.get('telegram_country') or '??'}")
+    if input("\nКупить? (y/n): ").strip().lower() != "y":
+        print("Отменено — ничего не куплено.")
+        return
+
     bought = 0
     no_session: list[str] = []
     for acc in accounts:
         if bought >= count:
             break
 
+        # Последняя страховка перед списанием денег: объявление должно
+        # соответствовать выбранным фильтрам (страна, тип).
+        if country and acc.get("telegram_country") != country:
+            print(f"  Пропускаю {acc['item_id']}: страна {acc.get('telegram_country')} ≠ {country}")
+            continue
+        if origins and acc.get("item_origin") not in origins:
+            print(f"  Пропускаю {acc['item_id']}: тип {acc.get('item_origin')} не из выбранных")
+            continue
+
         item_id = acc["item_id"]
         price   = acc["price"]
         spam    = acc.get("telegram_spam_block", "unknown")
-        print(f"\n  ID: {item_id} | Цена: {price} руб. | Спам-блок: {spam}")
+        origin_s = ORIGIN_LABELS.get(acc.get("item_origin"), acc.get("item_origin") or "?")
+        print(f"\n  ID: {item_id} | Цена: {price} руб. | {origin_s} | "
+              f"{acc.get('telegram_country') or '??'} | Спам-блок: {spam}")
 
         item = api.fast_buy(item_id, price)
         if not item:

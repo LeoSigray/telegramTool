@@ -27,14 +27,16 @@ try:  # есть не во всех версиях telethon
 except ImportError:  # pragma: no cover
     class UserIsBlockedError(Exception):
         pass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from accounts.manager import get_session_files
 from data import analytics as an
 from data import users_manager as um
 from optimizer import bandit, health
 from .client_pool import pool
+import config as _cfg
 from config import DM_DELAY_MAX, DM_DELAY_MIN, DM_LIMIT_PER_ACCOUNT
+from . import text_variants
 
 from .jobs import Job, TargetState
 
@@ -59,8 +61,47 @@ def _resolve(raw: str):
     return f"@{h}"
 
 
+def _say(text: str) -> None:
+    """Строка консольного отчёта со временем (время — на машине, где идёт рассылка)."""
+    print(f"[{datetime.now():%H:%M:%S}] {text}", flush=True)
+
+
+_REASONS = {"suppressed (стоп-лист)": "в стоп-листе", "blocked": "человек заблокировал аккаунт",
+            "privacy_restricted": "у человека закрыты личные сообщения",
+            "busy in another process": "занят другим процессом (прогрев/другая рассылка)",
+            "not in pool (unauthorized?)": "не в пуле (не авторизован)"}
+
+
+def _nice_reason(error: str | None) -> str:
+    e = (error or "").strip()
+    if e in _REASONS:
+        return _REASONS[e]
+    if e.startswith("resolve:"):
+        return "не удалось найти пользователя (" + e[8:].strip()[:60] + ")"
+    return e[:100] or "причина не указана"
+
+
+def _accounts_progress(job: Job) -> tuple[int, int]:
+    """(сколько аккаунтов уже отработали или отпали, сколько их всего в этой рассылке) — из журнала рассылки."""
+    total = 0
+    done: set[str] = set()
+    for e in job.log:
+        ev = e.get("event")
+        if ev == "job_started":
+            total = e.get("accounts") or total
+        elif ev in ("account_finished", "account_skipped", "account_failed") and e.get("account"):
+            done.add(e["account"])
+    return len(done), total
+
+
+def _job_totals(job: Job, queue=None) -> str:
+    left = queue.qsize() if queue is not None else job.total - (job.sent + job.failed + job.skipped)
+    return (f"отправлено {job.sent} · пропущено {job.skipped} · ошибок {job.failed} "
+            f"· осталось в очереди {left} из {job.total}")
+
+
 def _mark(job: Job, t: TargetState, status: str, error: str | None, account: str,
-          *, peer_id: str | None = None, template_id: int | None = None) -> None:
+          *, peer_id: str | None = None, template_id: int | None = None, progress: str | None = None) -> None:
     t.status = status
     t.error = error
     t.used_account = account
@@ -90,9 +131,14 @@ def _mark(job: Job, t: TargetState, status: str, error: str | None, account: str
         except Exception as e:  # noqa: BLE001 — сбой очистки не должен ронять рассылку
             job.add_log(event="users_cleanup_error", target=t.target, error=str(e))
 
-    job.add_log(event=status, target=t.target, account=account, error=error,
-                template_id=template_id,
-                sent=job.sent, failed=job.failed, skipped=job.skipped)
+    # Живая строка в консоль на КАЖДЫЙ исход: кому, с какого аккаунта, чем кончилось и общий счёт рассылки
+    if status == "sent":
+        _say(f"✓ [{account}] отправлено → {t.target}"
+             + (f"  · с аккаунта {progress}" if progress else "") + f"  · всего {job.sent} из {job.total}")
+    elif status == "failed":
+        _say(f"✗ [{account}] ошибка → {t.target}: {_nice_reason(error)}")
+    else:
+        _say(f"· [{account}] пропущен {t.target}: {_nice_reason(error)}")
 
 
 def _pick_message(job: Job) -> tuple[str, int | None]:
@@ -105,6 +151,80 @@ def _pick_message(job: Job) -> tuple[str, int | None]:
     return tpl["text"], tpl["id"]
 
 
+# ── время, окно активности, «человеческая» отправка ─────────────────────────
+
+_sleep = asyncio.sleep                      # подменяется в тестах
+_now = lambda: datetime.now(timezone.utc)   # noqa: E731
+
+
+def _account_tz(account: str) -> float:
+    """Часовой пояс аккаунта: из прогрева (если он на нём был), иначе по умолчанию."""
+    try:
+        from warmup import store
+        a = store.get_account(account)
+        if a and a.get("tz_offset_h") is not None:
+            return float(a["tz_offset_h"])
+    except Exception:  # noqa: BLE001
+        pass
+    return float(_cfg.DM_DEFAULT_TZ_H)
+
+
+def seconds_until_window(now_utc: datetime, tz_h: float, window=None) -> float:
+    """0, если окно открыто; иначе сколько секунд до его открытия (по локальному времени аккаунта)."""
+    lo, hi = window or _cfg.DM_WINDOW_H
+    local = now_utc + timedelta(hours=tz_h)
+    start = local.replace(hour=lo, minute=0, second=0, microsecond=0)
+    if local < start:
+        return (start - local).total_seconds()
+    if local.hour >= hi:
+        return (start + timedelta(days=1) - local).total_seconds()
+    return 0.0
+
+
+async def _wait_for_window(job: Job, account: str) -> bool:
+    """Ждёт открытия окна активности. False — если рассылку остановили."""
+    if not _cfg.DM_WINDOW_ENABLED:
+        return True
+    tz = _account_tz(account)
+    secs = seconds_until_window(_now(), tz)
+    if secs <= 0:
+        return True
+    local = _now() + timedelta(hours=tz)
+    lo, hi = _cfg.DM_WINDOW_H
+    print(f"  ⏳ [{account}] сейчас {local:%H:%M} по его времени — вне окна {lo}:00–{hi}:00. "
+          f"Жду открытия (~{int(secs // 60)} мин + случайная задержка).")
+    job.add_log(event="account_waiting_window", account=account, wait_min=int(secs // 60))
+    # к моменту открытия добавляем случайный сдвиг, чтобы аккаунты не стартовали секунда в секунду
+    deadline = secs + random.uniform(60, 900)
+    waited = 0.0
+    while waited < deadline:
+        if job.cancel.is_set():
+            return False
+        step = min(300.0, deadline - waited)
+        await _sleep(step)
+        waited += step
+    return not job.cancel.is_set()
+
+
+def _typing_seconds(text: str) -> float:
+    cps = random.uniform(*_cfg.DM_TYPING_CPS)
+    return max(_cfg.DM_TYPING_MIN_S, min(_cfg.DM_TYPING_MAX_S, len(text) / cps))
+
+
+async def _human_send(client, entity, text: str):
+    """Пауза -> «печатает…» -> отправка. Сбой самой имитации не мешает отправить сообщение."""
+    if _cfg.DM_TYPING:
+        await _sleep(random.uniform(*_cfg.DM_PRE_TYPING_S))
+        try:
+            async with client.action(entity, "typing"):
+                await _sleep(_typing_seconds(text))
+        except (FloodWaitError, PeerFloodError, UserDeactivatedBanError, AuthKeyUnregisteredError):
+            raise
+        except Exception:  # noqa: BLE001 — «печатает» это украшение, а не причина не отправлять
+            pass
+    return await client.send_message(entity, text)
+
+
 def _account_limit(job: Job, account: str) -> int:
     """
     Сколько сообщений с аккаунта можно отправить в этом запуске.
@@ -115,9 +235,12 @@ def _account_limit(job: Job, account: str) -> int:
     работу вместе с бандитом/планировщиком; сам по себе, без них, может
     неожиданно урезать лимит только что купленным аккаунтам без метаданных).
     """
+    # Суточный лимит (скользящие 24 ч) действует в ОБОИХ режимах: раньше без ниши лимит был
+    # «20 за запуск», и повторный запуск отправлял ещё 20 с того же аккаунта.
+    daily_left = max(0, _cfg.DM_DAILY_LIMIT_PER_ACCOUNT - an.sends_last_hours(account, 24))
     if not job.optimize:
-        return DM_LIMIT_PER_ACCOUNT
-    return health.remaining_today(account)
+        return min(DM_LIMIT_PER_ACCOUNT, daily_left)
+    return min(health.remaining_today(account), daily_left)
 
 
 async def _account_worker(*, job: Job, session_path: str, queue: "asyncio.Queue[TargetState]") -> None:
@@ -125,8 +248,11 @@ async def _account_worker(*, job: Job, session_path: str, queue: "asyncio.Queue[
 
     client = pool.get(session_name)
     if client is None:
-        job.add_log(event="account_failed", account=session_name, error="not in pool (unauthorized?)")
-        print(f"  ⏭ [{session_name}] не в пуле (не авторизован) — пропущен")
+        busy = session_name in getattr(pool, "busy", set())
+        job.add_log(event="account_failed", account=session_name,
+                    error="busy in another process" if busy else "not in pool (unauthorized?)")
+        _say(f"⏭ [{session_name}] " + ("занят другим процессом (прогрев/другая рассылка) — пропущен"
+                                 if busy else "не в пуле (не авторизован) — пропущен"))
         return
 
     an.ensure_account(session_name)
@@ -137,18 +263,21 @@ async def _account_worker(*, job: Job, session_path: str, queue: "asyncio.Queue[
     if not health.is_available(session_name):
         job.add_log(event="account_skipped", account=session_name,
                     reason="отдыхает или выбыл (optimizer.health)")
-        print(f"  ⏭ [{session_name}] отдыхает/выбыл — пропущен")
+        _say(f"⏭ [{session_name}] отдыхает/выбыл — пропущен")
         return
 
     limit = _account_limit(job, session_name)
     if limit <= 0:
+        used, wait = an.daily_window(session_name, _cfg.DM_DAILY_LIMIT_PER_ACCOUNT)
+        when = f"снова сможет писать через {an.fmt_wait(wait)}" if wait > 0 else "лимит на сегодня по настройкам оптимизатора"
         job.add_log(event="account_skipped", account=session_name,
-                    reason="дневной лимит исчерпан")
-        print(f"  ⏭ [{session_name}] дневной лимит уже исчерпан — пропущен")
+                    reason=f"дневной лимит исчерпан ({used}/{_cfg.DM_DAILY_LIMIT_PER_ACCOUNT} за 24 ч), {when}")
+        _say(f"⏭ [{session_name}] дневной лимит исчерпан ({used}/{_cfg.DM_DAILY_LIMIT_PER_ACCOUNT} за 24 ч) "
+             f"— пропущен, {when}")
         return
 
     job.add_log(event="account_started", account=session_name, limit_today=limit)
-    print(f"  ▶ [{session_name}] начинает (лимит на сегодня: {limit})")
+    _say(f"▶ [{session_name}] начинает работу (может отправить сегодня: {limit})")
 
     # Локальная статистика ИМЕННО этого аккаунта (job.sent/skipped/failed —
     # общие на всю рассылку, для одного аккаунта не годятся). stop_reason —
@@ -157,6 +286,10 @@ async def _account_worker(*, job: Job, session_path: str, queue: "asyncio.Queue[
     stop_reason = "не осталось целей в очереди"
 
     while not job.cancel.is_set() and stats["sent"] < limit:
+        # Окно активности: берём цель из очереди только когда можно отправлять,
+        # иначе другой аккаунт, которому сейчас можно, остался бы без неё.
+        if not await _wait_for_window(job, session_name):
+            break
         try:
             target = queue.get_nowait()
         except asyncio.QueueEmpty:
@@ -193,7 +326,7 @@ async def _account_worker(*, job: Job, session_path: str, queue: "asyncio.Queue[
             # PeerFlood: неудачный резолв — это тоже запрос к Telegram.
             _mark(job, target, "skipped", f"resolve: {e}", session_name, template_id=template_id)
             stats["skipped"] += 1
-            await asyncio.sleep(random.uniform(DM_DELAY_MIN, DM_DELAY_MAX))
+            await _sleep(random.uniform(DM_DELAY_MIN, DM_DELAY_MAX))
             continue
 
         peer_id = str(getattr(entity, "id", "") or "") or None
@@ -204,10 +337,12 @@ async def _account_worker(*, job: Job, session_path: str, queue: "asyncio.Queue[
             continue
 
         # --- отправка ---
+        if _cfg.DM_VARY_TEXT:
+            message = text_variants.vary(message, session_name)
         try:
-            await client.send_message(entity, message)
+            await _human_send(client, entity, message)
             _mark(job, target, "sent", None, session_name,
-                  peer_id=peer_id, template_id=template_id)
+                  peer_id=peer_id, template_id=template_id, progress=f"{stats['sent'] + 1}/{limit}")
             stats["sent"] += 1
         except (UserIsBlockedError, UserPrivacyRestrictedError) as e:
             # первое сообщение не дошло: заблокировали / закрытая приватность —
@@ -248,27 +383,50 @@ async def _account_worker(*, job: Job, session_path: str, queue: "asyncio.Queue[
                   template_id=template_id)
             stats["skipped"] += 1
 
-        await asyncio.sleep(random.uniform(DM_DELAY_MIN, DM_DELAY_MAX))
+        await _sleep(random.uniform(DM_DELAY_MIN, DM_DELAY_MAX))
     else:
         # while закончился САМ (не через break) — либо упёрлись в лимит, либо отменили
         if job.cancel.is_set():
             stop_reason = "остановлено пользователем (Ctrl+C)"
         elif stats["sent"] >= limit:
             stop_reason = f"дневной лимит аккаунта исчерпан ({limit})"
+            _used, _wait = an.daily_window(session_name, _cfg.DM_DAILY_LIMIT_PER_ACCOUNT)
+            if _wait > 0:
+                stop_reason += f", снова сможет писать через {an.fmt_wait(_wait)}"
 
     job.add_log(event="account_finished", account=session_name,
-                sent_in_session=stats["sent"], limit_today=limit)
+                sent_in_session=stats["sent"], skipped_in_session=stats["skipped"],
+                failed_in_session=stats["failed"], limit_today=limit,
+                stop_reason=stop_reason)
 
-    print(f"  ⏹ [{session_name}] готово — отправлено: {stats['sent']}, "
-          f"пропущено: {stats['skipped']}, ошибок: {stats['failed']} "
-          f"| причина остановки: {stop_reason}")
+    _used, _ = an.daily_window(session_name, _cfg.DM_DAILY_LIMIT_PER_ACCOUNT)
+    _done, _all = _accounts_progress(job)
+    print(chr(10).join([
+        "",
+        f"┌─ [{datetime.now():%H:%M:%S}] ИТОГ ПО АККАУНТУ {session_name} " + "─" * 12,
+        f"│ отправлено {stats['sent']} · пропущено {stats['skipped']} · ошибок {stats['failed']}",
+        f"│ причина остановки: {stop_reason}",
+        f"│ за последние 24 ч с этого аккаунта: {_used}/{_cfg.DM_DAILY_LIMIT_PER_ACCOUNT}",
+        f"│ ВСЕГО ПО РАССЫЛКЕ СЕЙЧАС: {_job_totals(job, queue)}",
+        f"│ аккаунтов обработано: {_done} из {_all}",
+        "└" + "─" * 52,
+        "",
+    ]), flush=True)
 
 
-async def run_dm_job(job: Job) -> None:
+async def run_dm_job(job: Job, only_accounts: set[str] | None = None) -> None:
+    """
+    only_accounts — если задан, рассылка идёт ТОЛЬКО с этих аккаунтов
+    (режим тестирования конкретных аккаунтов, меню «Рассылка → Тестирование»).
+    """
     sessions = get_session_files()
+    if only_accounts is not None:
+        sessions = [s for s in sessions
+                    if os.path.splitext(os.path.basename(s))[0] in only_accounts]
     if not sessions:
         job.status = "failed"
-        job.error = "Нет аккаунтов в sessions/"
+        job.error = ("Нет аккаунтов в sessions/" if only_accounts is None
+                     else "Ни один из выбранных аккаунтов не найден в sessions/")
         job.finished_at = datetime.now(timezone.utc)
         return
 
@@ -320,4 +478,104 @@ async def run_dm_job(job: Job) -> None:
     job.status = "stopped" if job.cancel.is_set() else "done"
     job.finished_at = datetime.now(timezone.utc)
     job.add_log(event="job_finished", status=job.status, backlog=leftover,
+                sent=job.sent, failed=job.failed, skipped=job.skipped)
+
+
+async def run_single_target_job(job: Job, accounts: list[str], target: str) -> None:
+    """
+    Проверка доставки: ОДИН и тот же получатель, по очереди с каждого аккаунта из списка —
+    сперва отправляет первый аккаунт, потом (после обычной паузы) второй, и так по списку.
+    Это не рассылка (очередь РАЗНЫХ получателей на много аккаунтов) — здесь ровно один
+    получатель, нужен только затем, чтобы посмотреть, какие из аккаунтов реально доходят и
+    с какой ошибкой падают остальные. Предполагается тестовый контакт (свой второй номер,
+    коллега, тестовый бот) — тот же стоп-лист и дневной лимit действуют как в обычной рассылке,
+    так что на настоящего человека, который попросил не писать, сообщение всё равно не уйдёт.
+    """
+    job.status = "running"
+    job.started_at = datetime.now(timezone.utc)
+    job.targets = [TargetState(target=target) for _ in accounts]
+    job.add_log(event="job_started", total=job.total, accounts=len(accounts),
+                parallel=1, kind="dm-single-target")
+    key = target.lower().lstrip("@")
+
+    for i, name in enumerate(accounts):
+        if job.cancel.is_set():
+            break
+        t = job.targets[i]
+        client = pool.get(name)
+        if client is None:
+            busy = name in getattr(pool, "busy", set())
+            reason = "busy in another process" if busy else "not in pool (unauthorized?)"
+            _mark(job, t, "skipped", reason, name)
+            job.add_log(event="account_finished", account=name,
+                        stop_reason="занят другим процессом" if busy else "не в пуле (не авторизован)")
+            continue
+
+        an.ensure_account(name)
+        if not health.is_available(name):
+            _mark(job, t, "skipped", "отдыхает или выбыл", name)
+            job.add_log(event="account_finished", account=name, stop_reason="отдыхает/выбыл")
+            continue
+
+        limit = _account_limit(job, name)
+        if limit <= 0:
+            used, wait = an.daily_window(name, _cfg.DM_DAILY_LIMIT_PER_ACCOUNT)
+            reason = (f"дневной лимит исчерпан ({used}/{_cfg.DM_DAILY_LIMIT_PER_ACCOUNT} за 24 ч)"
+                      + (f", снова сможет через {an.fmt_wait(wait)}" if wait > 0 else ""))
+            _mark(job, t, "skipped", reason, name)
+            job.add_log(event="account_finished", account=name, stop_reason=reason)
+            continue
+
+        if an.is_suppressed(key):
+            _mark(job, t, "skipped", "suppressed (стоп-лист)", name)
+            job.add_log(event="account_finished", account=name, stop_reason="в стоп-листе")
+            continue
+
+        try:
+            entity = await client.get_entity(_resolve(target))
+        except Exception as e:  # noqa: BLE001
+            _mark(job, t, "skipped", f"resolve: {e}", name)
+            job.add_log(event="account_finished", account=name, stop_reason=f"не нашёл получателя: {str(e)[:80]}")
+            if i < len(accounts) - 1:
+                await _sleep(random.uniform(DM_DELAY_MIN, DM_DELAY_MAX))
+            continue
+
+        peer_id = str(getattr(entity, "id", "") or "") or None
+        if peer_id and an.is_suppressed(peer_id):
+            _mark(job, t, "skipped", "suppressed (стоп-лист)", name, peer_id=peer_id)
+            job.add_log(event="account_finished", account=name, stop_reason="в стоп-листе")
+            continue
+
+        message = text_variants.vary(job.message, name) if _cfg.DM_VARY_TEXT else job.message
+        stop_reason = "отправлено"
+        try:
+            await _human_send(client, entity, message)
+            _mark(job, t, "sent", None, name, peer_id=peer_id)
+        except (UserIsBlockedError, UserPrivacyRestrictedError) as e:
+            reason = "blocked" if isinstance(e, UserIsBlockedError) else "privacy_restricted"
+            _mark(job, t, "skipped", reason, name, peer_id=peer_id)
+            stop_reason = "заблокировал" if reason == "blocked" else "закрыты личные сообщения"
+        except FloodWaitError as e:
+            health.on_error(name, "flood_wait", f"send {e.seconds}s")
+            _mark(job, t, "failed", f"FloodWait {e.seconds} сек", name, peer_id=peer_id)
+            stop_reason = f"FloodWait {e.seconds} сек"
+        except PeerFloodError:
+            health.on_error(name, "peer_flood", "send")
+            _mark(job, t, "failed", "PeerFlood", name, peer_id=peer_id)
+            stop_reason = "PeerFlood"
+        except (UserDeactivatedBanError, AuthKeyUnregisteredError) as e:
+            health.on_error(name, "banned", str(e))
+            _mark(job, t, "failed", f"мёртв/забанен ({e})", name, peer_id=peer_id)
+            stop_reason = "мёртв/забанен"
+        except Exception as e:  # noqa: BLE001
+            _mark(job, t, "failed", str(e), name, peer_id=peer_id)
+            stop_reason = str(e)[:80]
+
+        job.add_log(event="account_finished", account=name, stop_reason=stop_reason)
+        if i < len(accounts) - 1:
+            await _sleep(random.uniform(DM_DELAY_MIN, DM_DELAY_MAX))
+
+    job.status = "stopped" if job.cancel.is_set() else "done"
+    job.finished_at = datetime.now(timezone.utc)
+    job.add_log(event="job_finished", status=job.status, backlog=0,
                 sent=job.sent, failed=job.failed, skipped=job.skipped)
