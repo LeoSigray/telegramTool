@@ -27,6 +27,13 @@ data/targets.xlsx.bak*
 data/*.bak-*
 data/daily_usage.json
 
+# Умный парсинг (parsing/smart): кеш сообщений, профили клиентов и отчёты с людьми
+data/smart_parser.db
+data/smart_parser.db-shm
+data/smart_parser.db-wal
+data/smart_profiles/
+data/smart_leads/
+
 # Python cache
 __pycache__/
 *.pyc
