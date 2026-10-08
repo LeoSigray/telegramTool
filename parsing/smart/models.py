@@ -23,8 +23,13 @@ class Source:
     found_via: str = ""
     hits: int = 0                  # совпадений поиска фраз покупателя
     meta_score: float = 0.0
-    status: str = ""               # selected | rejected | error
+    status: str = ""               # queued | selected | rejected | error
     reason: str = ""
+    # результат пробы (probe.py)
+    lang: str = ""
+    lang_share: float = 0.0
+    activity: float = 0.0          # сообщений в день
+    y_est: float = 0.0             # оценка: запросов по теме в неделю
 
     def link(self) -> str:
         if self.username:
@@ -78,6 +83,14 @@ class Author:
     was_online: str = ""           # ISO, если статус offline
     about: Optional[str] = None    # None — био ещё не запрашивали
     about_at: str = ""
+    access_hash: int = 0           # ключ доступа к профилю (для био и проверок без кеша сессии)
+
+    def input_user(self):
+        """InputUser для запросов к Telegram: с ключом доступа, если он известен."""
+        if self.access_hash:
+            from telethon.tl.types import InputUser
+            return InputUser(self.user_id, self.access_hash)
+        return self.user_id
 
     @property
     def name(self) -> str:

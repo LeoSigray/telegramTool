@@ -60,6 +60,20 @@ class Cand:
     why: str = ""
     warnings: list = field(default_factory=list)
     drop: str = ""
+    # информация об авторе для отчёта (заполняется в describe_people)
+    n_msgs: int = 0
+    chats: list = field(default_factory=list)
+    other_requests: list = field(default_factory=list)
+    # интерес (interest.py): текст + пересечения
+    kind: str = "hot"            # hot — есть запрос; warm — без запроса, но живёт в нише
+    interest: float = 0.0
+    affinity: float = 0.0
+    hot: float = 0.0
+    eligible: bool = True
+    chats_active: int = 0
+    chats_member: int = 0
+    topic_msgs: int = 0
+    member_chats: list = field(default_factory=list)
 
 
 @dataclass
@@ -173,6 +187,8 @@ def prepare(profile, sources: dict, messages: list, posts: dict, authors: dict,
     for c in alive:
         if c.msg.sender_id in opt_out:
             c.drop = "автор просит не писать в ЛС"
+        elif lex.junk.find(c.f.lemmas):
+            c.drop = "мусорная тематика (заработки, 18+, ставки…)"
         elif c.msg.reply_to and lex.competitor.find(c.f.lemmas) and not c.f.intent_strong:
             c.drop = "ответ исполнителя в чужой ветке"
         elif c.f.ad_dup:
@@ -218,6 +234,9 @@ def apply_verdicts(prep: Prep, verdicts: dict, params, lex: tp.Lexicon) -> None:
             c.drop = "продавец (LLM)"
             st = prep.src_stats.setdefault(c.msg.source_id, {"text": 0, "ad": 0})
             st["ad"] += 1
+        elif v is not None and v.topic < params.llm_min_topic:
+            # вопрос есть, но про другое (логистика маркетплейса, налоги…): не наш покупатель
+            c.drop = "не по теме клиента (LLM)"
         elif c.i < params.min_intent:
             c.drop = "не запрос (LLM)" if v is not None else "нет признаков запроса"
         elif c.rel < params.min_rel:
@@ -390,4 +409,27 @@ def finalize(people: list, lex: tp.Lexicon, params, now) -> tuple[list, list]:
     people.sort(key=lambda c: -c.pqi)
     with_u = [c for c in people if c.author and c.author.username]
     no_u = [c for c in people if not (c.author and c.author.username)]
-    return with_u[:params.top], no_u[:params.top]
+    return with_u, no_u
+
+
+def describe_people(people: list, messages: list, cands: list, sources: dict) -> None:
+    """Сводка об авторе для отчёта: сколько писал за окно, в каких чатах, другие его запросы."""
+    n_msgs: Counter = Counter()
+    chats: dict = defaultdict(set)
+    for m in messages:
+        if m.sender_kind == "user" and m.sender_id:
+            n_msgs[m.sender_id] += 1
+            src = sources.get(m.source_id)
+            if src is not None:
+                chats[m.sender_id].add(src.label())
+    reqs: dict = defaultdict(list)
+    for c in cands:
+        if c.i >= REQUEST_I and c.rel >= REQUEST_R:
+            reqs[c.msg.sender_id].append(c)
+    for c in people:
+        uid = c.msg.sender_id
+        c.n_msgs = n_msgs.get(uid, 0)
+        c.chats = sorted(chats.get(uid, ()))
+        others = sorted((o for o in reqs.get(uid, []) if o.msg.key != c.msg.key),
+                        key=lambda o: -o.base)
+        c.other_requests = [f"{o.source.label()}: {' '.join(o.msg.text.split())[:160]}" for o in others[:3]]

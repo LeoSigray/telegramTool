@@ -1,4 +1,5 @@
-"""Проверка сообщений бесплатным облачным LLM (через api/llm.py).
+"""Проверка сообщений бесплатным облачным LLM (через api/llm.py, с запасными
+провайдерами: см. llm_chain.py).
 
 Экономия бесплатного лимита:
   • проверяем только верхушку списка, отобранную правилами;
@@ -21,27 +22,32 @@ INTENT_RU = {"vendor": "ищет исполнителя", "problem": "описы
              "advice": "просит совета", "none": "—"}
 
 
-def llm_available() -> tuple[bool, str]:
-    try:
-        from api import llm  # noqa: WPS433 — ленивый импорт: без него модуль работает
-    except Exception as e:  # noqa: BLE001
-        return False, f"api.llm не загрузился: {e}"
-    try:
-        if not llm.is_configured():
-            return False, llm.config_hint()
-        return True, f"{llm.provider('fast')}:{llm.model_for('fast')}"
-    except Exception as e:  # noqa: BLE001
-        return False, str(e)
+_CHAIN = None
+
+
+def llm_available(override: str = "", log=None) -> tuple[bool, str]:
+    """Собирает цепочку провайдеров. (True, описание) или (False, причина)."""
+    global _CHAIN
+    from .llm_chain import build_chain
+
+    _CHAIN, info = build_chain(override, log)
+    return _CHAIN is not None, info
+
+
+def llm_usage() -> str:
+    return _CHAIN.usage() if _CHAIN is not None else ""
 
 
 async def llm_complete(prompt: str, max_tokens: int) -> str:
-    from api.llm import complete
-    return await complete(prompt, task="fast", max_tokens=max_tokens)
+    if _CHAIN is None:
+        raise RuntimeError("LLM не настроен")
+    return await _CHAIN.complete(prompt, max_tokens)
 
 
 def parse_json_loose(text: str):
     """JSON из ответа модели: снимаем ```-обёртку и берём от первой скобки до последней."""
     s = (text or "").strip()
+    s = re.sub(r"<think>.*?</think>", "", s, flags=re.DOTALL).strip()
     s = re.sub(r"^```(?:json)?\s*", "", s)
     s = re.sub(r"\s*```$", "", s)
     try:
@@ -191,8 +197,8 @@ class LLMJudge:
                 msg = str(e)
                 self.log.warn("LLM", f"вызов {self.calls} не удался: {msg[:200]}")
                 if "429" in msg or "rate" in msg.lower():
-                    self.log.info("LLM", "похоже на лимит бесплатного тарифа — пауза 30 с")
-                    await asyncio.sleep(30)
+                    self.log.info("LLM", "лимит бесплатного тарифа не отпустил — пауза 20 с")
+                    await asyncio.sleep(20)
                 if self.failures >= 2:
                     self.disabled = True
                     self.log.warn("LLM", "две ошибки подряд — LLM отключён до конца запуска, "

@@ -1,8 +1,7 @@
 """Профиль клиента: что он продаёт и как его покупатели пишут о потребности.
 
 Строится из описания и постов канала клиента:
-  • без ИИ: частые термины (по леммам, с отсевом стоп-слов), хэштеги, ссылки
-    на другие чаты и каналы (затравки для поиска источников);
+  • без ИИ: частые термины (по леммам, с отсевом стоп-слов);
   • с ИИ (1 вызов бесплатного LLM): оффер, аудитория, фразы покупателя,
     поисковые запросы, анти-портрет, типовые фразы продавцов-конкурентов.
 
@@ -22,10 +21,6 @@ from dataclasses import asdict, dataclass, field
 from . import textproc as tp
 from .llm_judge import llm_complete, parse_json_loose
 
-SEED_RE = re.compile(r"(?:https?://)?(?:t|telegram)\.me/([A-Za-z][A-Za-z0-9_]{3,31})(?![A-Za-z0-9_/])",
-                     re.IGNORECASE)
-_NOT_SEEDS = {"joinchat", "addlist", "share", "proxy", "socks", "addstickers", "iv", "s", "c"}
-
 
 @dataclass
 class Profile:
@@ -40,7 +35,14 @@ class Profile:
     search_queries: list = field(default_factory=list)
     anti: list = field(default_factory=list)
     seller_phrases: list = field(default_factory=list)
-    seeds: list = field(default_factory=list)
+    community_queries: list = field(default_factory=list)  # где общаются покупатели (для поиска чатов)
+    query_pool: list = field(default_factory=list)         # полный пул запросов запуска (порциями в раундах)
+    queries_version: int = 0                               # версия генератора запросов
+    product_keywords: list = field(default_factory=list)   # как покупатель называет сам товар/услугу
+    audience_vocab: list = field(default_factory=list)     # частые слова из комментариев аудитории клиента
+    keywords_checked: bool = False                         # слова и фразы проверены поиском в Telegram
+    keyword_hits: dict = field(default_factory=dict)       # слово/фраза → сколько сообщений нашлось
+    languages: list = field(default_factory=list)          # языки покупателей
     posts_sample: list = field(default_factory=list)
     built_with: str = "правила"
 
@@ -102,25 +104,6 @@ def top_terms(docs: list[str], stopwords: set[str], limit: int = 30) -> list[str
     return out
 
 
-def extract_seeds(texts: list[str], own: str) -> list[str]:
-    seeds: list[str] = []
-    seen = {own.lower()} if own else set()
-    for t in texts:
-        for m in SEED_RE.findall(t or ""):
-            u = m.lower()
-            if u in _NOT_SEEDS or u in seen:
-                continue
-            seen.add(u)
-            seeds.append(m)
-        for m in tp.MENTION_RE.findall(t or ""):
-            u = m[1:].lower()
-            if u in seen or u.endswith("bot"):
-                continue
-            seen.add(u)
-            seeds.append(m[1:])
-    return seeds
-
-
 def default_queries(terms: list[str]) -> list[str]:
     return _clean_list(terms, 10)
 
@@ -148,7 +131,10 @@ _PROFILE_PROMPT = """Ниже описание и посты Telegram-канал
   "audience": "кто покупатель: роль, тип и размер бизнеса, одно предложение",
   "topic_terms": ["15-30 ключевых слов и коротких фраз предметной области"],
   "buyer_phrases": ["12-20 коротких фраз, как покупатель пишет запрос в чате, например: ищу подрядчика на ..., посоветуйте сервис для ..."],
-  "search_queries": ["8-12 запросов из 1-3 слов для поиска профильных чатов и каналов, где сидят покупатели"],
+  "search_queries": ["8-12 запросов из 1-3 слов по теме: товары, услуги, ниша"],
+  "community_queries": ["до 50 запросов из 1-3 слов для поиска ЧАТОВ, где общаются ПОКУПАТЕЛИ (не продавцы): по роли покупателя, его бизнесу, площадкам и профессиональным сообществам. Пример для CRM-интегратора: чат предпринимателей, селлеры wildberries, владельцы интернет-магазинов, маркетологи чат. Запрещено называть сам товар, бренды и технологии продукта: покупатели обычно не называют так свои чаты"],
+  "product_keywords": ["8-15 отдельных слов, которыми покупатель называет САМ ТОВАР или услугу, в разных написаниях (кириллицей и латиницей), например: айфон, iphone, макбук, macbook, apple, смартфоны, электроника"],
+  "languages": ["коды языков покупателей, например ru"],
   "anti": ["3-8 пунктов: кого НЕ считать клиентом"],
   "seller_phrases": ["5-10 фраз, которыми в этой нише рекламируют себя исполнители-конкуренты"]
 }}"""
@@ -179,7 +165,6 @@ async def build_profile(client, params, lex: tp.Lexicon, log, use_llm: bool) -> 
         topic_terms=terms,
         search_queries=default_queries(terms),
         buyer_phrases=default_buyer_phrases(terms),
-        seeds=extract_seeds(posts + [about], own=params.channel),
         posts_sample=[p[:600] for p in posts[:30]],
     )
 
@@ -199,6 +184,10 @@ async def build_profile(client, params, lex: tp.Lexicon, log, use_llm: bool) -> 
             prof.search_queries = _clean_list(data.get("search_queries"), 12, 40) or prof.search_queries
             prof.anti = _clean_list(data.get("anti"), 8, 120)
             prof.seller_phrases = _clean_list(data.get("seller_phrases"), 10)
+            prof.community_queries = _clean_list(data.get("community_queries"), 50, 40)
+            prof.queries_version = QUERIES_VERSION
+            prof.product_keywords = _clean_list(data.get("product_keywords"), 20, 25)
+            prof.languages = _clean_list(data.get("languages"), 3, 5)
             prof.built_with = "LLM + правила"
             log.info("профиль", f"LLM: оффер «{prof.offer[:80]}», фраз покупателя "
                                f"{len(prof.buyer_phrases)}, запросов {len(prof.search_queries)}")
@@ -206,5 +195,204 @@ async def build_profile(client, params, lex: tp.Lexicon, log, use_llm: bool) -> 
             log.warn("профиль", f"LLM не помог ({str(e)[:150]}); профиль собран правилами")
 
     log.info("профиль", f"термины: {', '.join(prof.topic_terms[:12])}")
-    log.info("профиль", f"затравок из постов (ссылки и @упоминания): {len(prof.seeds)}")
     return prof
+
+
+QUERIES_VERSION = 3   # поднимается при смене генератора: старые пулы запросов пересоздаются
+
+
+def reset_if_outdated(prof: Profile, log) -> bool:
+    """Пулы запросов и слова товара, созданные старым генератором, создаются заново."""
+    if prof.queries_version >= QUERIES_VERSION:
+        return False
+    prof.community_queries, prof.buyer_phrases, prof.product_keywords = [], [], []
+    prof.keywords_checked, prof.keyword_hits = False, {}
+    prof.queries_version = QUERIES_VERSION
+    log.info("профиль", "генератор ключевых слов обновился — слова и запросы создаются заново")
+    return True
+
+_COMMON_BLOCK = """Компания продаёт: {offer}
+Её покупатели: {audience}
+Тема: {terms}
+Язык покупателей: {langs}.
+Так пишут её реальные покупатели (частые слова из их комментариев): {vocab}
+"""
+
+_REAL_WORDS = """ГЛАВНОЕ ПРАВИЛО: только слова и фразы, которые живые люди РЕАЛЬНО пишут в переписке.
+Нельзя выдумывать термины и маркетинговые неологизмы («нейрокурсы», «AI-онбординг», «нейрообучение»),
+нельзя склеивать слова через дефис, нельзя смешивать языки. Лучше простое и частое, чем красивое и редкое.
+"""
+
+_QUERIES_PROMPT = _COMMON_BLOCK + """
+Нужно найти в Telegram как можно больше ЧАТОВ и ГРУПП, где общаются именно ПОКУПАТЕЛИ этой компании (не продавцы и не конкуренты).
+Поиск Telegram ищет только по НАЗВАНИЯМ чатов и плохо работает с длинными запросами, поэтому нужны ОДНО-ДВУХСЛОВНЫЕ названия.
+""" + _REAL_WORDS + """
+
+ВАЖНО: покупатели называют свои чаты по СВОЕЙ роли и бизнесу, а не по товару, который покупают.
+ЗАПРЕЩЕНО использовать название товара, бренды и технологии продукта (iPhone, MacBook, CRM и т.п.).
+Пиши так: роль и бизнес покупателя (селлеры, байеры, закупщики, перекупы, владельцы магазинов, предприниматели, ИП), площадки и сообщества (маркетплейсы, Wildberries, Ozon, Авито), форматы названий (чат, клуб, сообщество, форум, оптовики).
+
+Дай ровно {n} РАЗНЫХ запросов из 1-2 слов, охватив разные углы.
+{avoid}
+Верни СТРОГО JSON-массив из {n} строк без markdown."""
+
+_PHRASES_PROMPT = _COMMON_BLOCK + """
+Нужны КОРОТКИЕ ФРАЗЫ (2-3 слова), которыми покупатель пишет запрос в Telegram-чате, когда ему нужен этот товар или услуга. По ним Telegram будет искать сообщения во всех публичных чатах: длинная фраза почти никогда не находится, поэтому 2-3 простых слова.
+Хорошо: «ищу курс нейросети», «посоветуйте курс midjourney», «куплю айфон оптом», «нужен сайт», «кто делает сайты».
+Плохо: «где обучают нейросетям для дизайнеров интерьера онлайн», «занимаетесь ли вы нейроробототехникой».
+""" + _REAL_WORDS + """
+{avoid}
+Дай ровно {n} фраз. Верни СТРОГО JSON-массив из {n} строк без markdown."""
+
+_GENERIC_WORDS = {"чат", "chat", "группа", "клуб", "сообщество", "форум", "канал", "опт", "оптом",
+                  "для", "по", "и", "в", "на", "от", "из", "the", "for"}
+
+
+def _fallback_queries(prof: Profile, used: set, n: int) -> list:
+    """Без LLM: шаблоны вокруг терминов клиента. Детерминированно, без повторов."""
+    base = list(prof.topic_terms[:12]) + list(prof.search_queries[:8])
+    templates = ["{t} чат", "{t} сообщество", "{t} клуб", "{t} обсуждение", "{t} форум",
+                 "{t} предприниматели", "{t} закупки", "чат {t}"]
+    out: list = []
+    seen = set(used)
+    for tpl in templates:
+        for t in base:
+            q = " ".join(tpl.format(t=t).split())
+            if q.lower() not in seen and len(q) <= 40:
+                seen.add(q.lower())
+                out.append(q)
+                if len(out) >= n:
+                    return out
+    return out
+
+
+def _fallback_phrases(prof: Profile, used: set, n: int) -> list:
+    out: list = []
+    seen = set(used)
+    for tpl in ("ищу {t}", "где купить {t}", "нужен {t}", "кто продаёт {t}", "посоветуйте {t}", "куплю {t}"):
+        for t in prof.topic_terms[:14]:
+            q = tpl.format(t=t)
+            if q.lower() not in seen and len(q) <= 50:
+                seen.add(q.lower())
+                out.append(q)
+                if len(out) >= n:
+                    return out
+    return out
+
+
+async def generate_queries(prof: Profile, use_llm: bool, log, used: set, good_titles: list,
+                           n: int = 50, langs: str = "ru", kind: str = "chats") -> list:
+    """Новая порция из n запросов. kind: chats — названия чатов, phrases — фразы покупателя.
+    Не повторяет used. good_titles — названия найденных удачных чатов (подсказка нейросети)."""
+    fresh: list = []
+    if use_llm and (prof.offer or prof.topic_terms):
+        avoid = ""
+        if used:
+            avoid += "Уже использованы, НЕ повторяй: " + "; ".join(sorted(used)[:80]) + ".\n"
+        if good_titles:
+            avoid += "Удачные найденные чаты (ищи похожие по духу): " + "; ".join(good_titles[:12]) + ".\n"
+        prompt = (_PHRASES_PROMPT if kind == "phrases" else _QUERIES_PROMPT).format(
+            offer=prof.offer or "—", audience=prof.audience or "—",
+            terms=", ".join(prof.topic_terms[:20]) or "—", langs=langs or "ru", n=n, avoid=avoid,
+            vocab=", ".join(prof.audience_vocab[:40]) or "—")
+        try:
+            data = parse_json_loose(await llm_complete(prompt, max_tokens=3000))
+            items = data if isinstance(data, list) else (data.get("queries") if isinstance(data, dict) else [])
+            fresh = _clean_list(items, n * 2, 50 if kind == "phrases" else 40)
+        except Exception as e:  # noqa: BLE001
+            log.warn("профиль", f"LLM не дал запросы ({str(e)[:120]})")
+    seen = set(used)
+    out: list = []
+    for q in fresh:
+        if q.lower() not in seen:
+            seen.add(q.lower())
+            out.append(q)
+    if len(out) < n:
+        out += (_fallback_phrases if kind == "phrases" else _fallback_queries)(prof, seen, n - len(out))
+    return out[:n]
+
+
+async def ensure_query_pool(prof: Profile, use_llm: bool, log, params) -> bool:
+    """Пулы на запуск: названия чатов и фразы покупателя, до queries_target / phrases_target.
+    Пулы старой версии генератора пересоздаются. Возвращает True, если профиль изменился."""
+    changed = False
+    if len(prof.community_queries) < params.queries_target:
+        have = {q.lower() for q in prof.community_queries}
+        extra = await generate_queries(prof, use_llm, log, have, [],
+                                       params.queries_target - len(prof.community_queries),
+                                       params.languages, "chats")
+        prof.community_queries = _clean_list(prof.community_queries + extra, params.queries_target, 40)
+        changed = True
+    if params.search_messages and len(prof.buyer_phrases) < params.phrases_target:
+        have = {q.lower() for q in prof.buyer_phrases}
+        extra = await generate_queries(prof, use_llm, log, have, [],
+                                       params.phrases_target - len(prof.buyer_phrases),
+                                       params.languages, "phrases")
+        prof.buyer_phrases = _clean_list(prof.buyer_phrases + extra, params.phrases_target, 50)
+        changed = True
+    log.info("профиль", f"пулы запросов: названий чатов {len(prof.community_queries)}, "
+                        f"фраз покупателя {len(prof.buyer_phrases)} ({'нейросеть' if use_llm else 'шаблоны'})")
+    log.info("профиль", "названия чатов: " + ", ".join(prof.community_queries[:10])
+             + (" …" if len(prof.community_queries) > 10 else ""))
+    log.info("профиль", "фразы покупателя: " + "; ".join(prof.buyer_phrases[:5])
+             + (" …" if len(prof.buyer_phrases) > 5 else ""))
+    return changed
+
+
+_KEYWORDS_PROMPT = """Компания продаёт: {offer}
+Тема: {terms}
+Название канала: {title}
+Так пишут её реальные покупатели (частые слова из их комментариев): {vocab}
+
+Какими словами покупатель называет САМ ТОВАР или услугу в обычной переписке в чатах?
+Нужны разные написания: кириллицей и латиницей, бренды, названия инструментов, разговорные варианты.
+Хорошо (для курсов по нейросетям): нейросеть, нейросети, chatgpt, midjourney, промпт, ии.
+Хорошо (для оптовой техники): айфон, iphone, макбук, macbook, apple, техника.
+Плохо: нейрокурсы, AI-онбординг, нейрообучение, web-курсы — так никто не пишет.
+""" + _REAL_WORDS + """
+Верни СТРОГО JSON-массив из 8-15 слов (по одному слову, иногда два) без markdown.
+Без общих слов вроде «цена», «оптом», «доставка», «курс», «онлайн»."""
+
+_GENERIC_KW = {"оптом", "опт", "оптовый", "цена", "доставка", "заказ", "купить", "продажа", "поставщик",
+               "магазин", "товар", "услуга", "компания", "платформа", "логистика", "закупка",
+               "ai", "ии", "курс", "курсы", "онлайн", "web", "бизнес", "обучение", "интенсив",
+               "практикум", "старт", "программа", "школа", "проект", "сервис"}
+
+
+def clean_product_keywords(words) -> list:
+    """Слова товара без общих слов и без склеек через дефис («AI-онбординг» никто не пишет)."""
+    out = []
+    for w in words or []:
+        w = " ".join(str(w).split()).strip().lower()
+        if not w or "-" in w or w in _GENERIC_KW or len(w) < 2:
+            continue
+        if w not in out:
+            out.append(w)
+    return out
+
+
+async def ensure_product_keywords(prof: Profile, use_llm: bool, log, lex_stop: set) -> bool:
+    """Слова самого товара нужны, чтобы отличить чат, где говорят о товаре клиента, от чата про
+    логистику и комиссии маркетплейса. Старым профилям дописываются одним вызовом LLM, без него
+    берутся из названия, описания и оффера. Возвращает True, если профиль изменился."""
+    if prof.product_keywords:
+        return False
+    found: list = []
+    if use_llm and (prof.offer or prof.topic_terms or prof.title):
+        prompt = _KEYWORDS_PROMPT.format(offer=prof.offer or "—", title=prof.title or "—",
+                                         terms=", ".join(prof.topic_terms[:20]) or "—",
+                                         vocab=", ".join(prof.audience_vocab[:40]) or "—")
+        try:
+            data = parse_json_loose(await llm_complete(prompt, max_tokens=800))
+            found = _clean_list(data if isinstance(data, list) else [], 20, 25)
+        except Exception as e:  # noqa: BLE001
+            log.warn("профиль", f"LLM не дал слова товара ({str(e)[:100]})")
+    if not found:
+        text = " ".join([prof.title, prof.about, prof.offer])
+        found = [w for w in tp.words(text) if len(w) >= 4 and w not in lex_stop and w not in _GENERIC_KW]
+        found = _clean_list(list(dict.fromkeys(found)), 12, 25)
+    prof.product_keywords = clean_product_keywords(found)
+    found = prof.product_keywords
+    log.info("профиль", "слова товара: " + ", ".join(found[:12]) if found
+             else "слова товара определить не удалось")
+    return bool(found)

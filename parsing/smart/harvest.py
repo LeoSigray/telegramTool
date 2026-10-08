@@ -44,7 +44,7 @@ def author_from_user(user) -> Author:
     return Author(user_id=user.id, username=username, first_name=user.first_name or "",
                   last_name=user.last_name or "", is_bot=bool(user.bot),
                   is_deleted=bool(user.deleted), premium=bool(getattr(user, "premium", False)),
-                  status=kind, was_online=was)
+                  status=kind, was_online=was, access_hash=getattr(user, "access_hash", 0) or 0)
 
 
 def to_message(source_id: int, m, post_id: int = 0, is_post: bool = False) -> Message | None:
@@ -96,14 +96,52 @@ async def _harvest_group(client, src, ent, params, store, since) -> int:
     return added
 
 
-async def _harvest_channel(client, src, ent, params, store, since, log) -> int:
+async def _search_in_chat(client, ent, terms: list, params, since) -> list:
+    """Сообщения чата за окно, где есть хоть одно из слов (поиск Telegram внутри чата)."""
+    found: dict = {}
+    for t in terms:
+        async for m in client.iter_messages(ent, search=t, limit=params.targeted_limit,
+                                            wait_time=params.wait_time):
+            if m.date < since:
+                break
+            found[m.id] = m
+        await asyncio.sleep(random.uniform(0.6, 1.2))
+    return list(found.values())
+
+
+async def _harvest_group_targeted(client, src, ent, params, store, since, terms) -> int:
+    """Точечное чтение группы: последние targeted_tail сообщений + поиск по словам.
+    Позицию чтения не двигаем: точечное чтение не «дочитывает» историю целиком."""
+    msgs, authors, seen = [], {}, set()
+    tail = [m async for m in client.iter_messages(ent, limit=params.targeted_tail,
+                                                  wait_time=params.wait_time)]
+    for m in tail + await _search_in_chat(client, ent, terms, params, since):
+        if m.id in seen or m.date < since:
+            continue
+        seen.add(m.id)
+        rec = to_message(src.chat_id, m)
+        if rec:
+            msgs.append(rec)
+            _collect_author(m, authors)
+    added = store.add_messages(msgs)
+    store.upsert_authors(authors.values())
+    store.set_harvested(src.chat_id, 0)
+    return added
+
+
+async def _harvest_channel(client, src, ent, params, store, since, log, terms=None) -> int:
     posts = []
-    async for p in client.iter_messages(ent, limit=params.posts_per_channel,
-                                        wait_time=params.wait_time):
+    # при точечном чтении — несколько свежих постов, остальное добирает поиск по словам
+    limit = max(5, params.posts_per_channel // 3) if terms else params.posts_per_channel
+    async for p in client.iter_messages(ent, limit=limit, wait_time=params.wait_time):
         # комментарии под постом недельной давности ещё могут быть свежими
         if p.date < since - timedelta(days=7):
             break
         posts.append(p)
+    if terms:
+        have = {p.id for p in posts}
+        posts += [p for p in await _search_in_chat(client, ent, terms, params, since - timedelta(days=7))
+                  if p.id not in have]
     store.add_messages([r for r in (to_message(src.chat_id, p, is_post=True) for p in posts) if r])
 
     total, top_id = 0, src.last_msg_id
@@ -137,8 +175,10 @@ async def _harvest_channel(client, src, ent, params, store, since, log) -> int:
     return total
 
 
-async def harvest(client, items, params, store, log) -> dict:
-    """items: [(Source, entity)]. Возвращает {chat_id: сколько новых сообщений}."""
+async def harvest(client, items, params, store, log, terms=None) -> dict:
+    """items: [(Source, entity)]. Возвращает {chat_id: сколько новых сообщений}.
+    terms — слова товара и фразы покупателя: если заданы, чат читается точечно (поиск по ним
+    внутри чата + хвост последних сообщений), а не весь подряд."""
     from telethon.errors import FloodWaitError
 
     since = datetime.now(timezone.utc) - timedelta(days=params.days)
@@ -146,13 +186,17 @@ async def harvest(client, items, params, store, log) -> dict:
     for n, (src, ent) in enumerate(items, 1):
         try:
             if src.kind == "channel":
-                got = await _harvest_channel(client, src, ent, params, store, since, log)
+                got = await _harvest_channel(client, src, ent, params, store, since, log, terms)
                 what = "комментариев"
+            elif terms:
+                got = await _harvest_group_targeted(client, src, ent, params, store, since, terms)
+                what = "сообщений"
             else:
                 got = await _harvest_group(client, src, ent, params, store, since)
                 what = "сообщений"
             stats[src.chat_id] = got
-            log.info("сбор", f"[{n}/{len(items)}] {src.label()}: новых {what} {got}")
+            log.info("сбор", f"[{n}/{len(items)}] {src.label()}: новых {what} {got}"
+                             + (" (точечно)" if terms else ""))
         except FloodWaitError as e:
             if e.seconds > params.max_flood_wait:
                 log.error("сбор", f"FloodWait {e.seconds} с на {src.label()} — сбор остановлен, "

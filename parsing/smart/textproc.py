@@ -168,6 +168,7 @@ class Lexicon:
         self.competitor = PhraseMatcher(read_lexicon("competitor"))
         self.decision_maker = PhraseMatcher(read_lexicon("decision_maker"))
         self.opt_out = PhraseMatcher(read_lexicon("opt_out"))
+        self.junk = PhraseMatcher(read_lexicon("junk_chat"))
         self.stopwords = set(lemmas(" ".join(read_lexicon("stopwords"))))
         # леммы маркеров «ищет исполнителя» и «просит совета» — для типа запроса без LLM
         self.vendor_lemmas = set(lemmas("ищу ищем нужен требуется подрядчик исполнитель "

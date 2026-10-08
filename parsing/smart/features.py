@@ -73,6 +73,10 @@ def extract(text: str, lex: tp.Lexicon) -> Features:
     if seller_hits:
         seller_lem = {w for h in seller_hits for w in tp.lemmas(h)}
         intent_hits = [h for h in intent_hits if not set(tp.lemmas(h)) <= seller_lem]
+    # «скиньте прайс» — это покупатель: снимаем продавцовые маркеры, вложенные в фразы запроса
+    if intent_hits and seller_hits:
+        intent_sets = [set(tp.lemmas(h)) for h in intent_hits if len(tp.lemmas(h)) > 1]
+        seller_hits = [h for h in seller_hits if not any(set(tp.lemmas(h)) < st for st in intent_sets)]
     return Features(
         lemmas=lem,
         intent_hits=intent_hits,
