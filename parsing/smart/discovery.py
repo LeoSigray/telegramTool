@@ -158,6 +158,9 @@ class DiscoveryState:
         self.seeds: dict = {}
         self.graph_score: dict = {}       # chat_id → сумма весов связей от разных зёрен
         self.graph_edges: set = set()     # (зерно, цель): одна связь считается один раз
+        self.web = None                   # WebFinder: поиск по статьям в интернете
+        self.web_by_id: dict = {}         # chat_id → очки «советуют сайты»
+        self.web_resolved: set = set()    # usernames из статей, которые уже проверяли
 
     def add_seed(self, src, ent, probe, score: float, depth: int) -> None:
         cur = self.seeds.get(src.chat_id)
@@ -244,6 +247,7 @@ async def _qualify(client, ids: list, pool: _Pool, profile, params, store, lex, 
     for (s, _), r in zip(alive, raw):
         bonus = 0.3 if "каталог" in s.found_via else 0.0
         bonus += 0.6 * min(1.0, state.graph_score.get(s.chat_id, 0.0) / 2.0)
+        bonus += 0.6 * min(1.0, state.web_by_id.get(s.chat_id, 0.0) / 2.0)
         s.meta_score = 0.7 * (r / mx) + bonus
     alive.sort(key=lambda x: -x[0].meta_score)
     room = max(0, min(params.check_cap - budget["checked"],
@@ -485,6 +489,44 @@ async def graph_round(client, profile, params, store, lex, log, state: Discovery
     return _to_queue(passed, report, state, store, params, log, f"раунд {state.round}"), report
 
 
+async def _web_candidates(client, queries: list, pool: _Pool, params, store, log, state) -> int | None:
+    """Кандидаты из статей: поиск в интернете → @username → чат в Telegram.
+    None — поисковик недоступен. Проверяем в Telegram самые советуемые (web_resolves за раунд):
+    каждое разрешение имени — запрос к Telegram с жёстким лимитом."""
+    from .websearch import WebFinder
+
+    if state.web is None:
+        state.web = WebFinder(store, params, log)
+    web = state.web
+    for q in queries:
+        state.used.add(q.lower())
+    ranked = await web.run(queries)
+    if web.blocked and not ranked:
+        return None
+    todo = [n for n in sorted(web.score, key=lambda n: -web.score[n])
+            if n not in state.web_resolved and n not in pool.seen_usernames][:params.web_resolves]
+    added = 0
+    for name in todo:
+        if state.stop:
+            break
+        state.web_resolved.add(name)
+        ent = await _safe(lambda: client.get_entity(name), params, log, f"@{name}")
+        await _pause(0.8, 1.6)
+        if ent is None:
+            continue
+        s = pool.add(ent, web.via(name))
+        if s is not None:
+            state.web_by_id[s.chat_id] = web.score[name]
+            if not s.about:
+                s.about = web.context(name)[:300]
+            added += 1
+        elif getattr(ent, "id", None) in pool.items:
+            state.web_by_id[ent.id] = max(state.web_by_id.get(ent.id, 0.0), web.score[name])
+    log.info("источники", f"раунд {state.round}: из статей проверено в Telegram {len(todo)} имён, "
+                         f"новых чатов/каналов {added}")
+    return added
+
+
 async def discover_round(client, profile, params, store, lex, log, state: DiscoveryState,
                           queries: list):
     """Один раунд поиска: запросы → кандидаты → отбор → проба → граф.
@@ -521,9 +563,18 @@ async def discover_round(client, profile, params, store, lex, log, state: Discov
                     await _pause(0.5, 1.0)
                 log.info("источники", f"каталог: {n_cat} близких по теме из {len(catalog)} известных чатов")
 
-        # поиск по названиям: порция запросов этого раунда
+        # поиск через интернет: статьи и подборки, где люди советуют чаты
         n_search = 0
-        for q in queries:
+        web_ok = params.web_search
+        if web_ok:
+            n_web = await _web_candidates(client, queries, pool, params, store, log, state)
+            web_ok = n_web is not None
+        if params.web_search and not web_ok:
+            log.warn("источники", "поиск в интернете недоступен — в этом раунде ищем по названиям в Telegram")
+            from .profile import _fallback_queries
+            queries = _fallback_queries(profile, set(state.used), params.queries_per_round)
+        # поиск по названиям в Telegram (если поиск в интернете выключен или недоступен)
+        for q in ([] if web_ok else queries):
             if state.stop:
                 break
             state.used.add(q.lower())
@@ -533,8 +584,9 @@ async def discover_round(client, profile, params, store, lex, log, state: Discov
                 if pool.add(ch, f"поиск: {q}"):
                     n_search += 1
             await _pause(2.0, 4.0)
-        log.info("источники", f"раунд {state.round}: поиск по названиям, новых {n_search} по "
-                             f"{len(queries)} запросам ({', '.join(queries[:4])}{' …' if len(queries) > 4 else ''})")
+        if not web_ok:
+            log.info("источники", f"раунд {state.round}: поиск по названиям, новых {n_search} по "
+                                 f"{len(queries)} запросам ({', '.join(queries[:4])}{' …' if len(queries) > 4 else ''})")
 
         if first and own_ent is not None:
             # похожие каналы к каналу клиента

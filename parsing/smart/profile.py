@@ -36,6 +36,7 @@ class Profile:
     anti: list = field(default_factory=list)
     seller_phrases: list = field(default_factory=list)
     community_queries: list = field(default_factory=list)  # где общаются покупатели (для поиска чатов)
+    web_queries: list = field(default_factory=list)        # запросы для поисковика (статьи и подборки чатов)
     query_pool: list = field(default_factory=list)         # полный пул запросов запуска (порциями в раундах)
     queries_version: int = 0                               # версия генератора запросов
     product_keywords: list = field(default_factory=list)   # как покупатель называет сам товар/услугу
@@ -316,7 +317,7 @@ async def ensure_query_pool(prof: Profile, use_llm: bool, log, params) -> bool:
     """Пулы на запуск: названия чатов и фразы покупателя, до queries_target / phrases_target.
     Пулы старой версии генератора пересоздаются. Возвращает True, если профиль изменился."""
     changed = False
-    if len(prof.community_queries) < params.queries_target:
+    if not params.web_search and len(prof.community_queries) < params.queries_target:
         have = {q.lower() for q in prof.community_queries}
         extra = await generate_queries(prof, use_llm, log, have, [],
                                        params.queries_target - len(prof.community_queries),
