@@ -23,6 +23,7 @@ def P(**kw):
     kw.setdefault("min_pqi", 5.0)
     kw.setdefault("warm", True)
     kw.setdefault("reserve", 100)
+    kw.setdefault("web_search", False)     # тесты механики — без интернета
     return Params(**kw)
 
 
@@ -784,7 +785,7 @@ class ProductionDefaultsTests(unittest.TestCase):
             with mock.patch.object(asyncio, "sleep", fast_sleep), tempfile.TemporaryDirectory() as tmp:
                 client = FakeClient()
                 params = Params(channel="@client_crm", no_llm=True, check_contacted=False, people=20,
-                                search_messages=False, db_path=os.path.join(tmp, "s.db"),
+                                search_messages=False, web_search=False, db_path=os.path.join(tmp, "s.db"),
                                 profiles_dir=os.path.join(tmp, "p"), out=os.path.join(tmp, "o.xlsx"), **kw)
                 path = asyncio.run(run_smart_parse(params, client=client, echo=False))
                 ws = load_workbook(path)["Люди"]
@@ -1360,6 +1361,78 @@ class KeywordQualityTests(unittest.TestCase):
         self.assertEqual(harvest_terms(prof, P(channel="@x")),
                          ["нейросети", "chatgpt", "посоветуйте нейросеть"])
         self.assertEqual(harvest_terms(prof, P(channel="@x", targeted=False)), [])
+
+
+class WebSearchTests(unittest.TestCase):
+    """Поиск чатов по статьям: ссылки со страниц, один сайт — один голос, без сети."""
+
+    def test_extract_chats_from_article(self):
+        from parsing.smart.websearch import extract_chats
+        html = (
+            '<p>Чат селлеров: <a href="https://t.me/sellers_chat">вступить</a></p>'
+            '<a href="https://t.me/joinchat/AAAA">x</a><a href="https://t.me/share/url?u=1">s</a>'
+            '<a href="https://t.me/gpt_helper_bot">бот</a>'
+            '<p>Ещё есть tgstat.ru/chat/@marketing_club и автор статьи @ivan_petrov</p>')
+        got = extract_chats(html)
+        self.assertEqual(got["sellers_chat"][0], 1.0)
+        self.assertIn("селлеров", got["sellers_chat"][1])
+        self.assertEqual(got["marketing_club"][0], 1.0)
+        self.assertAlmostEqual(got["ivan_petrov"][0], 0.4, msg="голое @упоминание весит меньше")
+        for junk in ("joinchat", "share", "gpt_helper_bot"):
+            self.assertNotIn(junk, got)
+
+    def test_one_site_one_vote_and_cache(self):
+        from unittest import mock
+
+        from parsing.smart import websearch as ws
+
+        pages = {"https://a.ru/1": '<a href="https://t.me/chat_one">1</a><a href="https://t.me/chat_two">2</a>',
+                 "https://a.ru/2": '<a href="https://t.me/chat_one">1</a>',
+                 "https://b.ru/x": '<a href="https://t.me/chat_one">1</a>'}
+        calls = {"search": 0, "page": 0}
+
+        async def fake_search(http, q, n):
+            calls["search"] += 1
+            return list(pages)
+
+        async def fake_page(self, http, url):
+            calls["page"] += 1
+            return ws.extract_chats(pages[url])
+
+        class Log:
+            def info(self, *a): pass
+            def warn(self, *a): pass
+
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(*_a, **_k):
+            await real_sleep(0)
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(ws, "ddg_search", fake_search), \
+                mock.patch.object(ws.WebFinder, "_page", fake_page), \
+                mock.patch.object(asyncio, "sleep", fast_sleep):
+            st = Store(os.path.join(tmp, "s.db"))
+            f = ws.WebFinder(st, P(channel="@x"), Log())
+            ranked = asyncio.run(f.run(["чаты селлеров"]))
+            self.assertEqual(ranked[0], "chat_one")
+            self.assertEqual(f.score["chat_one"], 2.0, "a.ru дважды — один голос, плюс b.ru")
+            self.assertEqual(f.score["chat_two"], 1.0)
+            self.assertIn("a.ru", f.via("chat_one"))
+            f2 = ws.WebFinder(st, P(channel="@x"), Log())
+            asyncio.run(f2.run(["чаты селлеров"]))
+            self.assertEqual(calls["search"], 1, "выдача поисковика берётся из кеша")
+            st.close()
+
+    def test_web_queries_fallback_without_llm(self):
+        from parsing.smart.websearch import generate_web_queries
+
+        class Log:
+            def info(self, *a): pass
+            def warn(self, *a): pass
+        prof = Profile(channel="x", topic_terms=["нейросети", "маркетинг"])
+        qs = asyncio.run(generate_web_queries(prof, False, Log(), set(), 6))
+        self.assertEqual(len(qs), 6)
+        self.assertTrue(all("телеграм" in q or "telegram" in q for q in qs))
 
 
 if __name__ == "__main__":
