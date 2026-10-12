@@ -157,8 +157,13 @@ def _rank_people(read: list, store, profile, lex, params, now, own_ids, audience
             if (c.pqi / (0.5 + 0.5 * c.a) if c.a < 1 else c.pqi) >= params.stop_pqi], ranked
 
 
-async def run_smart_parse(params: Params, client=None, echo: bool = True) -> str:
-    """Полный прогон. Возвращает путь к Excel."""
+async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_people=None,
+                          handle_signals: bool = True) -> str:
+    """Полный прогон. Возвращает путь к Excel.
+
+    on_people(result) — вызывается со списком найденных людей перед записью отчёта (так их забирает
+    мини-приложение). handle_signals=False — не трогать Ctrl+C: нужно, когда парсинг идёт внутри
+    чужого процесса (веб-сервиса), у которого свои обработчики сигналов."""
     if not params.channel:
         raise RuntimeError("не указан канал клиента")
     out_path = params.out or default_out(params.channel)
@@ -195,11 +200,12 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True) -> str
                                  "собираю отчёт по уже найденному")
         deadline = loop.call_later(params.max_minutes * 60, _on_deadline)
     sigint_installed = False
-    try:
-        loop.add_signal_handler(signal.SIGINT, _on_sigint)
-        sigint_installed = True
-    except (NotImplementedError, RuntimeError):
-        pass   # Windows: мягкая остановка недоступна, Ctrl+C прерывает сразу
+    if handle_signals:
+        try:
+            loop.add_signal_handler(signal.SIGINT, _on_sigint)
+            sigint_installed = True
+        except (NotImplementedError, RuntimeError):
+            pass   # Windows: мягкая остановка недоступна, Ctrl+C прерывает сразу
     try:
         log.info("старт", f"канал @{params.channel}; нужно людей: {params.people}; окно "
                           f"{params.days} дн.; лемматизация: {lemmatizer().backend}")
@@ -531,6 +537,8 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True) -> str
                                                     f" на проверку, бюджет {params.llm_budget})")
         if len(result) < params.people:
             log.warn("итог", f"нашлось {len(result)} из {params.people} нужных людей")
+        if on_people is not None:
+            on_people(result)
         log.info("отчёт", f"сохраняю {out_path}")
         path = write_report(out_path, result, no_u, prep.dropped, report, cqi, profile, params, log,
                             junk_metrics, reserve, final["chat_info"], final["pairs"])

@@ -26,6 +26,7 @@ from .client_pool import pool
 log = logging.getLogger(__name__)
 
 HISTORY_LIMIT = 50
+EDIT_WINDOW_HOURS = 47     # Telegram даёт править сообщение 48 часов; берём с запасом
 
 
 class InboxError(Exception):
@@ -149,3 +150,67 @@ async def hydrate(conv_id: int, limit: int = HISTORY_LIMIT) -> dict:
         return {"ok": True, "via": name, "fetched": len(rows), "added": added}
 
     raise InboxError(f"не удалось подтянуть историю (проверенные аккаунты: {tried or '—'})")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  Правка и удаление своих сообщений
+# ──────────────────────────────────────────────────────────────────────────
+
+def _own_message(conv_id: int, msg_id: int) -> tuple[dict, dict]:
+    """(диалог, исходящее сообщение). InboxError, если сообщения нет или оно не наше."""
+    conv = inbox.get_conversation(conv_id)
+    if not conv:
+        raise InboxError("диалог не найден")
+    msg = next((m for m in inbox.get_messages(conv_id, 1000) if m["id"] == msg_id), None)
+    if not msg or msg["direction"] != "out" or msg["status"] == "deleted":
+        raise InboxError("сообщение не найдено")
+    if not msg["tg_id"] or msg["status"] != "ok":
+        raise InboxError("это сообщение не отправилось, с ним ничего сделать нельзя")
+    return conv, msg
+
+
+async def _sender(conv: dict, msg: dict):
+    """Править и удалять можно только с того аккаунта, который сообщение отправил."""
+    name = msg.get("account") or conv["account"]
+    client = pool.clients.get(name)
+    if client is None:
+        raise InboxError("аккаунт, с которого ушло сообщение, сейчас не в сети. Попробуйте позже")
+    return name, client, await _resolve_peer(client, conv)
+
+
+def _tg_error(e: Exception, action: str) -> InboxError:
+    kind = type(e).__name__
+    if kind == "MessageEditTimeExpiredError":
+        return InboxError("сообщение можно изменить только в течение двух суток после отправки")
+    if kind in ("MessageAuthorRequiredError", "MessageIdInvalidError"):
+        return InboxError(f"это сообщение уже нельзя {action}")
+    if isinstance(e, FloodWaitError):
+        return InboxError(f"Telegram просит подождать {e.seconds} с, попробуйте позже")
+    return InboxError(f"не получилось {action}: {e}")
+
+
+async def edit_message(conv_id: int, msg_id: int, text: str) -> dict:
+    text = (text or "").strip()
+    if not text:
+        raise InboxError("пустое сообщение")
+    conv, msg = _own_message(conv_id, msg_id)
+    _name, client, entity = await _sender(conv, msg)
+    try:
+        await client.edit_message(entity, msg["tg_id"], text)
+    except Exception as e:  # noqa: BLE001
+        if type(e).__name__ != "MessageNotModifiedError":      # «ничего не изменилось» — не ошибка
+            raise _tg_error(e, "изменить") from e
+    inbox.update_message_text(conv["peer_id"], msg["tg_id"], text)
+    return {"ok": True, "tg_id": msg["tg_id"]}
+
+
+async def delete_message(conv_id: int, msg_id: int) -> dict:
+    """Удаляет сообщение у обоих собеседников."""
+    conv, msg = _own_message(conv_id, msg_id)
+    _name, client, entity = await _sender(conv, msg)
+    try:
+        await client.delete_messages(entity, [msg["tg_id"]], revoke=True)
+    except Exception as e:  # noqa: BLE001
+        raise _tg_error(e, "удалить") from e
+    inbox.mark_messages_deleted(conv["peer_id"], [msg["tg_id"]])
+    return {"ok": True, "tg_id": msg["tg_id"]}

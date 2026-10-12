@@ -26,7 +26,7 @@ from data.db import init_db, migrate_from_files, sync_all_to_db
 from data.inbox import init_inbox
 from optimizer import health as optimizer_health   # не "health": ниже есть маршрут /health, он затенял бы модуль
 
-from . import (channel_watch, listener, routes_accounts, routes_analytics,
+from . import (channel_watch, listener, miniapp, routes_accounts, routes_analytics,
                routes_broadcast, routes_bulk, routes_inbox)
 from .client_pool import pool
 
@@ -85,6 +85,11 @@ async def lifespan(app: FastAPI):
     listener.setup()
     # 6. фоновое обслуживание оптимизатора
     maintenance = asyncio.create_task(_maintenance_loop())
+    # 7. Mini App «Клиент в один клик»: таблицы, бот, уведомления. Сбой не должен ронять рассылки.
+    try:
+        await miniapp.startup()
+    except Exception:  # noqa: BLE001
+        log.exception("[miniapp] запуск не удался")
 
     async def _ownership_loop():
         """Каждые ~5 секунд: отдать аккаунты тем, кому нужнее, и подключить освободившиеся."""
@@ -107,6 +112,7 @@ async def lifespan(app: FastAPI):
     finally:
         ownership.cancel()
         maintenance.cancel()
+        await miniapp.shutdown()
         await listener.shutdown()
         await pool.shutdown()
         # синхронизируем обновлённые сессии обратно в БД
@@ -132,6 +138,7 @@ app.include_router(routes_analytics.router)
 app.include_router(routes_analytics.page_router)
 app.include_router(routes_inbox.router)
 app.include_router(routes_inbox.page_router)
+app.include_router(miniapp.router)
 
 
 @app.get("/health")

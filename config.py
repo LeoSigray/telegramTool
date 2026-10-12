@@ -59,6 +59,11 @@ DM_TYPING_MIN_S, DM_TYPING_MAX_S = 2.0, 18.0
 
 # Лёгкая вариация текста: каждое сообщение с аккаунта чуть отличается (см. data/message_variants.py)
 DM_VARY_TEXT = True
+
+# Проверка доставки в тесте «один получатель»: после отправки сообщение перечитывается через эти паузы (сек)
+# и ещё раз в конце через DM_VERIFY_FINAL_S — ловит случай, когда Telegram принял и тихо удалил сообщение.
+DM_VERIFY_WAITS_S = (4, 25)
+DM_VERIFY_FINAL_S = 60
 CHAT_LIMIT_PER_ACCOUNT = 10
 INVITE_LIMIT_PER_ACCOUNT = 40
 

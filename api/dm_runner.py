@@ -225,6 +225,27 @@ async def _human_send(client, entity, text: str):
     return await client.send_message(entity, text)
 
 
+async def _confirm_delivered(client, entity, msg, waits=None) -> str | None:
+    """Проверка, что отправленное сообщение реально лежит в переписке (а не «ушло» и тут же пропало).
+
+    Telegram может принять сообщение без ошибки и потом молча удалить его (антиспам у новых/ограниченных
+    аккаунтов) — send_message при этом уже вернул успех. Перечитываем сообщение по id через паузы.
+    None — на месте (или проверить не удалось: сбой проверки отправкой не считается); строка — причина.
+    """
+    mid = getattr(msg, "id", None)
+    if not mid:
+        return None
+    for w in (waits if waits is not None else _cfg.DM_VERIFY_WAITS_S):
+        await _sleep(w)
+        try:
+            got = await client.get_messages(entity, ids=mid)
+        except Exception:  # noqa: BLE001 — не смогли проверить: не выдаём это за недоставку
+            return None
+        if not got:
+            return "не доставлено: сообщение пропало из переписки (Telegram его удалил)"
+    return None
+
+
 def _account_limit(job: Job, account: str) -> int:
     """
     Сколько сообщений с аккаунта можно отправить в этом запуске.
@@ -497,6 +518,7 @@ async def run_single_target_job(job: Job, accounts: list[str], target: str) -> N
     job.add_log(event="job_started", total=job.total, accounts=len(accounts),
                 parallel=1, kind="dm-single-target")
     key = target.lower().lstrip("@")
+    delivered: list = []   # (индекс, аккаунт, клиент, получатель, сообщение) — на перепроверку в конце
 
     for i, name in enumerate(accounts):
         if job.cancel.is_set():
@@ -547,10 +569,20 @@ async def run_single_target_job(job: Job, accounts: list[str], target: str) -> N
             continue
 
         message = text_variants.vary(job.message, name) if _cfg.DM_VARY_TEXT else job.message
+        # метка в конце текста: по ней получатель видит, с какого по счёту аккаунта пришло сообщение
+        message = f"{message}\n\n[тест {i + 1}/{len(accounts)} · акк …{name[-4:]}]"
         stop_reason = "отправлено"
         try:
-            await _human_send(client, entity, message)
-            _mark(job, t, "sent", None, name, peer_id=peer_id)
+            sent_msg = await _human_send(client, entity, message)
+            bad = await _confirm_delivered(client, entity, sent_msg)
+            if bad:
+                _mark(job, t, "failed", bad, name, peer_id=peer_id)
+                if t.send_id:
+                    an.mark_send_blocked(t.send_id, bad)
+                stop_reason = bad
+            else:
+                _mark(job, t, "sent", None, name, peer_id=peer_id)
+                delivered.append((i, name, client, entity, sent_msg))
         except (UserIsBlockedError, UserPrivacyRestrictedError) as e:
             reason = "blocked" if isinstance(e, UserIsBlockedError) else "privacy_restricted"
             _mark(job, t, "skipped", reason, name, peer_id=peer_id)
@@ -574,6 +606,27 @@ async def run_single_target_job(job: Job, accounts: list[str], target: str) -> N
         job.add_log(event="account_finished", account=name, stop_reason=stop_reason)
         if i < len(accounts) - 1:
             await _sleep(random.uniform(DM_DELAY_MIN, DM_DELAY_MAX))
+
+    # Итоговая перепроверка: Telegram мог убрать сообщения уже после первой проверки
+    if delivered and not job.cancel.is_set():
+        _say(f"Перепроверяю доставку через {_cfg.DM_VERIFY_FINAL_S} сек...")
+        await _sleep(_cfg.DM_VERIFY_FINAL_S)
+        for i, name, client, entity, msg in delivered:
+            bad = await _confirm_delivered(client, entity, msg, waits=(0,))
+            if bad:
+                t = job.targets[i]
+                t.status, t.error = "failed", bad
+                job.sent -= 1
+                job.failed += 1
+                if t.send_id:
+                    an.mark_send_blocked(t.send_id, bad)
+                _say(f"✗ [{name}] {bad}")
+        ok = [f"…{n[-4:]} (тест {i + 1}/{len(accounts)})"
+              for i, n, _c, _e, _m in delivered if job.targets[i].status == "sent"]
+        _say(f"ИТОГ: у отправителей на месте {len(ok)} из {len(delivered)} принятых сообщений. "
+             f"Получатель {target} должен увидеть ровно {len(ok)}: " + (", ".join(ok) or "—"))
+        _say("Если у получателя меньше — смотрите в нём «Архив», папку со спамом и настройки приватности "
+             "(Конфиденциальность → Сообщения).")
 
     job.status = "stopped" if job.cancel.is_set() else "done"
     job.finished_at = datetime.now(timezone.utc)

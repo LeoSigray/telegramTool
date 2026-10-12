@@ -144,20 +144,25 @@ _PROFILE_PROMPT = """Ниже описание и посты Telegram-канал
 async def build_profile(client, params, lex: tp.Lexicon, log, use_llm: bool) -> Profile:
     from telethon.tl.functions.channels import GetFullChannelRequest
 
-    ent = await client.get_entity(params.channel)
-    title = getattr(ent, "title", "") or ""
-    about = ""
-    try:
-        full = await client(GetFullChannelRequest(ent))
-        about = full.full_chat.about or ""
-    except Exception as e:  # noqa: BLE001
-        log.warn("профиль", f"не удалось получить описание канала: {e}")
-
     posts: list[str] = []
-    async for m in client.iter_messages(ent, limit=params.profile_posts, wait_time=params.wait_time):
-        if m.message and m.message.strip():
-            posts.append(m.message.strip())
-    log.info("профиль", f"канал «{title}»: описание {len(about)} симв., постов с текстом {len(posts)}")
+    if params.topic:
+        # канала у клиента нет: продукт или ниша своими словами заменяют название и описание
+        title = about = params.topic.strip()
+        log.info("профиль", f"без канала: «{title[:80]}»")
+    else:
+        ent = await client.get_entity(params.channel)
+        title = getattr(ent, "title", "") or ""
+        about = ""
+        try:
+            full = await client(GetFullChannelRequest(ent))
+            about = full.full_chat.about or ""
+        except Exception as e:  # noqa: BLE001
+            log.warn("профиль", f"не удалось получить описание канала: {e}")
+
+        async for m in client.iter_messages(ent, limit=params.profile_posts, wait_time=params.wait_time):
+            if m.message and m.message.strip():
+                posts.append(m.message.strip())
+        log.info("профиль", f"канал «{title}»: описание {len(about)} симв., постов с текстом {len(posts)}")
 
     brief = params.brief_text()
     terms = top_terms(posts + [about, brief], lex.stopwords)
