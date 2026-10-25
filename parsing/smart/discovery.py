@@ -493,10 +493,13 @@ async def _web_candidates(client, queries: list, pool: _Pool, params, store, log
     """Кандидаты из статей: поиск в интернете → @username → чат в Telegram.
     None — поисковик недоступен. Проверяем в Telegram самые советуемые (web_resolves за раунд):
     каждое разрешение имени — запрос к Telegram с жёстким лимитом."""
-    from .websearch import WebFinder
-
     if state.web is None:
-        state.web = WebFinder(store, params, log)
+        if params.source == "youtube":
+            from .youtube import YouTubeFinder
+            state.web = YouTubeFinder(store, params, log)
+        else:
+            from .websearch import WebFinder
+            state.web = WebFinder(store, params, log)
     web = state.web
     for q in queries:
         state.used.add(q.lower())
@@ -522,7 +525,8 @@ async def _web_candidates(client, queries: list, pool: _Pool, params, store, log
             added += 1
         elif getattr(ent, "id", None) in pool.items:
             state.web_by_id[ent.id] = max(state.web_by_id.get(ent.id, 0.0), web.score[name])
-    log.info("источники", f"раунд {state.round}: из статей проверено в Telegram {len(todo)} имён, "
+    where = "из YouTube" if params.source == "youtube" else "из статей"
+    log.info("источники", f"раунд {state.round}: {where} проверено в Telegram {len(todo)} имён, "
                          f"новых чатов/каналов {added}")
     return added
 
@@ -570,7 +574,8 @@ async def discover_round(client, profile, params, store, lex, log, state: Discov
             n_web = await _web_candidates(client, queries, pool, params, store, log, state)
             web_ok = n_web is not None
         if params.web_search and not web_ok:
-            log.warn("источники", "поиск в интернете недоступен — в этом раунде ищем по названиям в Telegram")
+            log.warn("источники", f"{'YouTube' if params.source == 'youtube' else 'поиск в интернете'} "
+                                  "недоступен — в этом раунде ищем по названиям в Telegram")
             from .profile import _fallback_queries
             queries = _fallback_queries(profile, set(state.used), params.queries_per_round)
         # поиск по названиям в Telegram (если поиск в интернете выключен или недоступен)

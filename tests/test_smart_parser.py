@@ -1435,5 +1435,70 @@ class WebSearchTests(unittest.TestCase):
         self.assertTrue(all("телеграм" in q or "telegram" in q for q in qs))
 
 
+class YouTubeSearchTests(unittest.TestCase):
+    """YouTube: ссылки на Telegram из описаний видео, один автор — один голос, без сети."""
+
+    def test_parse_video_and_links(self):
+        from parsing.smart import youtube as yt
+        html = ('{"videoDetails":{"shortDescription":"Мой канал: https://t.me/design_ai\\n'
+                'Чат: t.me/design_ai_chat/15 бот: t.me/helper_bot закрытый: t.me/+AbCdEf",'
+                '"channelId":"UCaaaaaaaaaaaaaaaaaaaaaa","viewCount":"12345"},'
+                '"ownerChannelName":"Анна Дизайн"}')
+        info = yt.parse_video(html)
+        self.assertEqual(info["author"], "Анна Дизайн")
+        self.assertEqual(info["channel_id"], "UCaaaaaaaaaaaaaaaaaaaaaa")
+        self.assertEqual(info["views"], 12345)
+        self.assertEqual(yt.links_in(info["desc"]), ["design_ai", "design_ai_chat"])
+        self.assertEqual(len(yt.INVITE_RE.findall(info["desc"])), 1)
+
+    def test_one_author_one_vote(self):
+        from unittest import mock
+
+        from parsing.smart import youtube as yt
+
+        videos = {"v1": ("UC1", "Автор 1", ["school_chat", "author1"]),
+                  "v2": ("UC1", "Автор 1", ["school_chat"]),
+                  "v3": ("UC2", "Автор 2", ["school_chat"])}
+
+        async def fake_search(self, http, q):
+            return list(videos)
+
+        async def fake_video(self, http, vid):
+            cid, author, links = videos[vid]
+            return {"desc": "", "author": author, "channel_id": cid, "views": 100, "links": links, "invites": 0}
+
+        class Log:
+            def info(self, *a): pass
+            def warn(self, *a): pass
+
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(*_a, **_k):
+            await real_sleep(0)
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(yt.YouTubeFinder, "_search_videos", fake_search), \
+                mock.patch.object(yt.YouTubeFinder, "_video", fake_video), \
+                mock.patch.object(asyncio, "sleep", fast_sleep):
+            st = Store(os.path.join(tmp, "s.db"))
+            f = yt.YouTubeFinder(st, P(channel="@x"), Log())
+            ranked = asyncio.run(f.run(["урок дизайна"]))
+            self.assertEqual(ranked[0], "school_chat")
+            self.assertEqual(f.score["school_chat"], 2.0, "два видео одного автора — один голос")
+            self.assertEqual(f.score["author1"], 1.0)
+            self.assertIn("Автор 1", f.via("school_chat"))
+            st.close()
+
+    def test_yt_queries_fallback_without_llm(self):
+        from parsing.smart.youtube import generate_yt_queries
+
+        class Log:
+            def info(self, *a): pass
+            def warn(self, *a): pass
+        prof = Profile(channel="x", topic_terms=["нейросети", "дизайн"])
+        qs = asyncio.run(generate_yt_queries(prof, False, Log(), set(), 5))
+        self.assertEqual(len(qs), 5)
+        self.assertEqual(len(set(qs)), 5)
+
+
 if __name__ == "__main__":
     unittest.main()

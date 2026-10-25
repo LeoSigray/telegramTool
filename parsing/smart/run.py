@@ -25,6 +25,7 @@ from .members import collect_members
 from .llm_judge import LLMJudge, llm_available, llm_usage
 from .keywords import audience_vocabulary, ground_profile, harvest_terms, product_matcher
 from .websearch import ensure_web_queries, generate_web_queries
+from .youtube import ensure_yt_queries, generate_yt_queries
 from .profile import (Profile, build_profile, ensure_product_keywords, ensure_query_pool, reset_if_outdated,
                       generate_queries)
 from .relevance import try_embedder
@@ -248,9 +249,10 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True) -> str
             changed = True
         if not (params.offline or params.finish) and await ensure_query_pool(profile, use_llm, log, params):
             changed = True
-        if (params.web_search and not (params.offline or params.finish)
-                and await ensure_web_queries(profile, use_llm, log, params)):
-            changed = True
+        if params.web_search and not (params.offline or params.finish):
+            ensure = ensure_yt_queries if params.source == "youtube" else ensure_web_queries
+            if await ensure(profile, use_llm, log, params):
+                changed = True
         if (params.validate and client is not None and not (params.offline or params.finish)
                 and await ground_profile(client, profile, params, log)):
             changed = True
@@ -325,19 +327,22 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True) -> str
         async def take_web_queries() -> list:
             """Порция запросов для поисковика; пул кончился — нейросеть пишет новые."""
             nonlocal refills
-            unused = [q for q in profile.web_queries if q.lower() not in state.used]
+            yt = params.source == "youtube"
+            field_name = "yt_queries" if yt else "web_queries"
+            gen = generate_yt_queries if yt else generate_web_queries
+            unused = [q for q in getattr(profile, field_name) if q.lower() not in state.used]
             if not unused and refills < params.query_refills:
                 refills += 1
                 good = [s.title for s in read if s.y_est > 0][:12]
                 log.info("интернет", f"запросы для поисковика кончились — просим "
                                      f"{params.web_queries_target} новых (догенерация {refills} из "
                                      f"{params.query_refills})")
-                more = await generate_web_queries(profile, use_llm, log,
-                                                  set(state.used) | {q.lower() for q in profile.web_queries},
-                                                  params.web_queries_target, params.languages, good)
-                profile.web_queries = list(profile.web_queries) + more
+                pool_now = getattr(profile, field_name)
+                more = await gen(profile, use_llm, log, set(state.used) | {q.lower() for q in pool_now},
+                                 params.web_queries_target, params.languages, good)
+                setattr(profile, field_name, list(pool_now) + more)
                 profile.save(ppath)
-                unused = [q for q in profile.web_queries if q.lower() not in state.used]
+                unused = [q for q in getattr(profile, field_name) if q.lower() not in state.used]
             return unused[:params.web_queries_per_round]
 
         async def new_round() -> bool:
@@ -581,8 +586,10 @@ def parse_args(argv=None) -> Params:
                    help="порог по PQI запроса (по умолчанию нет); людей по нему можно отсечь")
     p.add_argument("--min-interest", type=float, default=20.0,
                    help="порог по итоговому «Интересу» 0–100 (20; 0 — без порога)")
-    p.add_argument("--title-search", action="store_true",
-                   help="искать чаты по названиям в Telegram, как раньше, а не через статьи в интернете")
+    p.add_argument("--source", choices=["youtube", "web", "title"], default="youtube",
+                   help="где искать чаты: youtube — по обучающим видео (по умолчанию), web — по статьям, "
+                        "title — по названиям в Telegram, как раньше")
+    p.add_argument("--title-search", action="store_true", help="то же, что --source title")
     p.add_argument("--full-read", action="store_true",
                    help="читать чаты целиком, а не точечно по словам товара и фразам покупателя")
     p.add_argument("--no-validate", action="store_true",
@@ -633,7 +640,8 @@ def parse_args(argv=None) -> Params:
                   enrich_top=a.enrich_top, session=a.session, out=a.out,
                   offline=a.offline, finish=a.finish, max_minutes=a.max_minutes, rebuild_profile=a.rebuild_profile, reset_seeds=a.reset_seeds,
                   check_contacted=not a.no_contacted_check, targeted=not a.full_read,
-                  validate=not a.no_validate, web_search=not a.title_search)
+                  validate=not a.no_validate, web_search=not a.title_search and a.source != "title",
+                  source=a.source if a.source != "title" else "youtube")
 
 
 def main(argv=None) -> int:
