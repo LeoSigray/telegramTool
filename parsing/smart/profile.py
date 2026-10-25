@@ -37,6 +37,7 @@ class Profile:
     seller_phrases: list = field(default_factory=list)
     community_queries: list = field(default_factory=list)  # где общаются покупатели (для поиска чатов)
     web_queries: list = field(default_factory=list)        # запросы для поисковика (статьи и подборки чатов)
+    yt_queries: list = field(default_factory=list)         # запросы для YouTube (обучающие видео)
     query_pool: list = field(default_factory=list)         # полный пул запросов запуска (порциями в раундах)
     queries_version: int = 0                               # версия генератора запросов
     product_keywords: list = field(default_factory=list)   # как покупатель называет сам товар/услугу

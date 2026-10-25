@@ -51,7 +51,9 @@ class Params:
     check_cap: int = 60               # сколько кандидатов проверять детально за раунд
     total_check_cap: int = 400        # и за весь запуск (каждый — запрос к Telegram)
     # поиск чатов через интернет (статьи, подборки, форумы) вместо поиска Telegram по названиям
-    web_search: bool = True
+    web_search: bool = True           # искать чаты вне Telegram (False — по названиям в Telegram)
+    source: str = "youtube"           # где искать вне Telegram: youtube (обучающие видео) или web (статьи)
+    yt_videos: int = 12               # видео из выдачи YouTube на один запрос
     web_queries_target: int = 20      # сколько запросов для поисковика нейросеть пишет в начале
     web_queries_per_round: int = 4    # запросов к поисковику за раунд
     web_results: int = 8              # страниц из выдачи на запрос
