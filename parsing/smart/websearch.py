@@ -3,7 +3,11 @@
 Вместо поиска Telegram по названиям («селлеры чат» выдаёт всё подряд, включая мусор):
   1. нейросеть пишет запросы для поисковика в духе «лучшие телеграм-чаты для …»,
      «где общаются … телеграм», «подборка чатов …»;
-  2. DuckDuckGo (бесплатно, без ключа) отдаёт ссылки на статьи и подборки;
+  2. бесплатные поисковики без ключа (Яндекс, Bing, Yahoo, DuckDuckGo через ddgs) отдают ссылки на
+     статьи и подборки. Каждый из них с одного адреса быстро упирается в лимит («No results», 202),
+     поэтому они чередуются: отказавший остывает и не трогается, пока не остынет, а запрос уходит
+     следующему; второй выход в интернет — через прокси аккаунтов. Ссылки t.me прямо из выдачи —
+     уже кандидаты;
   3. со страниц берём ссылки t.me/… (и @упоминания, tgstat), с текстом вокруг;
   4. чат, который советуют несколько разных сайтов, весит больше — это живой отбор людьми.
 Дальше кандидаты идут в обычную проверку (язык, активность, мусор, товар клиента): статья —
@@ -17,6 +21,7 @@ import asyncio
 import os
 import random
 import re
+import time
 import urllib.parse
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -86,7 +91,7 @@ def _domain(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-async def ddg_search(http, query: str, n: int) -> list:
+async def ddg_search(http, query: str, n: int, proxy=None) -> list:
     """Ссылки из выдачи DuckDuckGo (HTML-версия, без ключа)."""
     r = await http.post("https://html.duckduckgo.com/html/", data={"q": query, "kl": "ru-ru"})
     if r.status_code != 200 or "anomaly" in r.text[:5000].lower():
@@ -99,7 +104,7 @@ async def ddg_search(http, query: str, n: int) -> list:
     return urls[:n]
 
 
-async def ddg_lite_search(http, query: str, n: int) -> list:
+async def ddg_lite_search(http, query: str, n: int, proxy=None) -> list:
     r = await http.post("https://lite.duckduckgo.com/lite/", data={"q": query, "kl": "ru-ru"})
     if r.status_code != 200:
         raise WebBlocked(f"DuckDuckGo Lite ответил {r.status_code}")
@@ -111,16 +116,33 @@ async def ddg_lite_search(http, query: str, n: int) -> list:
     return urls[:n]
 
 
-async def ddgs_lib_search(http, query: str, n: int) -> list:
-    """Библиотека ddgs (pip install ddgs): сама перебирает несколько поисковиков."""
-    from ddgs import DDGS
-
-    def go():
-        return [r.get("href") for r in DDGS().text(query, region="ru-ru", max_results=n) if r.get("href")]
-    return await asyncio.to_thread(go)
+class NoResults(Exception):
+    """Поисковик ответил пустой выдачей. С одного адреса это чаще лимит, чем правда, поэтому
+    запрос пробуется у следующего поисковика; пусто у всех — значит, правда пусто."""
 
 
-async def brave_search(http, query: str, n: int) -> list:
+def _ddgs(backend: str):
+    """Один поисковик из библиотеки ddgs (pip install ddgs). Своя функция на каждый движок:
+    так отказ одного не выключает остальные, как было при backend="auto"."""
+    async def search(http, query: str, n: int, proxy: str | None = None) -> list:
+        from ddgs import DDGS
+
+        def go():
+            try:
+                res = DDGS(proxy=proxy, timeout=10).text(query, region="ru-ru", max_results=n, backend=backend)
+            except Exception as e:  # noqa: BLE001
+                if "no results" in str(e).lower():
+                    raise NoResults(backend) from None
+                raise
+            return [r.get("href") for r in res if r.get("href")]
+        urls = await asyncio.to_thread(go)
+        if not urls:
+            raise NoResults(backend)
+        return urls[:n]
+    return search
+
+
+async def brave_search(http, query: str, n: int, proxy=None) -> list:
     """Brave Search API — бесплатный тариф, ключ BRAVE_API_KEY в .env."""
     r = await http.get("https://api.search.brave.com/res/v1/web/search",
                        params={"q": query, "count": min(n, 20), "search_lang": "ru"},
@@ -131,7 +153,7 @@ async def brave_search(http, query: str, n: int) -> list:
     return [x["url"] for x in (r.json().get("web") or {}).get("results", []) if x.get("url")][:n]
 
 
-async def google_cse_search(http, query: str, n: int) -> list:
+async def google_cse_search(http, query: str, n: int, proxy=None) -> list:
     """Google Programmable Search — 100 запросов в день бесплатно, ключи GOOGLE_CSE_KEY и GOOGLE_CSE_CX."""
     r = await http.get("https://www.googleapis.com/customsearch/v1",
                        params={"key": os.getenv("GOOGLE_CSE_KEY", "").strip(),
@@ -142,20 +164,97 @@ async def google_cse_search(http, query: str, n: int) -> list:
     return [x["link"] for x in r.json().get("items", []) if x.get("link")][:n]
 
 
-def search_backends() -> list:
-    """Цепочка поисковиков по надёжности: с ключом (если задан) → ddgs → DuckDuckGo без ключа."""
-    out = []
+def search_proxy() -> str | None:
+    """Второй выход в интернет для поисковиков: WEB_SEARCH_PROXY (socks5://…, off — не нужен),
+    иначе общий SOCKS5-прокси аккаунтов. Поисковики считают лимит по адресу, второй адрес — второй лимит."""
+    raw = os.getenv("WEB_SEARCH_PROXY", "").strip()
+    if raw.lower() in ("off", "no", "0", "none"):
+        return None
+    if not raw:
+        try:
+            from config import load_proxy
+            raw = (load_proxy() or "").strip()
+        except Exception:  # noqa: BLE001 — нет базы проекта (тесты, офлайн): только прямой выход
+            return None
+    return raw if raw.startswith(("socks5://", "socks5h://", "http://", "https://")) else None
+
+
+# Движки по тому, как они отвечают с сервера: Яндекс — стабильнее всех и лучше всех знает рунет;
+# Bing и Yahoo — через раз; DuckDuckGo после пары запросов отвечает капчей (202) — в конце.
+# gap — сколько секунд выжидать между запросами к одному движку с одного адреса.
+FREE_ENGINES = [("Яндекс", "yandex", 4.0), ("Bing", "bing", 5.0), ("Yahoo", "yahoo", 5.0),
+                ("DuckDuckGo", "duckduckgo", 12.0)]
+COOLDOWN_MIN, COOLDOWN_MAX = 60.0, 1800.0     # остывание после отказа: растёт вдвое, до 30 мин
+
+
+class Route:
+    """Поисковик через конкретный выход в интернет (напрямую или через прокси)."""
+
+    def __init__(self, name: str, fn, gap: float, proxy: str | None = None) -> None:
+        self.name, self.fn, self.gap, self.proxy = name, fn, gap, proxy
+        self.label = name + (" (прокси)" if proxy else "")
+        self.cool_until = 0.0
+        self.fails = 0
+        self.last = 0.0
+
+    def ready_at(self) -> float:
+        return max(self.cool_until, self.last + self.gap)
+
+    def ok(self) -> None:
+        self.fails, self.cool_until = 0, 0.0
+
+    def failed(self, soft: bool = False) -> None:
+        """Отказ: остываем, каждый следующий отказ подряд — вдвое дольше. soft — пустая выдача:
+        это может быть и честное «ничего нет», поэтому остываем втрое короче."""
+        self.fails += 1
+        cool = min(COOLDOWN_MAX, COOLDOWN_MIN * 2 ** (self.fails - 1))
+        self.cool_until = time.monotonic() + (cool / 3 if soft else cool)
+
+
+_ROUTES: dict[str, Route] = {}     # состояние живёт в процессе: следующий поиск не наступает на те же лимиты
+
+
+def search_routes() -> list[Route]:
+    """Маршруты по порядку предпочтения: с ключом (если задан) → бесплатные напрямую → они же через прокси."""
+    want: list[tuple] = []
     if os.getenv("GOOGLE_CSE_KEY", "").strip() and os.getenv("GOOGLE_CSE_CX", "").strip():
-        out.append(("Google", google_cse_search))
+        want.append(("Google", google_cse_search, 1.0, None))
     if os.getenv("BRAVE_API_KEY", "").strip():
-        out.append(("Brave", brave_search))
+        want.append(("Brave", brave_search, 1.0, None))
     try:
         import ddgs  # noqa: F401
-        out.append(("ddgs", ddgs_lib_search))
+        free = [(name, _ddgs(backend), gap) for name, backend, gap in FREE_ENGINES]
     except ImportError:
-        pass
-    out += [("DuckDuckGo", ddg_search), ("DuckDuckGo Lite", ddg_lite_search)]
+        free = []
+    proxy = search_proxy()
+    want += [(name, fn, gap, None) for name, fn, gap in free]
+    if proxy:
+        want += [(name, fn, gap, proxy) for name, fn, gap in free]
+    # DuckDuckGo без библиотеки — последняя надежда (только напрямую)
+    want += [("DuckDuckGo HTML", ddg_search, 12.0, None), ("DuckDuckGo Lite", ddg_lite_search, 12.0, None)]
+    out = []
+    for name, fn, gap, px in want:
+        key = name + ("|proxy" if px else "")
+        r = _ROUTES.get(key)
+        if r is None:
+            r = _ROUTES[key] = Route(name, fn, gap, px)
+        r.fn, r.gap, r.proxy = fn, gap, px
+        out.append(r)
     return out
+
+
+async def _fetch_chats(http, url: str) -> dict:
+    """Скачивает страницу (не больше MAX_PAGE) и достаёт из неё чаты."""
+    async with http.stream("GET", url) as r:
+        ctype = r.headers.get("content-type", "")
+        if r.status_code != 200 or not ("html" in ctype or "text" in ctype or not ctype):
+            return {}
+        body = b""
+        async for chunk in r.aiter_bytes():
+            body += chunk
+            if len(body) > MAX_PAGE:
+                break
+        return extract_chats(body.decode(r.encoding or "utf-8", errors="ignore"))
 
 
 class WebFinder:
@@ -167,8 +266,9 @@ class WebFinder:
         self.sites: dict = defaultdict(dict)       # username → {домен: (вес, url, контекст)}
         self.blocked = False
         self.pages_seen: set = set()
-        self.backends = search_backends()
-        self.fails: dict = defaultdict(int)       # поисковик → отказов подряд (2 — больше не берём)
+        self.routes = search_routes()
+        self.engines: dict = defaultdict(int)     # какой поисковик сколько раз ответил
+        self._insecure = None                     # клиент без проверки сертификата — только для страниц
 
     def _cache_get(self, key: str):
         v = self.store.llm_get(key)
@@ -186,29 +286,50 @@ class WebFinder:
         self.store.llm_put(key, data)
 
     async def _search(self, http, q: str) -> list:
+        """Выдача по запросу: первый готовый поисковик; отказал — остывает, запрос уходит следующему.
+        Ни один не ответил — WebBlocked; все ответили «пусто» — пустой список."""
         key = f"web:q:{q.lower()}"
         cached = self._cache_get(key)
         if cached is not None:
             return cached["urls"]
-        last = None
-        for name, fn in self.backends:
-            if self.fails[name] >= 2:
-                continue
-            for attempt in range(2):
-                try:
-                    urls = await fn(http, q, self.params.web_results)
-                    self.fails[name] = 0
-                    self._cache_put(key, {"urls": urls, "engine": name})
-                    await asyncio.sleep(random.uniform(3.0, 6.0))
-                    return urls
-                except Exception as e:  # noqa: BLE001
-                    last = f"{name}: {str(e)[:80]}"
-                    if attempt == 0 and isinstance(e, WebBlocked) and name.startswith("DuckDuckGo"):
-                        await asyncio.sleep(random.uniform(15.0, 25.0))   # временный лимит — ждём
-                        continue
+        last, empty, wait_budget = None, 0, 60.0
+        tried: set = set()
+        while True:
+            now = time.monotonic()
+            todo = [r for r in self.routes if r.label not in tried]
+            if not todo:
+                break
+            # лучший по порядку из не остывающих; его короткую паузу между запросами выжидаем,
+            # а не уходим к худшему поисковику. Остывают все — ждём ближайшего в пределах бюджета
+            warm = [r for r in todo if r.cool_until <= now]
+            r = warm[0] if warm else min(todo, key=lambda x: x.ready_at())
+            pause = r.ready_at() - now
+            if pause > 0:
+                if pause > wait_budget:
                     break
-            self.fails[name] += 1
-            self.log.info("интернет", f"{last} — пробую следующий поисковик")
+                wait_budget -= pause
+                await asyncio.sleep(pause)
+            tried.add(r.label)
+            r.last = time.monotonic()
+            try:
+                urls = await r.fn(http, q, self.params.web_results, proxy=r.proxy)
+            except NoResults:
+                empty += 1
+                r.failed(soft=True)
+                last = f"{r.label}: пусто"
+                continue
+            except Exception as e:  # noqa: BLE001 — капча, 4xx/5xx, таймаут, сеть
+                r.failed()
+                last = f"{r.label}: {str(e)[:80]}"
+                self.log.info("интернет", f"{last} — остывает {int(r.cool_until - time.monotonic())} с, "
+                                          "беру следующий поисковик")
+                continue
+            r.ok()
+            self.engines[r.label] += 1
+            self._cache_put(key, {"urls": urls, "engine": r.label})
+            return urls
+        if empty and empty == len(tried):
+            return []                    # все честно ответили «пусто»: такого запроса просто нет в выдаче
         raise WebBlocked(last or "нет доступных поисковиков")
 
     async def _page(self, http, url: str) -> dict:
@@ -216,22 +337,28 @@ class WebFinder:
         cached = self._cache_get(key)
         if cached is not None:
             return {k: tuple(v) for k, v in cached["chats"].items()}
-        chats: dict = {}
         try:
-            async with http.stream("GET", url) as r:
-                ctype = r.headers.get("content-type", "")
-                if r.status_code == 200 and ("html" in ctype or "text" in ctype or not ctype):
-                    body = b""
-                    async for chunk in r.aiter_bytes():
-                        body += chunk
-                        if len(body) > MAX_PAGE:
-                            break
-                    chats = extract_chats(body.decode(r.encoding or "utf-8", errors="ignore"))
+            chats = await _fetch_chats(http, url)
         except Exception as e:  # noqa: BLE001 — сайт недоступен, таймаут, редиректы
-            self.log.info("интернет", f"{_domain(url)}: страница не скачалась ({str(e)[:60]})")
-            return {}
+            if "CERTIFICATE_VERIFY_FAILED" not in str(e):
+                self.log.info("интернет", f"{_domain(url)}: страница не скачалась ({str(e)[:60]})")
+                return {}
+            # российский сертификат (НУЦ Минцифры) или сайт не отдал промежуточный сертификат.
+            # Страницу только читаем, ничего не отправляем, а найденные в ней чаты всё равно
+            # проверяются в Telegram — поэтому берём её без проверки цепочки
+            try:
+                chats = await _fetch_chats(self._insecure_client(), url)
+            except Exception as e2:  # noqa: BLE001
+                self.log.info("интернет", f"{_domain(url)}: страница не скачалась ({str(e2)[:60]})")
+                return {}
         self._cache_put(key, {"chats": {k: list(v) for k, v in chats.items()}})
         return chats
+
+    def _insecure_client(self):
+        import httpx
+        if self._insecure is None:
+            self._insecure = httpx.AsyncClient(headers=HEADERS, timeout=15, follow_redirects=True, verify=False)
+        return self._insecure
 
     async def run(self, queries: list) -> list:
         """Ищет по запросам, качает страницы, копит очки. Возвращает usernames, которые
@@ -250,6 +377,16 @@ class WebFinder:
                     self.log.warn("интернет", f"поисковик недоступен ({str(e)[:80]}) — поиск по "
                                               "статьям в этом раунде остановлен")
                     break
+                for u in urls:
+                    # поисковик сам нашёл чат: ссылка t.me в выдаче — голос «выдачи», как отдельного сайта
+                    m = TME_RE.search(u) if _domain(u).endswith(("t.me", "telegram.me")) else None
+                    if m and _usable(m.group(1)):
+                        name = _norm(m.group(1))
+                        if "выдача поисковика" not in self.sites[name]:
+                            self.sites[name]["выдача поисковика"] = (W_LINK, u, f"в выдаче по запросу «{q}»")
+                            self.score[name] = sum(v[0] for v in self.sites[name].values())
+                            touched.add(name)
+                            n_links += 1
                 urls = [u for u in urls if u not in self.pages_seen
                         and not _domain(u).endswith(("t.me", "telegram.me", "telegram.org"))]
                 self.pages_seen.update(urls)
@@ -267,9 +404,14 @@ class WebFinder:
                             self.score[name] = sum(v[0] for v in self.sites[name].values())
                             touched.add(name)
                             n_links += 1
+        if self._insecure is not None:
+            await self._insecure.aclose()
+            self._insecure = None
         ranked = sorted(touched, key=lambda n: -self.score[n])
         self.log.info("интернет", f"запросов {len(queries)}, страниц {n_pages}, упоминаний чатов "
                                   f"{n_links}, разных чатов {len(ranked)}"
+                      + (f"; поисковики: " + ", ".join(f"{k} {v}" for k, v in self.engines.items())
+                         if self.engines else "")
                       + ("; чаще всего советуют: " + ", ".join(
                           f"@{n} ({len(self.sites[n])} сайт.)" for n in ranked[:6]) if ranked else ""))
         return ranked

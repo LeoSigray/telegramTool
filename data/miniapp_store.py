@@ -116,7 +116,8 @@ def init_store() -> None:
                 text        TEXT NOT NULL,
                 created_at  TEXT NOT NULL,
                 delivered   INTEGER NOT NULL DEFAULT 0,   -- in: передано оператору
-                read        INTEGER NOT NULL DEFAULT 0    -- out: покупатель прочитал
+                read        INTEGER NOT NULL DEFAULT 0,   -- out: покупатель прочитал
+                op_read     INTEGER NOT NULL DEFAULT 0    -- in: оператор открыл обращение или ответил
             );
             CREATE INDEX IF NOT EXISTS ix_mini_support_user ON mini_support(tg_id, id);
 
@@ -140,9 +141,13 @@ def init_store() -> None:
         for col, kind in (("channel", "TEXT"), ("offer_text", "TEXT"), ("channel_status", "TEXT"),
                           ("channel_error", "TEXT"), ("channel_kind", "TEXT"),
                           ("parse_status", "TEXT"), ("parse_queued_at", "TEXT"),
-                          ("parse_finished_at", "TEXT"), ("parse_runs", "INTEGER NOT NULL DEFAULT 0")):
+                          ("parse_finished_at", "TEXT"), ("parse_runs", "INTEGER NOT NULL DEFAULT 0"),
+                          ("lang", "TEXT")):
             if col not in have:
                 c.execute(f"ALTER TABLE mini_users ADD COLUMN {col} {kind}")
+        if "op_read" not in {r["name"] for r in c.execute("PRAGMA table_info(mini_support)")}:
+            c.execute("ALTER TABLE mini_support ADD COLUMN op_read INTEGER NOT NULL DEFAULT 0")
+            c.execute("UPDATE mini_support SET op_read=1")        # всё, что было до появления панели, уже прочитано
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -167,6 +172,12 @@ def get_user(tg_id: int) -> dict | None:
     with _conn() as c:
         row = c.execute("SELECT * FROM mini_users WHERE tg_id=?", (tg_id,)).fetchone()
         return dict(row) if row else None
+
+
+def set_lang(tg_id: int, lang: str) -> None:
+    """Язык интерфейса покупателя: ru или en. Пока не выбран, поле пустое."""
+    with _conn() as c:
+        c.execute("UPDATE mini_users SET lang=? WHERE tg_id=?", (lang, tg_id))
 
 
 def claim_gift(tg_id: int, amount: int) -> bool:
@@ -241,56 +252,49 @@ def building_channels() -> list[dict]:
 #  Умный парсинг под канал или нишу покупателя и его клиенты
 # ──────────────────────────────────────────────────────────────────────────
 
-def parse_enqueue(tg_id: int) -> None:
-    """Поставить поиск клиентов в очередь (повторный вызов не сбрасывает уже идущий поиск)."""
+def next_search() -> int | None:
+    """Покупатель, у которого нажатий больше, чем найденных людей: для него ищем следующих.
+
+    Поиск запускается только нажатием: нажатие без готового человека — это человек, которого надо найти."""
     with _conn() as c:
-        c.execute("UPDATE mini_users SET parse_status='queued', parse_queued_at=? WHERE tg_id=?"
-                  " AND COALESCE(parse_status,'') NOT IN ('queued','running')", (_now(), tg_id))
+        row = c.execute(
+            "SELECT u.tg_id FROM mini_users u WHERE u.channel_status='ready'"
+            " AND (SELECT COUNT(*) FROM mini_taps t WHERE t.tg_id=u.tg_id AND t.status='queued')"
+            "   > (SELECT COUNT(*) FROM mini_leads l WHERE l.tg_id=u.tg_id AND l.status='new')"
+            " ORDER BY (SELECT MIN(t.id) FROM mini_taps t WHERE t.tg_id=u.tg_id AND t.status='queued')"
+            " LIMIT 1").fetchone()
+        return int(row["tg_id"]) if row else None
 
 
-def parse_claim() -> dict | None:
-    """Берёт из очереди самого раннего покупателя и помечает его «ищем»."""
+def search_need(tg_id: int) -> int:
+    """Сколько людей ещё надо найти: ждущих нажатий минус уже найденные и не тронутые."""
     with _conn() as c:
-        row = c.execute("SELECT * FROM mini_users WHERE parse_status='queued' ORDER BY parse_queued_at LIMIT 1").fetchone()
-        if row is None:
-            return None
-        cur = c.execute("UPDATE mini_users SET parse_status='running' WHERE tg_id=? AND parse_status='queued'",
-                        (row["tg_id"],))
-        return dict(row) if cur.rowcount else None
+        row = c.execute(
+            "SELECT (SELECT COUNT(*) FROM mini_taps WHERE tg_id=? AND status='queued')"
+            " - (SELECT COUNT(*) FROM mini_leads WHERE tg_id=? AND status='new') n", (tg_id, tg_id)).fetchone()
+        return max(0, int(row["n"]))
 
 
-def parse_enqueue_missing() -> int:
-    """Покупатели с готовым каналом или нишей, для которых поиск клиентов ещё ни разу не ставили
-    (подключились до появления умного парсинга в приложении)."""
+def parse_set(tg_id: int, status: str | None) -> None:
+    """Состояние поиска для экрана: running — ищем человека, done/failed — последний поиск закончен."""
     with _conn() as c:
-        return c.execute(
-            "UPDATE mini_users SET parse_status='queued', parse_queued_at=? WHERE channel_status='ready'"
-            " AND parse_status IS NULL", (_now(),)).rowcount
+        if status == "running":
+            c.execute("UPDATE mini_users SET parse_status='running', parse_queued_at=? WHERE tg_id=?", (_now(), tg_id))
+        else:
+            c.execute("UPDATE mini_users SET parse_status=?, parse_finished_at=?, parse_runs=parse_runs+1 WHERE tg_id=?",
+                      (status, _now(), tg_id))
 
 
 def parse_recover() -> int:
-    """После перезапуска сервиса прерванный поиск идёт заново."""
+    """После перезапуска сервиса прерванный поиск помечаем законченным: нажатие в очереди запустит его снова."""
     with _conn() as c:
-        return c.execute("UPDATE mini_users SET parse_status='queued' WHERE parse_status='running'").rowcount
+        return c.execute("UPDATE mini_users SET parse_status='failed' WHERE parse_status='running'").rowcount
 
 
-def parse_finish(tg_id: int, status: str) -> None:
+def known_leads(tg_id: int) -> set[str]:
+    """Все люди, которых уже находили для покупателя (кому писали и кому не получилось)."""
     with _conn() as c:
-        c.execute("UPDATE mini_users SET parse_status=?, parse_finished_at=?, parse_runs=parse_runs+1 WHERE tg_id=?",
-                  (status, _now(), tg_id))
-
-
-def parse_topup_candidates(min_new: int, interval_s: float, max_runs: int) -> list[int]:
-    """Покупатели с балансом, у которых клиенты почти кончились, а прошлый поиск был давно."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=interval_s)).isoformat()
-    with _conn() as c:
-        rows = c.execute(
-            "SELECT u.tg_id FROM mini_users u WHERE u.channel_status='ready' AND u.balance > 0"
-            " AND u.parse_status IN ('done','failed') AND u.parse_runs < ?"
-            " AND COALESCE(u.parse_finished_at,'') < ?"
-            " AND (SELECT COUNT(*) FROM mini_leads l WHERE l.tg_id=u.tg_id AND l.status='new') < ?",
-            (max_runs, cutoff, min_new)).fetchall()
-        return [int(r["tg_id"]) for r in rows]
+        return {r["username"] for r in c.execute("SELECT username FROM mini_leads WHERE tg_id=?", (tg_id,))}
 
 
 def add_leads(tg_id: int, leads: list[dict]) -> int:
@@ -360,6 +364,17 @@ def pending_taps(tg_id: int) -> int:
         return int(row["n"])
 
 
+def transit(tg_id: int) -> list[dict]:
+    """Сообщения «в пути»: нажатия, которые ещё не ушли. stage: search — ищем человека, send — человек найден,
+    сообщение отправляется. Людей находят в порядке нажатий, поэтому «отправляются» самые старые."""
+    with _conn() as c:
+        taps = c.execute("SELECT id, created_at FROM mini_taps WHERE tg_id=? AND status IN ('queued','sending')"
+                         " ORDER BY id", (tg_id,)).fetchall()
+        ready = c.execute("SELECT COUNT(*) n FROM mini_leads WHERE tg_id=? AND status='new'", (tg_id,)).fetchone()["n"]
+    return [{"id": t["id"], "at": t["created_at"], "stage": "send" if i < ready else "search"}
+            for i, t in enumerate(taps)]
+
+
 def sent_total(tg_id: int) -> int:
     with _conn() as c:
         row = c.execute("SELECT COUNT(*) n FROM mini_taps WHERE tg_id=? AND status='sent'", (tg_id,)).fetchone()
@@ -367,9 +382,12 @@ def sent_total(tg_id: int) -> int:
 
 
 def claim_next_tap() -> dict | None:
-    """Берёт самое старое нажатие из очереди и помечает его «отправляется»."""
+    """Берёт самое старое нажатие, для которого человек уже найден, и помечает его «отправляется»."""
     with _conn() as c:
-        row = c.execute("SELECT * FROM mini_taps WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
+        row = c.execute(
+            "SELECT * FROM mini_taps t WHERE t.status='queued'"
+            " AND EXISTS (SELECT 1 FROM mini_leads l WHERE l.tg_id=t.tg_id AND l.status='new')"
+            " ORDER BY t.id LIMIT 1").fetchone()
         if row is None:
             return None
         cur = c.execute("UPDATE mini_taps SET status='sending' WHERE id=? AND status='queued'", (row["id"],))
@@ -403,17 +421,53 @@ def finish_tap(tap_id: int, *, status: str, target: str | None = None,
 
 
 def expired_taps(max_age_s: float) -> list[dict]:
-    """Нажатия, которые слишком долго ждут свободного аккаунта."""
+    """Нажатия, которые слишком долго ждут (свободного аккаунта или поиска человека)."""
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_s)).isoformat()
     with _conn() as c:
         return [dict(r) for r in c.execute(
             "SELECT * FROM mini_taps WHERE status='queued' AND created_at < ?", (cutoff,))]
 
 
-def sending_targets() -> set[str]:
+def oldest_waiting_tap(tg_id: int) -> dict | None:
     with _conn() as c:
-        return {str(r["target"]).lower().lstrip("@") for r in c.execute(
-            "SELECT target FROM mini_taps WHERE status='sending' AND target IS NOT NULL")}
+        row = c.execute("SELECT * FROM mini_taps WHERE tg_id=? AND status='queued' ORDER BY id LIMIT 1",
+                        (tg_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def fail_waiting(tg_id: int, count: int, why: str) -> int:
+    """Нужных людей не нашли: столько же ждущих нажатий не уйдёт, сообщения возвращаются на баланс.
+    Закрываем самые новые: старые дождутся людей, которых уже нашли."""
+    with _conn() as c:
+        ids = [r["id"] for r in c.execute(
+            "SELECT id FROM mini_taps WHERE tg_id=? AND status='queued' ORDER BY id DESC LIMIT ?", (tg_id, count))]
+    return sum(1 for i in ids if finish_tap(i, status="failed", error=why))
+
+
+def newest_queued_tap(tg_id: int) -> int:
+    """Номер самого нового ждущего нажатия (0 — таких нет): граница того, под что идёт текущий поиск."""
+    with _conn() as c:
+        row = c.execute("SELECT COALESCE(MAX(id), 0) n FROM mini_taps WHERE tg_id=? AND status='queued'",
+                        (tg_id,)).fetchone()
+        return int(row["n"])
+
+
+def fail_waiting(tg_id: int, count: int, why: str, upto_id: int | None = None) -> int:
+    """Нужных людей не нашли: столько же ждущих нажатий не уйдёт, сообщения возвращаются на баланс.
+    Закрываем самые новые из тех, под которые шёл поиск (upto_id): старые дождутся найденных людей."""
+    with _conn() as c:
+        ids = [r["id"] for r in c.execute(
+            "SELECT id FROM mini_taps WHERE tg_id=? AND status='queued' AND id<=? ORDER BY id DESC LIMIT ?",
+            (tg_id, upto_id if upto_id is not None else 1 << 62, count))]
+    return sum(1 for i in ids if finish_tap(i, status="failed", error=why))
+
+
+def last_failed_tap(tg_id: int) -> dict | None:
+    """Последнее нажатие, которое не ушло (сообщение вернулось на баланс): экран говорит почему."""
+    with _conn() as c:
+        row = c.execute("SELECT id, error, done_at FROM mini_taps WHERE tg_id=? AND status='failed'"
+                        " ORDER BY id DESC LIMIT 1", (tg_id,)).fetchone()
+        return dict(row) if row else None
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -480,11 +534,12 @@ def inbound_since(last_id: int, limit: int = 200) -> list[dict]:
     """Новые входящие в диалогах покупателей — для уведомлений от бота."""
     with _conn() as c:
         rows = c.execute(
-            "SELECT im.id msg_id, im.text, ic.id conv_id, ic.display_name, ic.username, m.tg_id"
+            "SELECT im.id msg_id, im.text, ic.id conv_id, ic.display_name, ic.username, m.tg_id, u.lang"
             " FROM inbox_messages im"
             " JOIN inbox_conversations ic ON ic.id = im.conversation_id"
             " JOIN sends s ON s.id = ic.first_send_id"
             " JOIN mini_campaigns m ON m.job_id = s.job_id"
+            " LEFT JOIN mini_users u ON u.tg_id = m.tg_id"
             " WHERE im.direction='in' AND im.id > ? ORDER BY im.id LIMIT ?",
             (last_id, limit)).fetchall()
         return [dict(r) for r in rows]
@@ -553,6 +608,50 @@ def support_find_by_operator_msg(op_chat_id: int, op_msg_id: int) -> dict | None
         return dict(row) if row else None
 
 
+def operator_registry() -> list[tuple[str, int]]:
+    """(имя без @ в нижнем регистре, id) операторов, которые уже открывали бота или приложение."""
+    with _conn() as c:
+        return [(str(r["key"]).split(":", 1)[1], int(r["value"])) for r in c.execute(
+            "SELECT key, value FROM mini_state WHERE key LIKE 'operator:%'") if str(r["value"]).isdigit()]
+
+
+def ops_threads(order: str = "new", only_waiting: bool = False, q: str = "", limit: int = 300) -> dict:
+    """Обращения в поддержку по людям: у каждого последнее сообщение и сколько у него непрочитанного.
+
+    order: new — сначала те, кто писал позже всех; old — сначала те, кто писал раньше всех.
+    only_waiting — только те, кому ещё не ответили (последним писал сам человек)."""
+    with _conn() as c:
+        rows = [dict(r) for r in c.execute(
+            "SELECT g.tg_id, u.first_name, u.last_name, u.username, m.id last_id, m.direction last_dir,"
+            "  m.text last_text, m.created_at last_at,"
+            "  (SELECT COUNT(*) FROM mini_support x WHERE x.tg_id=g.tg_id AND x.direction='in' AND x.op_read=0) unread,"
+            "  (SELECT COUNT(*) FROM mini_support x WHERE x.tg_id=g.tg_id) total"
+            " FROM (SELECT tg_id, MAX(id) mid FROM mini_support GROUP BY tg_id) g"
+            " JOIN mini_support m ON m.id = g.mid LEFT JOIN mini_users u ON u.tg_id = g.tg_id")]
+    counts = {"all": len(rows), "waiting": sum(1 for r in rows if r["last_dir"] == "in"),
+              "unread": sum(1 for r in rows if r["unread"])}
+    if only_waiting:
+        rows = [r for r in rows if r["last_dir"] == "in"]
+    needle = (q or "").strip().lower().lstrip("@")
+    if needle:
+        rows = [r for r in rows if needle in " ".join(str(r[k] or "") for k in
+                                                       ("first_name", "last_name", "username", "last_text")).lower()]
+    rows.sort(key=lambda r: r["last_id"], reverse=(order != "old"))
+    return {"threads": rows[:limit], "counts": counts}
+
+
+def ops_unread_threads() -> int:
+    """Сколько людей написали в поддержку, а оператор ещё не открывал их обращение."""
+    with _conn() as c:
+        row = c.execute("SELECT COUNT(DISTINCT tg_id) n FROM mini_support WHERE direction='in' AND op_read=0").fetchone()
+        return int(row["n"])
+
+
+def ops_mark_read(tg_id: int) -> None:
+    with _conn() as c:
+        c.execute("UPDATE mini_support SET op_read=1 WHERE tg_id=? AND direction='in' AND op_read=0", (tg_id,))
+
+
 def operator_ids() -> list[int]:
     """Telegram-аккаунты операторов, которые уже открывали бота (id запоминаем при первом сообщении)."""
     with _conn() as c:
@@ -594,6 +693,28 @@ def mark_paid(payload: str, *, charge_id: str | None) -> dict | None:
         out = dict(row)
         out["status"] = "paid"
         return out
+
+
+def crypto_orders(statuses: tuple, tg_id: int | None = None, hours: float | None = None) -> list[dict]:
+    """Заказы на оплату USDT с нужными статусами (pending, expired…); hours — не старше стольких часов."""
+    q = ("SELECT * FROM mini_payments WHERE method='crypto' AND status IN (%s)" % ",".join("?" * len(statuses)))
+    args: list = list(statuses)
+    if tg_id is not None:
+        q += " AND tg_id=?"
+        args.append(tg_id)
+    if hours is not None:
+        q += " AND created_at >= ?"
+        args.append((datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat())
+    with _conn() as c:
+        return [dict(r) for r in c.execute(q + " ORDER BY id", args)]
+
+
+def crypto_expire(minutes: float) -> int:
+    """Неоплаченные заказы старше срока закрываются (сумму ещё можно засчитать позднему переводу)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    with _conn() as c:
+        return c.execute("UPDATE mini_payments SET status='expired' WHERE method='crypto' AND status='pending'"
+                         " AND created_at < ?", (cutoff,)).rowcount
 
 
 def has_paid(tg_id: int) -> bool:

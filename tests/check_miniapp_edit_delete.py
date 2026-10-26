@@ -123,4 +123,18 @@ now = datetime.now(timezone.utc)
 assert mini._editable_age((now - timedelta(hours=5)).isoformat()) is True
 assert mini._editable_age((now - timedelta(hours=60)).isoformat()) is False
 assert mini._editable_age("мусор") is True
+# кнопка «Перейти в Telegram»: аккаунт-отправитель забанен — отвечать отсюда нельзя
+mini.an.get_account = lambda n: {"status": "dead"} if n == "acc1" else {"status": "active"}
+assert mini._account_banned("acc1") is True and mini._account_banned("other") is False and mini._account_banned(None) is False
+mini.store.conversation_owner = lambda cid: 7
+from fastapi import HTTPException
+try:
+    asyncio.run(mini.reply(1, mini.ReplyIn(text="привет"), {"tg_id": 7}))
+    raise AssertionError("ответ через забаненный аккаунт не должен уходить")
+except HTTPException as e:
+    assert e.status_code == 409 and "Telegram" in e.detail
+info = asyncio.run(mini.chat(1, {"tg_id": 7}))["chat"]
+assert info["tg_url"] == "https://t.me/anna" and info["can_reply"] is False
+mini.an.get_account = lambda n: {"status": "active"}
+assert asyncio.run(mini.chat(1, {"tg_id": 7}))["chat"]["can_reply"] is True
 print("ALL OK")

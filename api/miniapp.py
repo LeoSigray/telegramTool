@@ -22,15 +22,18 @@ import logging
 import os
 import re
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from data import analytics as an
 from data import miniapp_store as store
 from . import miniapp_bot as bot
 from . import miniapp_channel as channel
+from . import miniapp_crypto as crypto
 from . import miniapp_parse as finder
 from . import miniapp_send as sender
 from .inbox_service import EDIT_WINDOW_HOURS, InboxError, delete_message, edit_message, hydrate, send_reply
@@ -40,15 +43,24 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/miniapp", tags=["miniapp"])
 
 GIFT_MESSAGES = int(os.getenv("MINIAPP_GIFT", "10") or 10)
-MAX_PENDING_TAPS = 50      # сколько нажатий может ждать отправки у одного покупателя
+MAX_PENDING_TAPS = 10      # сколько нажатий может ждать у одного покупателя (каждое — поиск человека)
 MIN_TEXT_LEN = 10
 NOTIFY_INTERVAL_SEC = 15
+APP_OPEN_GRACE_SEC = 20        # приложение опрашивает сервер каждые 2–5 с, пока открыто и на экране
+_seen: dict[int, float] = {}   # когда покупатель последний раз обращался из приложения
 
-# Пакеты сообщений. Цены — заглушки, настраиваются в .env (MINIAPP_PACKS, JSON-список).
+
+def app_is_open(tg_id: int) -> bool:
+    """Приложение открыто сейчас: бот не дублирует то, что человек и так видит в нём."""
+    return time.time() - _seen.get(int(tg_id), 0.0) < APP_OPEN_GRACE_SEC
+
+# Пакеты сообщений, около 3 ₽ за сообщение (MINIAPP_PACKS в .env, JSON-список, перекрывает эти цены).
+# Расчёт на 26.10.2026: доллар по ЦБ ≈ 82,85 ₽; покупателю звезда обходится ≈ 1,65 ₽ ($0,0199), значит
+# 3 ₽ ≈ 1,8 звезды; USDT приравниваем к доллару: 3 ₽ ≈ 0,0362 USDT. Цены в stars и usdt пересчитывать вместе.
 DEFAULT_PACKS = [
-    {"id": "p200", "messages": 200, "stars": 350},
-    {"id": "p500", "messages": 500, "stars": 800},
-    {"id": "p1000", "messages": 1000, "stars": 1400, "badge": "Выгоднее"},
+    {"id": "p200", "messages": 200, "stars": 360, "usdt": 7.24},
+    {"id": "p500", "messages": 500, "stars": 900, "usdt": 18.10},
+    {"id": "p1000", "messages": 1000, "stars": 1800, "usdt": 36.20},
 ]
 METHODS = [
     {"id": "stars", "title": "Telegram Stars", "available": True},
@@ -61,7 +73,12 @@ METHODS = [
 def visible_methods() -> list[dict]:
     """Способы оплаты для покупателя. Спрятанные (card, sbp) возвращает MINIAPP_SHOW_METHODS=card,sbp."""
     show = {x.strip() for x in os.getenv("MINIAPP_SHOW_METHODS", "").split(",") if x.strip()}
-    return [{k: v for k, v in m.items() if k != "hidden"} for m in METHODS if not m.get("hidden") or m["id"] in show]
+    out = [{k: v for k, v in m.items() if k != "hidden"} for m in METHODS if not m.get("hidden") or m["id"] in show]
+    for m in out:
+        if m["id"] == "crypto":
+            m["available"] = crypto.enabled()          # без адреса кошелька «Скоро»
+            m["title"] = "Криптовалюта (USDT)" if crypto.enabled() else m["title"]
+    return out
 
 
 def packs() -> list[dict]:
@@ -86,6 +103,7 @@ def current_user(x_telegram_init_data: str = Header(default="")) -> dict:
     except bot.InitDataError as e:
         raise HTTPException(status_code=401, detail=str(e))
     u = data["user"]
+    _seen[int(u["id"])] = time.time()
     return store.upsert_user(int(u["id"]), username=u.get("username"),
                              first_name=u.get("first_name"), last_name=u.get("last_name"))
 
@@ -119,9 +137,10 @@ def static_file(name: str) -> FileResponse:
 # ──────────────────────────────────────────────────────────────────────────
 
 def _leads_view(user: dict) -> dict:
-    """Клиенты покупателя, найденные умным парсингом: сколько ждёт сообщения и идёт ли поиск."""
-    return {"new": store.leads_new(user["tg_id"]),
-            "searching": (user.get("parse_status") or "") in ("queued", "running")}
+    """Поиск человека умным парсингом: идёт ли он сейчас и почему не ушло последнее нажатие."""
+    fail = store.last_failed_tap(user["tg_id"])
+    return {"searching": (user.get("parse_status") or "") == "running",
+            "last_fail": {"id": fail["id"], "error": fail["error"]} if fail else None}
 
 
 def _channel_view(user: dict | None) -> dict | None:
@@ -139,12 +158,15 @@ def me(user: dict = Depends(current_user)) -> dict:
         "user": {"id": tg, "first_name": user["first_name"], "username": user["username"]},
         "balance": user["balance"],
         "gift": {"amount": GIFT_MESSAGES, "claimed": bool(user["gift_claimed"])},
+        "lang": user.get("lang") if user.get("lang") in bot.LANGS else None,
         "channel": _channel_view(user),
         "leads": _leads_view(user),
         "pending": store.pending_taps(tg),
+        "transit": store.transit(tg),
         "sent": store.sent_total(tg),
         "unread": store.unread_total(tg),
         "support_unread": store.support_unread(tg),
+        **({"operator": True, "ops_unread": store.ops_unread_threads()} if _is_operator(user) else {}),
         "has_paid": store.has_paid(tg),
     }
 
@@ -154,6 +176,17 @@ def claim_gift(user: dict = Depends(current_user)) -> dict:
     claimed = store.claim_gift(user["tg_id"], GIFT_MESSAGES)
     fresh = store.get_user(user["tg_id"])
     return {"claimed": claimed, "balance": fresh["balance"]}
+
+
+class LangIn(BaseModel):
+    lang: str = Field(pattern="^(ru|en)$")
+
+
+@router.post("/api/lang")
+def set_lang(body: LangIn, user: dict = Depends(current_user)) -> dict:
+    """Язык интерфейса: покупатель выбирает его при первом входе и может сменить в профиле."""
+    store.set_lang(user["tg_id"], body.lang)
+    return {"lang": body.lang}
 
 
 class ChannelIn(BaseModel):
@@ -199,12 +232,6 @@ async def tap(user: dict = Depends(current_user)) -> dict:
     fresh = store.get_user(tg) or {}
     if fresh.get("channel_status") != "ready" or not (fresh.get("offer_text") or "").strip():
         raise HTTPException(status_code=409, detail="Сначала подключите канал")
-    if store.leads_new(tg) - store.pending_taps(tg) <= 0:
-        if (fresh.get("parse_status") or "") in ("queued", "running"):
-            raise HTTPException(status_code=409, detail="Ищем ваших клиентов. Когда найдём, сообщим.")
-        if int(fresh.get("parse_runs") or 0) < finder.MAX_RUNS:
-            store.parse_enqueue(tg)             # поиск закончился, а клиентов нет: ищем ещё
-        raise HTTPException(status_code=409, detail="Пока не нашли людей под вашу тему. Продолжаем искать, сообщим.")
     if store.pending_taps(tg) >= MAX_PENDING_TAPS:
         raise HTTPException(status_code=429, detail="Подождите: предыдущие сообщения ещё отправляются")
     if not store.reserve(tg, 1):
@@ -247,9 +274,20 @@ async def chat(conv_id: int, user: dict = Depends(current_user)) -> dict:
                          "at": m["sent_at"], "status": m["status"], "via": m["via"],
                          "edited": m["tg_id"] in edited,
                          "can_delete": mine, "can_edit": mine and _editable_age(m["sent_at"])})
+    username = (conv.get("username") or "").lstrip("@")
     return {"chat": {"id": conv_id, "name": conv.get("display_name") or conv.get("username"),
-                     "username": conv.get("username")},
+                     "username": conv.get("username"),
+                     "tg_url": f"https://t.me/{username}" if username else None,
+                     "can_reply": not _account_banned(conv.get("account"))},
             "messages": messages}
+
+
+def _account_banned(account: str | None) -> bool:
+    """Аккаунт, с которого ушло первое сообщение, забанен: отвечать отсюда нельзя, только в самом Telegram."""
+    try:
+        return bool(account) and (an.get_account(account) or {}).get("status") == "dead"
+    except Exception:  # noqa: BLE001 — статус не прочитался: не лишаем человека ответа
+        return False
 
 
 class ReplyIn(BaseModel):
@@ -259,6 +297,9 @@ class ReplyIn(BaseModel):
 @router.post("/api/chats/{conv_id}/reply")
 async def reply(conv_id: int, body: ReplyIn, user: dict = Depends(current_user)) -> dict:
     _own_conversation(conv_id, user)
+    from data import inbox
+    if _account_banned((inbox.get_conversation(conv_id) or {}).get("account")):
+        raise HTTPException(status_code=409, detail="Отсюда ответить нельзя: перейдите в Telegram")
     try:
         await send_reply(conv_id, body.text)
     except InboxError as e:
@@ -315,6 +356,31 @@ def _operator_usernames() -> set[str]:
     return {x.strip().lstrip("@").lower() for x in os.getenv("MINIAPP_OPERATORS", "").split(",") if x.strip()}
 
 
+def _operator_ids() -> list[int]:
+    """Операторы из MINIAPP_OPERATORS, чей id уже известен. Убрали имя из списка — доступ пропал,
+    даже если человек раньше открывал бота."""
+    names = _operator_usernames()
+    return [uid for uname, uid in store.operator_registry() if uname in names]
+
+
+def _is_operator(user: dict) -> bool:
+    """Оператор поддержки: имя в MINIAPP_OPERATORS. Первый вход запоминает его id: имя в Telegram
+    можно сменить, id нет."""
+    uid, uname = int(user["tg_id"]), (user.get("username") or "").lower()
+    if uid in _operator_ids():
+        return True
+    if uname and uname in _operator_usernames() and not store.state_get(f"operator:{uname}"):
+        store.state_set(f"operator:{uname}", str(uid))
+        return True
+    return False
+
+
+def current_operator(user: dict = Depends(current_user)) -> dict:
+    if not _is_operator(user):
+        raise HTTPException(status_code=403, detail="Нет доступа")
+    return user
+
+
 def _support_view(rows: list[dict]) -> list[dict]:
     return [{"id": r["id"], "out": r["direction"] == "in", "text": r["text"], "at": r["created_at"]}
             for r in rows]
@@ -344,7 +410,7 @@ async def write_support(body: SupportIn, user: dict = Depends(current_user)) -> 
 
 async def _deliver_support() -> None:
     """Передаёт операторам новые сообщения покупателей. Что не дошло, уйдёт при следующей попытке."""
-    ops = store.operator_ids()
+    ops = _operator_ids()
     if not ops:
         return
     for m in store.support_undelivered():
@@ -352,7 +418,10 @@ async def _deliver_support() -> None:
         who = f"@{m['username']}" if m["username"] else f"id {m['tg_id']}"
         copies = []
         for op in ops:
-            mid = await bot.deliver(op, f"Поддержка · {name} ({who})\n\n{m['text']}")
+            keyboard = ({"inline_keyboard": [[{"text": "Открыть обращения",
+                                               "web_app": {"url": bot.app_url(f"ops={m['tg_id']}")}}]]}
+                        if bot.public_url() else None)
+            mid = await bot.deliver(op, f"Поддержка · {name} ({who})\n\n{m['text']}", keyboard=keyboard)
             if mid:
                 copies.append((op, mid))
         if copies:
@@ -367,7 +436,7 @@ async def _handle_operator(msg: dict) -> bool:
         return False
     uname = (frm.get("username") or "").lower()
     first_contact = uname in _operator_usernames() and not store.state_get(f"operator:{uname}")
-    if uid not in store.operator_ids() and not first_contact:
+    if uid not in _operator_ids() and not first_contact:
         return False
     if first_contact:           # аккаунт запоминаем по id: дальше имя в Telegram уже ничего не решает
         store.state_set(f"operator:{uname}", str(uid))
@@ -377,16 +446,70 @@ async def _handle_operator(msg: dict) -> bool:
         return True
     text = (msg.get("text") or "").strip()
     reply = msg.get("reply_to_message") or {}
+    if text.startswith("/start"):        # оператор уже открывал приложение, теперь нажал Start в боте
+        await bot.send(chat_id, "Вы подключены как поддержка. Сообщения клиентов будут приходить сюда. "
+                                "Чтобы ответить, ответьте (Reply) на сообщение клиента или откройте обращения в приложении.")
+        await _deliver_support()
+        return True
     if not text:
         return True
     row = store.support_find_by_operator_msg(chat_id, reply["message_id"]) if reply.get("message_id") else None
     if row is None:
         await bot.send(chat_id, "Чтобы ответить клиенту, ответьте (Reply) на его сообщение.")
         return True
-    store.support_add(row["tg_id"], "out", text[:MAX_SUPPORT_LEN])
-    await bot.send(row["tg_id"], bot.support_text(text), button="Открыть", query="support=1")
+    await _support_reply(row["tg_id"], text)
     await bot.send(chat_id, "✓ Ответ отправлен")
     return True
+
+
+async def _support_reply(tg_id: int, text: str) -> None:
+    """Ответ поддержки покупателю: в его чат поддержки; в бот только если приложение у него закрыто."""
+    text = text[:MAX_SUPPORT_LEN]
+    store.support_add(tg_id, "out", text)
+    store.ops_mark_read(tg_id)
+    if not app_is_open(tg_id):
+        lang = bot.lang_of(store.get_user(tg_id))
+        await bot.send(tg_id, bot.support_text(text, lang), button=bot.tx("open", lang), query="support=1")
+
+
+# Панель оператора: все обращения людей, сортировка по времени, ответ прямо в приложении.
+
+def _person(r: dict) -> str:
+    return " ".join(x for x in (r.get("first_name"), r.get("last_name")) if x) or (
+        f"@{r['username']}" if r.get("username") else f"id {r['tg_id']}")
+
+
+@router.get("/api/ops/threads")
+def ops_threads(order: str = "new", filter: str = "all", q: str = "",
+                user: dict = Depends(current_operator)) -> dict:
+    data = store.ops_threads("old" if order == "old" else "new", filter == "waiting", q)
+    return {"threads": [{"id": r["tg_id"], "name": _person(r), "username": r["username"],
+                         "last_text": r["last_text"], "last_at": r["last_at"], "waiting": r["last_dir"] == "in",
+                         "unread": r["unread"], "total": r["total"]} for r in data["threads"]],
+            "counts": data["counts"]}
+
+
+@router.get("/api/ops/threads/{tg_id}")
+def ops_thread(tg_id: int, user: dict = Depends(current_operator)) -> dict:
+    person = store.get_user(tg_id)
+    rows = store.support_messages(tg_id)
+    if person is None or not rows:
+        raise HTTPException(status_code=404, detail="Обращение не найдено")
+    store.ops_mark_read(tg_id)
+    return {"user": {"id": tg_id, "name": _person({**person, "tg_id": tg_id}), "username": person.get("username")},
+            "messages": [{"id": r["id"], "out": r["direction"] == "out", "text": r["text"], "at": r["created_at"]}
+                         for r in rows]}
+
+
+@router.post("/api/ops/threads/{tg_id}/reply")
+async def ops_reply(tg_id: int, body: SupportIn, user: dict = Depends(current_operator)) -> dict:
+    if store.get_user(tg_id) is None or not store.support_messages(tg_id, 1):
+        raise HTTPException(status_code=404, detail="Обращение не найдено")
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", body.text).strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Напишите сообщение")
+    await _support_reply(tg_id, text)
+    return ops_thread(tg_id, user)
 
 
 @router.get("/api/packs")
@@ -404,6 +527,14 @@ async def invoice(body: InvoiceIn, user: dict = Depends(current_user)) -> dict:
     pack = next((p for p in packs() if p["id"] == body.pack_id), None)
     if pack is None:
         raise HTTPException(status_code=404, detail="Пакет не найден")
+    if body.method == "crypto":
+        if not crypto.enabled() or not pack.get("usdt"):
+            raise HTTPException(status_code=400, detail="Этот способ оплаты пока недоступен")
+        try:
+            return crypto.create_invoice(user["tg_id"], pack)
+        except RuntimeError as e:
+            log.warning("[miniapp] заказ USDT не создан: %s", e)
+            raise HTTPException(status_code=503, detail="Не удалось создать счёт, попробуйте позже")
     if body.method != "stars":
         raise HTTPException(status_code=400, detail="Этот способ оплаты пока недоступен")
     payload = "mini-" + secrets.token_hex(12)
@@ -418,6 +549,28 @@ async def invoice(body: InvoiceIn, user: dict = Depends(current_user)) -> dict:
         log.warning("[miniapp] счёт не создан: %s", e)
         raise HTTPException(status_code=502, detail="Не удалось создать счёт, попробуйте ещё раз")
     return {"link": link, "payload": payload}
+
+
+@router.get("/api/invoice/{payload}")
+def invoice_status(payload: str, user: dict = Depends(current_user)) -> dict:
+    """Оплачен ли заказ USDT: приложение спрашивает, пока человек переводит деньги."""
+    res = crypto.status(user["tg_id"], payload)
+    if res is None:
+        raise HTTPException(status_code=404, detail="Заказ не найден")
+    return res
+
+
+async def _crypto_notify(kind: str, data: dict) -> None:
+    """Результат проверки переводов: покупателю — «оплата получена», операторам — перевод без заказа."""
+    if kind == "paid":
+        if not app_is_open(data["tg_id"]):
+            lang = bot.lang_of(store.get_user(data["tg_id"]))
+            await bot.send(data["tg_id"], bot.paid_text(data["messages"], lang), button=bot.tx("open", lang))
+        return
+    text = (f"Перевод USDT без заказа: {data['amount']} USDT\nотправитель {data.get('from')}\n"
+            f"транзакция {data.get('transaction_id')}\nСумма не совпала ни с одним заказом: начислить можно вручную.")
+    for op in _operator_ids():
+        await bot.send(op, text)
 
 
 @router.get("/api/payments")
@@ -449,8 +602,14 @@ async def _handle_update(update: dict) -> None:
         ok = pay is not None and pay["status"] == "pending"
         params = {"pre_checkout_query_id": pcq["id"], "ok": ok}
         if not ok:
-            params["error_message"] = "Счёт устарел, создайте новый в приложении"
+            lang = bot.lang_of(store.get_user(pcq["from"]["id"]) if pcq.get("from") else None)
+            params["error_message"] = bot.tx("stale_invoice", lang)
         await bot.call("answerPreCheckoutQuery", **params)
+        return
+
+    cq = update.get("callback_query")
+    if cq:
+        await _handle_lang_choice(cq)
         return
 
     msg = update.get("message") or {}
@@ -464,17 +623,66 @@ async def _handle_update(update: dict) -> None:
         res = store.mark_paid(paid.get("invoice_payload", ""),
                               charge_id=paid.get("telegram_payment_charge_id"))
         if res:
-            await bot.send(chat_id, bot.paid_text(res["messages"]), button="Открыть")
+            lang = bot.lang_of(store.get_user(res["tg_id"]))
+            await bot.send(chat_id, bot.paid_text(res["messages"], lang), button=bot.tx("open", lang))
         return
     # Любое сообщение боту (в том числе /start) — приветствие с кнопкой приложения:
     # всё общение с покупателем идёт в самом Mini App.
     if (msg.get("text") or "").strip():
-        await bot.send(chat_id, bot.WELCOME, button="Открыть приложение")
+        frm = msg.get("from") or {}
+        user = store.upsert_user(int(frm.get("id") or chat_id), username=frm.get("username"),
+                                 first_name=frm.get("first_name"), last_name=frm.get("last_name"))
+        if user.get("lang") not in bot.LANGS:       # первый разговор с ботом: сначала выбор языка
+            await bot.send(chat_id, bot.LANG_PROMPT, keyboard=bot.lang_keyboard())
+            return
+        lang = bot.lang_of(user)
+        await bot.send(chat_id, bot.tx("welcome", lang), button=bot.tx("open_app", lang))
+
+
+async def _handle_lang_choice(cq: dict) -> None:
+    """Нажата кнопка «1 Русский» или «2 English» под вопросом о языке."""
+    lang = (cq.get("data") or "").removeprefix("lang:")
+    frm, msg = cq.get("from") or {}, cq.get("message") or {}
+    try:
+        await bot.call("answerCallbackQuery", callback_query_id=cq["id"])
+    except Exception:  # noqa: BLE001 — кнопка отвечает и без этого
+        pass
+    if lang not in bot.LANGS or not frm.get("id"):
+        return
+    store.upsert_user(int(frm["id"]), username=frm.get("username"), first_name=frm.get("first_name"),
+                      last_name=frm.get("last_name"))
+    store.set_lang(int(frm["id"]), lang)
+    chat_id = (msg.get("chat") or {}).get("id") or frm["id"]
+    if msg.get("message_id"):
+        try:
+            await bot.call("deleteMessage", chat_id=chat_id, message_id=msg["message_id"])
+        except Exception:  # noqa: BLE001
+            pass
+    await bot.send(chat_id, bot.tx("welcome", lang), button=bot.tx("open_app", lang))
 
 
 # ──────────────────────────────────────────────────────────────────────────
 #  Уведомления об ответах
 # ──────────────────────────────────────────────────────────────────────────
+
+async def _notify_replies(cursor: int) -> int:
+    """Новые сообщения от людей: бот пишет покупателю, только если приложение у него закрыто."""
+    rows = store.inbound_since(cursor)
+    notified: set[tuple[int, int]] = set()
+    for r in rows:
+        cursor = max(cursor, r["msg_id"])
+        key = (r["tg_id"], r["conv_id"])
+        if key in notified or app_is_open(r["tg_id"]):
+            continue
+        notified.add(key)
+        lang = bot.lang_of(r)
+        who = r["display_name"] or (f"@{r['username']}" if r["username"] else None)
+        await bot.send(r["tg_id"], bot.reply_text(who, r["text"], lang),
+                       button=bot.tx("reply_button", lang), query=f"chat={r['conv_id']}")
+    if rows:
+        store.state_set("notify_cursor", str(cursor))
+    return cursor
+
 
 async def _notify_loop() -> None:
     cursor_raw = store.state_get("notify_cursor")
@@ -483,18 +691,7 @@ async def _notify_loop() -> None:
     while True:
         try:
             await asyncio.sleep(NOTIFY_INTERVAL_SEC)
-            rows = store.inbound_since(cursor)
-            notified: set[tuple[int, int]] = set()
-            for r in rows:
-                cursor = max(cursor, r["msg_id"])
-                key = (r["tg_id"], r["conv_id"])
-                if key in notified:
-                    continue
-                notified.add(key)
-                await bot.send(r["tg_id"], bot.reply_text(r["display_name"] or r["username"], r["text"]),
-                               button="Ответить", query=f"chat={r['conv_id']}")
-            if rows:
-                store.state_set("notify_cursor", str(cursor))
+            cursor = await _notify_replies(cursor)
             await _deliver_support()
         except asyncio.CancelledError:
             raise
@@ -505,10 +702,11 @@ async def _notify_loop() -> None:
 _notify_task: asyncio.Task | None = None
 _tap_task: asyncio.Task | None = None
 _parse_task: asyncio.Task | None = None
+_crypto_task: asyncio.Task | None = None
 
 
 async def startup() -> None:
-    global _notify_task, _tap_task, _parse_task
+    global _notify_task, _tap_task, _parse_task, _crypto_task
     store.init_store()
     if not bot.bot_token():
         log.info("[miniapp] MINIAPP_BOT_TOKEN не задан — Mini App выключено")
@@ -517,13 +715,14 @@ async def startup() -> None:
     _notify_task = asyncio.create_task(_notify_loop())
     _tap_task = asyncio.create_task(sender.worker_loop())
     _parse_task = asyncio.create_task(finder.worker_loop())
+    _crypto_task = asyncio.create_task(crypto.loop(_crypto_notify))
     resumed = channel.resume_pending()
     if resumed:
         log.info("[miniapp] заново читаем каналы после перезапуска: %d", resumed)
 
 
 async def shutdown() -> None:
-    for t in (_notify_task, _tap_task, _parse_task):
+    for t in (_notify_task, _tap_task, _parse_task, _crypto_task):
         if t is not None:
             t.cancel()
     await bot.close()

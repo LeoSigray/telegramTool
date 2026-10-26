@@ -101,6 +101,23 @@ h1.title{margin:4px 4px 16px;font-size:34px;line-height:41px;font-weight:700;let
 .tab svg{width:24px;height:24px}
 .tab span{font-size:12px;line-height:14px;font-weight:600}
 .tab.on{background:var(--blue-soft);color:var(--blue)}
+.sect{display:flex;align-items:center;gap:9px;margin:2px 4px 9px;font-size:13px;line-height:16px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--ink2)}
+.transit{margin-bottom:20px}
+.tr-row{display:flex;align-items:center;gap:14px;min-height:72px;border-bottom:1px solid var(--line);overflow:hidden}
+.tr-row:last-child{border-bottom:0}
+.ghost{background-color:var(--muted-bg);background-image:linear-gradient(100deg,transparent 30%,rgba(120,170,255,.32) 50%,transparent 70%);background-size:220% 100%;animation:shimmer 1.5s linear infinite}
+@keyframes shimmer{from{background-position:200% 0}to{background-position:-120% 0}}
+.tr-ava{flex:none;width:48px;height:48px;border-radius:50%}
+.tr-bar{display:block;height:13px;width:52%;border-radius:7px;margin:3px 0 9px}
+.tr-row .pv{display:block}
+.tr-row .meta{gap:4px;max-width:42%;text-align:right}
+.tr-row .tm{display:flex;align-items:center;gap:4px}
+.tr-row .tm svg{width:14px;height:14px}
+.tr-row .st{font-size:12px;font-weight:600;color:var(--blue)}
+.badge.tr{margin-left:-25px;background:var(--card);color:var(--blue);box-shadow:inset 0 0 0 1.5px var(--blue);animation:trpulse 1.6s ease-in-out infinite}
+.badge.tr.bump{animation:trbump .5s ease-out}
+@keyframes trpulse{50%{box-shadow:inset 0 0 0 1.5px var(--blue),0 0 0 4px rgba(10,124,255,.18)}}
+@keyframes trbump{40%{transform:scale(1.5)}100%{transform:scale(1)}}
 .badge{position:absolute;top:3px;left:50%;margin-left:6px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--blue);color:#fff;font-size:12px;line-height:18px;font-weight:600;text-align:center}
 
 /* Списки */
@@ -169,9 +186,17 @@ textarea:focus{border-color:var(--blue)}
 .pack.on{border:2px solid var(--blue);background:var(--blue-soft)}
 .pack b{font-size:28px;line-height:32px;font-weight:700}
 .pack small{font-size:13px;color:var(--ink2)}
-.pack .price{margin-top:8px;display:flex;align-items:center;justify-content:center;gap:6px;font-size:17px;font-weight:600}
+.pack .price{margin-top:8px;display:flex;align-items:center;justify-content:center;gap:6px;font-size:17px;font-weight:600;white-space:nowrap}
+.pack .price.usdt{font-size:15px}
 .star{width:20px;height:20px;flex:none}
 .pack .tag{position:absolute;top:-11px;left:50%;transform:translateX(-50%);height:22px;padding:0 10px;border-radius:11px;background:var(--ok);color:#fff;font-size:12px;line-height:22px;font-weight:600;white-space:nowrap}
+.cryptobox{margin-top:16px;padding:16px}
+.cryptobox .k{font-size:13px;color:var(--ink2)}
+.copyrow{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;margin-top:6px;padding:12px 14px;border:1px dashed var(--blue);border-radius:16px;background:var(--blue-soft);color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+.copyrow b{min-width:0;font-size:20px;line-height:24px;font-weight:700;word-break:break-all}
+.copyrow.addr b{font-size:15px;line-height:20px;font-weight:600}
+.copyrow span{flex:none;font-size:13px;font-weight:600;color:var(--blue)}
+.note.warn{margin-top:12px;padding:12px 14px;border-radius:14px;background:var(--bad-bg);color:var(--bad)}
 .label{margin:22px 0 10px;font-size:15px;color:var(--ink2)}
 .method{display:flex;align-items:center;justify-content:space-between;height:56px;border-bottom:1px solid var(--line);cursor:pointer}
 .method:last-child{border-bottom:0}
@@ -203,19 +228,22 @@ textarea:focus{border-color:var(--blue)}
 .kv span{color:var(--ink2);font-size:15px;flex:none}
 .kv b{min-width:0;flex:1;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kv i{flex:none;display:flex;color:var(--ink3)}
-.plus{position:fixed;z-index:6;pointer-events:none;font-size:34px;font-weight:700;color:var(--blue);text-shadow:0 2px 10px var(--shadow);animation:plus .8s ease-out forwards}
-@keyframes plus{from{opacity:1;transform:translate(-50%,-50%)}to{opacity:0;transform:translate(-50%,-190%)}}
+.fly{position:fixed;left:0;top:0;z-index:7;pointer-events:none;width:34px;height:30px;margin:-15px 0 0 -17px;color:var(--blue);filter:drop-shadow(0 4px 8px var(--shadow));will-change:transform,opacity}
+.fly svg{display:block;width:100%;height:100%}
+.tab.pop svg{animation:tabpop .45s ease-out}
+@keyframes tabpop{40%{transform:scale(1.3)}100%{transform:scale(1)}}
 .orb-wrap{touch-action:manipulation;-webkit-user-select:none;user-select:none}
 .orb-wrap:disabled{cursor:default}
-@media (prefers-reduced-motion:reduce){.plus{animation:none;opacity:0}.spin{animation-duration:2s}}
+@media (prefers-reduced-motion:reduce){.tab.pop svg{animation:none}.spin{animation-duration:2s}}
 
-/* Переписка: окно подбирает высоту под сообщения, поле ввода идёт сразу под ними */
-#chat,#supportScreen{z-index:6;overflow:hidden;background:linear-gradient(180deg,var(--bg1) 0%,var(--bg2) 100%);
-  padding:calc(var(--safe-top) + 8px) 16px calc(var(--safe-bottom) + 16px)}
-.chat-card{display:flex;flex-direction:column;max-height:100%;padding:14px 14px 12px;border-radius:28px}
-.chat-head{flex:none;display:flex;align-items:center;gap:12px;margin:0 4px 8px}
+/* Переписка как в обычном мессенджере: шапка сверху, поле ввода внизу, сообщения прижаты к полю ввода */
+#chat,#supportScreen,#opsScreen,#opsThread{z-index:6;overflow:hidden;padding:0;background:linear-gradient(180deg,var(--bg1) 0%,var(--bg2) 100%)}
+.chat-card{display:flex;flex-direction:column;height:100%}
+.chat-head{flex:none;display:flex;align-items:center;gap:12px;padding:calc(var(--safe-top) + 10px) 16px 10px;
+  background:var(--glass);-webkit-backdrop-filter:blur(24px) saturate(180%);backdrop-filter:blur(24px) saturate(180%);border-bottom:1px solid var(--line)}
 .chat-head .ava{width:40px;height:40px;font-size:15px}
-.msgs{display:flex;flex-direction:column;gap:10px;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:4px 0 14px}
+.msgs{flex:1;display:flex;flex-direction:column;gap:10px;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 12px 12px}
+.msgs > :first-child{margin-top:auto}
 .mrow{display:flex;flex-direction:column;align-items:flex-start;align-self:flex-start;gap:3px;max-width:82%}
 .mrow.out{align-items:flex-end;align-self:flex-end}
 .msg{max-width:100%;padding:10px 14px;border-radius:20px 20px 20px 6px;background:var(--bubble-in);border:1px solid var(--bubble-in-b);white-space:pre-wrap;word-break:break-word;font-size:17px;line-height:23px}
@@ -225,7 +253,7 @@ textarea:focus{border-color:var(--blue)}
 .msg.fail{opacity:.6}
 .mt{padding:0 6px;font-size:12px;line-height:16px;color:var(--ink2)}
 .mt.bad{color:var(--bad)}
-.editbar{flex:none;display:flex;align-items:center;gap:10px;margin:0 2px 8px;padding:8px 8px 8px 12px;border-radius:16px;background:var(--blue-soft)}
+.editbar{flex:none;display:flex;align-items:center;gap:10px;margin:0 10px 8px;padding:8px 8px 8px 12px;border-radius:16px;background:var(--blue-soft)}
 .editbar .eb{min-width:0;flex:1;border-left:3px solid var(--blue);padding-left:10px}
 .editbar b{display:block;font-size:13px;line-height:16px;color:var(--blue)}
 .editbar span{display:block;font-size:15px;line-height:20px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -236,11 +264,43 @@ textarea:focus{border-color:var(--blue)}
 .menu button{display:flex;align-items:center;gap:12px;width:100%;height:46px;padding:0 14px;border:0;border-radius:14px;background:none;font-size:17px;font-weight:600;color:var(--ink);text-align:left;cursor:pointer}
 .menu button:active{background:var(--blue-soft)}
 .menu button.danger{color:var(--bad)}
-.composer{flex:none;min-height:52px;border-radius:26px;padding:4px 4px 4px 16px;display:flex;align-items:flex-end;gap:8px;background:var(--card);border:1px solid var(--card-b)}
-.composer textarea{min-height:44px;max-height:140px;border:0;background:none;padding:10px 0;resize:none;border-radius:0}
+.composer{flex:none;display:flex;align-items:flex-end;gap:8px;padding:8px 10px calc(var(--safe-bottom) + 8px);
+  background:var(--glass);-webkit-backdrop-filter:blur(24px) saturate(180%);backdrop-filter:blur(24px) saturate(180%);border-top:1px solid var(--line)}
+.composer textarea{flex:1;min-height:44px;max-height:140px;border:1px solid var(--card-b);background:var(--card);padding:10px 16px;resize:none;border-radius:22px}
 .send{flex:none;width:44px;height:44px;border-radius:50%;border:0;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer}
 .send:disabled{background:var(--blue-soft);color:var(--blue)}
+.tgtop{flex:none;white-space:nowrap;display:flex;align-items:center;gap:6px;height:36px;padding:0 12px 0 10px;border:0;border-radius:18px;background:var(--blue-soft);color:var(--blue);font:inherit;font-size:14px;line-height:16px;font-weight:600;text-align:left;cursor:pointer}
+.tgtop svg{flex:none;width:18px;height:18px}
+.tgtop:active{opacity:.7}
+.tgonly{flex:1;display:flex;flex-direction:column;gap:8px}
+.tgonly p{margin:0;padding:0 6px;font-size:13px;line-height:17px;color:var(--ink2);text-align:center}
+.tgwide{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;height:48px;border:0;border-radius:24px;background:var(--blue);color:#fff;font:inherit;font-size:17px;font-weight:600;cursor:pointer}
+.tgwide:disabled{opacity:.5;cursor:default}
+.composer .tgonly{display:none}
+.composer.only-tg textarea,.composer.only-tg .send{display:none}
+.composer.only-tg .tgonly{display:flex}
 
+.backbtn{flex:none;width:36px;height:36px;margin-left:-8px;border:0;border-radius:50%;background:none;color:var(--blue);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.ops-tools{flex:none;display:flex;flex-direction:column;gap:8px;padding:10px 12px 10px;border-bottom:1px solid var(--line);background:var(--glass)}
+.ops-tools .seg button{height:36px;font-size:14px}
+.ops-tools .chips{display:flex;gap:8px}
+.chip{flex:none;height:32px;padding:0 13px;border-radius:16px;border:1px solid var(--line);background:var(--card);color:var(--ink2);font:inherit;font-size:14px;font-weight:600;cursor:pointer}
+.chip.on{background:var(--blue-soft);border-color:transparent;color:var(--blue)}
+.ops-search{display:block;width:100%;height:40px;border-radius:14px;border:1px solid var(--card-b);background:var(--card);color:var(--ink);font:inherit;font-size:16px;padding:0 14px;outline:none}
+.ops-search:focus{border-color:var(--blue)}
+.ops-list{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:10px 12px calc(var(--safe-bottom) + 12px)}
+.ops-list .row{min-height:76px}
+.ops-list .row .sub{max-width:100%}
+.cnt{min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:var(--blue);color:#fff;font-size:12px;line-height:20px;font-weight:700;text-align:center}
+.pill.wait{background:var(--blue-soft);color:var(--blue)}
+.langscreen{position:fixed;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;padding:24px;
+  background:linear-gradient(180deg,var(--bg1) 0%,var(--bg2) 100%)}
+.lang-card{width:100%;max-width:360px;display:flex;flex-direction:column;align-items:stretch;gap:12px;text-align:center}
+.lang-card svg{align-self:center}
+.lang-card h2{margin:12px 0 12px;font-size:28px;line-height:34px;font-weight:700}
+.lang-card h2 small{display:block;margin-top:6px;font-size:17px;line-height:22px;font-weight:500;color:var(--ink2)}
+.lang-btn{height:60px;justify-content:flex-start;gap:16px;padding:0 22px;font-size:19px;color:var(--ink);background:var(--card);border:1px solid var(--card-b);border-radius:20px}
+.lang-btn b{width:28px;height:28px;border-radius:50%;background:var(--blue-soft);color:var(--blue);display:flex;align-items:center;justify-content:center;font-size:15px}
 .toast{position:fixed;z-index:20;left:50%;top:calc(var(--safe-top) + 12px);transform:translate(-50%,-140%);transition:transform .3s;max-width:calc(100% - 32px);
   padding:12px 18px;border-radius:22px;font-size:15px;font-weight:600;text-align:center}
 .toast.on{transform:translate(-50%,0)}
@@ -266,27 +326,30 @@ textarea:focus{border-color:var(--blue)}
 </main>
 
 <main id="chats" class="screen" hidden>
-  <h1 class="title">Чаты</h1>
-  <div id="chFilter" class="seg" role="radiogroup" aria-label="Какие диалоги показывать" style="margin-bottom:14px"></div>
+  <h1 class="title" data-t="Чаты">Чаты</h1>
+  <div id="transit" class="transit" hidden></div>
+  <div id="dlgHead" class="sect" hidden><span data-t="Диалоги">Диалоги</span></div>
+  <div id="chFilter" class="seg" role="radiogroup" aria-label="Какие диалоги показывать" data-ta="Какие диалоги показывать" style="margin-bottom:14px"></div>
   <div id="chatList"></div>
 </main>
 
 <main id="profile" class="screen" hidden>
-  <h1 class="title">Профиль</h1>
+  <h1 class="title" data-t="Профиль">Профиль</h1>
   <div id="profileBody"></div>
 </main>
 
 <main id="chat" class="screen" hidden>
-  <div class="chat-card glass">
+  <div class="chat-card">
     <div class="chat-head" id="chatHead"></div>
     <div class="msgs" id="msgs"></div>
     <div id="editBar" class="editbar" hidden>
-      <div class="eb"><b>Изменение сообщения</b><span id="editText"></span></div>
-      <button id="editCancel" type="button" aria-label="Отменить изменение"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      <div class="eb"><b data-t="Изменение сообщения">Изменение сообщения</b><span id="editText"></span></div>
+      <button id="editCancel" type="button" aria-label="Отменить изменение" data-ta="Отменить изменение"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>
     <div id="composer" class="composer">
-      <textarea id="replyText" rows="1" placeholder="Сообщение" aria-label="Сообщение"></textarea>
-      <button id="sendBtn" class="send" type="button" aria-label="Отправить" disabled>
+      <div id="tgOnly" class="tgonly"><p id="tgNote"></p><button id="tgOnlyBtn" class="tgwide" type="button"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.4 3.3 2.9 10.5c-.9.4-.9 1.2-.2 1.4l4.7 1.5 1.8 5.6c.2.6.4.8.9.8.4 0 .6-.2.9-.5l2.2-2.2 4.6 3.4c.8.5 1.5.2 1.7-.8l3-14.3c.3-1.2-.4-1.8-1.1-1.5zM8.6 13.4l9.4-5.9c.4-.3.8-.1.5.2l-7.8 7-.3 3.4z"/></svg><span data-t="Перейти в Telegram">Перейти в Telegram</span></button></div>
+      <textarea id="replyText" rows="1" placeholder="Сообщение" aria-label="Сообщение" data-tp="Сообщение" data-ta="Сообщение"></textarea>
+      <button id="sendBtn" class="send" type="button" aria-label="Отправить" data-ta="Отправить" disabled>
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
       </button>
     </div>
@@ -294,15 +357,42 @@ textarea:focus{border-color:var(--blue)}
 </main>
 
 <main id="supportScreen" class="screen" hidden>
-  <div class="chat-card glass">
+  <div class="chat-card">
     <div class="chat-head">
       <span class="ava" style="color:var(--blue)"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7"/><circle cx="12" cy="17" r=".6" fill="currentColor"/></svg></span>
-      <span class="grow"><span class="name" style="display:block">Поддержка</span><span class="sub" style="display:block">Ответим здесь, в приложении</span></span>
+      <span class="grow"><span class="name" style="display:block" data-t="Поддержка">Поддержка</span><span class="sub" style="display:block" data-t="Ответим здесь, в приложении">Ответим здесь, в приложении</span></span>
     </div>
     <div class="msgs" id="supMsgs"></div>
     <div id="supComposer" class="composer">
-      <textarea id="supReply" rows="1" placeholder="Сообщение" aria-label="Сообщение в поддержку"></textarea>
-      <button id="supSend" class="send" type="button" aria-label="Отправить" disabled>
+      <textarea id="supReply" rows="1" placeholder="Сообщение" aria-label="Сообщение в поддержку" data-tp="Сообщение" data-ta="Сообщение в поддержку"></textarea>
+      <button id="supSend" class="send" type="button" aria-label="Отправить" data-ta="Отправить" disabled>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
+      </button>
+    </div>
+  </div>
+</main>
+
+<main id="opsScreen" class="screen" hidden>
+  <div class="chat-card">
+    <div class="chat-head">
+      <span class="grow"><span class="name" style="display:block">Обращения клиентов</span><span class="sub" id="opsSub" style="display:block"></span></span>
+    </div>
+    <div class="ops-tools">
+      <div class="seg" id="opsOrder" role="radiogroup" aria-label="Порядок по времени"></div>
+      <div class="chips" id="opsFilter"></div>
+      <input class="ops-search" id="opsSearch" type="search" placeholder="Поиск по имени, @нику, тексту" aria-label="Поиск" autocomplete="off">
+    </div>
+    <div class="ops-list" id="opsList"></div>
+  </div>
+</main>
+
+<main id="opsThread" class="screen" hidden>
+  <div class="chat-card">
+    <div class="chat-head" id="opsHead"></div>
+    <div class="msgs" id="opsMsgs"></div>
+    <div class="composer">
+      <textarea id="opsReply" rows="1" placeholder="Ответ клиенту" aria-label="Ответ клиенту"></textarea>
+      <button id="opsSend" class="send" type="button" aria-label="Отправить" disabled>
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
       </button>
     </div>
@@ -312,15 +402,15 @@ textarea:focus{border-color:var(--blue)}
 <nav class="tabs glass" id="tabs">
   <button class="tab on" data-tab="home" type="button">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3L10 14"/><path d="M21 3l-7 18-4-7-7-4 18-7z"/></svg>
-    <span>Рассылка</span>
+    <span data-t="Рассылка">Рассылка</span>
   </button>
   <button class="tab" data-tab="chats" type="button">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>
-    <span>Чаты</span><b id="unread" class="badge" hidden></b>
+    <span data-t="Чаты">Чаты</span><b id="unread" class="badge" hidden></b><b id="trBadge" class="badge tr" hidden></b>
   </button>
   <button class="tab" data-tab="profile" type="button">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/></svg>
-    <span>Профиль</span><b id="unreadSupport" class="badge" hidden></b>
+    <span data-t="Профиль">Профиль</span><b id="unreadSupport" class="badge" hidden></b>
   </button>
 </nav>
 
@@ -334,7 +424,15 @@ textarea:focus{border-color:var(--blue)}
   <div class="gift"><svg width="50" height="50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 0 1 0 5"/></svg></div>
   <h2 id="giftTitle">10 сообщений в подарок</h2>
   <p id="giftText">Попробуйте рассылку без оплаты: отправьте до 10 сообщений.</p>
-  <button id="giftBtn" class="btn primary" type="button">Получить</button>
+  <button id="giftBtn" class="btn primary" type="button" data-t="Получить">Получить</button>
+</section>
+<section id="langScreen" class="langscreen" role="dialog" aria-modal="true" hidden>
+  <div class="lang-card">
+    <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.5"/><path d="M2.5 12h19M12 2.5c2.6 2.6 4 5.8 4 9.5s-1.4 6.9-4 9.5c-2.6-2.6-4-5.8-4-9.5s1.4-6.9 4-9.5z"/></svg>
+    <h2>Выберите язык<small>Choose your language</small></h2>
+    <button class="btn soft lang-btn" type="button" data-lang="ru"><b>1</b>Русский</button>
+    <button class="btn soft lang-btn" type="button" data-lang="en"><b>2</b>English</button>
+  </div>
 </section>
 <div id="menuCatch" class="menu-catch" hidden></div>
 <div id="msgMenu" class="menu" role="menu" hidden></div>
@@ -346,9 +444,194 @@ const tg = window.Telegram && window.Telegram.WebApp;
 const DEMO = !tg || !tg.initData;
 const NATIVE_BTN = !DEMO && !!(tg && tg.MainButton);
 const $ = (id) => document.getElementById(id);
+/* ── Язык интерфейса ─────────────────────────────────────────────── */
+const EN = {
+"Клиент в один клик": "Client in One Click",
+"Чаты": "Chats",
+"Профиль": "Profile",
+"Рассылка": "Outreach",
+"Поддержка": "Support",
+"Сообщение": "Message",
+"Какие диалоги показывать": "Which chats to show",
+"Изменение сообщения": "Editing message",
+"Отменить изменение": "Cancel editing",
+"Отправить": "Send",
+"Ответим здесь, в приложении": "We reply here in the app",
+"Сообщение в поддержку": "Message to support",
+"Получить": "Get it",
+"{n} {w} в подарок": "{n} {w} as a gift",
+"Попробуйте рассылку без оплаты: отправьте до {n} {w}.": "Try it without paying: send up to {n} {w}.",
+"Вчера": "Yesterday",
+"В пути": "In transit",
+"Перейти в Telegram": "Open in Telegram",
+"Ответить нельзя": "Can't reply",
+"Откроется ваш Telegram: вы напишете человеку со своего аккаунта, а не с того, с которого шла рассылка.": "This opens your own Telegram: you will message them from your account, not the one used for the mailing.",
+"Откроется ваш Telegram: вы напишете человеку со своего аккаунта, а не с того, с которого шла рассылка. Продолжить?": "This opens your own Telegram: you will message them from your account, not the one used for the mailing. Continue?",
+"Диалоги": "Dialogs",
+"сейчас": "now",
+"{n} мин": "{n} min",
+"Ищем человека": "Finding someone",
+"Отправляем": "Sending",
+"Что-то пошло не так, попробуйте ещё раз": "Something went wrong, please try again",
+"Осталось {a} из {b}": "{a} of {b} left",
+"Сообщения закончились": "You are out of messages",
+"Что продвигаем?": "What do you promote?",
+"Рассказать, что вы продвигаете": "Tell us what you promote",
+"Укажите канал, продукт или нишу: остальное сделаем сами": "Give us a channel, product or niche and we do the rest",
+"Готовим текст…": "Preparing text…",
+"Читаем канал…": "Reading channel…",
+"Готовим текст": "Preparing text",
+"Читаем канал": "Reading channel",
+"Это займёт около минуты": "This takes about a minute",
+"Пополнить баланс": "Top up balance",
+"Пополните баланс, чтобы продолжить": "Top up to continue",
+"Отправить одно сообщение": "Send one message",
+"Отправлено {n} · ответы в «Чатах»": "Sent {n} · replies are in “Chats”",
+"Нажмите: найдём человека под вашу тему и напишем ему": "Tap: we will find a person for your topic and message them",
+"Ищем человека под вашу тему… в очереди {n}": "Finding a person for your topic… {n} in queue",
+"Отправляем… в очереди {n}": "Sending… {n} in queue",
+"Не получилось, попробуйте ещё раз": "Something failed, please try again",
+"Что вы продвигаете?": "What do you promote?",
+"Канал, продукт или ниша": "Channel, product or niche",
+"Пришлите ссылку на канал или @имя. Или коротко напишите, чем занимаетесь, например «маникюр в Москве». Остальное сделаем сами и подготовим текст сообщения.": "Send a channel link or @name. Or briefly say what you do, for example “manicure in London”. We will do the rest and prepare the message text.",
+"Продолжить": "Continue",
+"Пишем текст сообщения. Обычно это около минуты. Окно можно закрыть, мы продолжим.": "We are writing the message text. It usually takes about a minute. You can close this window, we will keep going.",
+"Закрыть": "Close",
+"Готово": "Done",
+"Так увидят ваше сообщение люди:": "This is how people will see your message:",
+"Изменить текст": "Edit text",
+"Начать": "Start",
+"Текст сообщения": "Message text",
+"Нужно хотя бы {n} символов.": "At least {n} characters are needed.",
+"Сохранить": "Save",
+"Пополнить": "Top up",
+"Способ оплаты": "Payment method",
+"Скоро": "Soon",
+"Оплатить {n} USDT": "Pay {n} USDT",
+"Оплата USDT": "Pay with USDT",
+"Криптовалюта (USDT)": "Crypto (USDT)",
+"Отправьте ровно эту сумму в сети TRON ({net}). Сообщения начислятся сами, обычно за 1–3 минуты.": "Send exactly this amount on the TRON network ({net}). Messages are credited automatically, usually within 1–3 minutes.",
+"Сумма": "Amount",
+"Адрес кошелька": "Wallet address",
+"Копировать": "Copy",
+"Скопировано": "Copied",
+"Важно: сумма должна совпасть до последнего знака, иначе платёж не найдётся автоматически. Только USDT и только сеть TRC20: перевод в другой сети будет потерян.": "Important: the amount must match to the last digit, otherwise the payment will not be found automatically. USDT on the TRC20 network only: a transfer on another network will be lost.",
+"Счёт действует ещё {n} мин": "This invoice is valid for {n} more min",
+"Проверить оплату": "Check payment",
+"Перевода пока не видно. Обычно это 1–3 минуты": "No transfer yet. It usually takes 1–3 minutes",
+"{x} появится позже": "{x} will be available later",
+"Оплатить {n} {w}": "Pay {n} {w}",
+"Оплачено! Сообщения уже на балансе": "Paid! The messages are on your balance",
+"Проверяем оплату. Можно закрыть — мы напишем": "Checking the payment. You can close this, we will message you",
+"Оплата не прошла. Попробуйте ещё раз": "Payment failed. Please try again",
+"Все": "All",
+"Ответили": "Replied",
+"Ответов пока нет": "No replies yet",
+"Они появятся здесь, когда кто-то ответит.": "They will appear here when someone replies.",
+"Пока никому не писали": "No messages sent yet",
+"Нажмите на большую кнопку: отправленные сообщения и ответы появятся здесь.": "Tap the big button: sent messages and replies will appear here.",
+"Без имени": "No name",
+"Вы: ": "You: ",
+"Ответил": "Replied",
+"изменено": "edited",
+"не отправлено": "not sent",
+"Действия с сообщением": "Message actions",
+"Диалог": "Chat",
+"Изменить": "Edit",
+"Удалить": "Delete",
+"Удалить сообщение? Оно исчезнет и у собеседника.": "Delete the message? It will disappear for the other person too.",
+"Сообщение удалено": "Message deleted",
+"Сохранить изменения": "Save changes",
+"Сообщение изменено": "Message edited",
+"Здравствуйте! Напишите, чем помочь, и мы ответим здесь.": "Hello! Tell us how we can help and we will reply here.",
+"Вы": "You",
+"Баланс": "Balance",
+"Ниша": "Niche",
+"Канал": "Channel",
+"Текст": "Text",
+"Продвигаем": "Promoting",
+"Готовим…": "Preparing…",
+"Указать": "Set",
+"История платежей": "Payment history",
+"Оплачено": "Paid",
+"Не прошла": "Failed",
+"Платежей пока нет": "No payments yet",
+"Тема": "Theme",
+"Тема оформления": "Theme",
+"Авто": "Auto",
+"Светлая": "Light",
+"Тёмная": "Dark",
+"Язык": "Language",
+"Не нашли подходящего человека": "No suitable person found",
+"Поиск не удался": "Search failed",
+"Сейчас не получилось отправить": "Could not send right now",
+"Сообщение не ушло": "The message was not sent",
+"{x}. Сообщение вернули на баланс": "{x}. The message was returned to your balance",
+"Откройте приложение заново из бота": "Open the app again from the bot",
+"Готово. Нажмите на кнопку, чтобы отправить первое сообщение": "Done. Tap the button to send your first message",
+"Выгоднее": "Best value",
+"Криптовалюта": "Cryptocurrency",
+"Банковская карта": "Bank card",
+"СБП": "SBP",
+"Не найдено": "Not found",
+"Сначала подключите канал": "Set your channel first",
+"Напишите сообщение": "Write a message",
+"Диалог не найден": "Chat not found",
+"Подождите: предыдущие сообщения ещё отправляются": "Wait: the previous messages are still being sent",
+"Сообщения закончились. Пополните баланс.": "You are out of messages. Top up your balance.",
+"Пакет не найден": "Pack not found",
+"Этот способ оплаты пока недоступен": "This payment method is not available yet",
+"Не удалось создать счёт, попробуйте ещё раз": "Could not create the invoice, please try again",
+"Не похоже на канал. Пришлите ссылку вида t.me/имя или @имя": "That does not look like a channel. Send a link like t.me/name or @name",
+"Напишите, что вы продвигаете: канал, продукт или нишу": "Say what you promote: a channel, product or niche",
+"Напишите чуть подробнее: канал, продукт или нишу": "Add a bit more detail: a channel, product or niche",
+"Сейчас не получается прочитать канал. Попробуйте через несколько минут": "Cannot read the channel right now. Try again in a few minutes",
+"Telegram просит подождать. Попробуйте через минуту": "Telegram asks to wait. Try again in a minute",
+"Не нашли такой канал. Проверьте имя: канал должен быть открытым": "Channel not found. Check the name: the channel must be public",
+"Это не канал. Пришлите ссылку на ваш канал или группу": "That is not a channel. Send a link to your channel or group",
+"Уже читаем, подождите немного": "Already working on it, please wait",
+"Не получилось прочитать канал. Попробуйте ещё раз": "Could not read the channel. Please try again",
+"не нашли подходящего человека": "No suitable person found",
+"некому отправить": "No suitable person found",
+"поиск не удался": "Search failed",
+"нет свободного аккаунта": "Could not send right now",
+"сессия устарела, откройте приложение заново": "Session expired, open the app again",
+"нет initData": "Open the app from Telegram",
+"подпись не сходится": "Open the app again from the bot",
+"сообщение не найдено": "Message not found",
+"диалог не найден": "Chat not found",
+"пустое сообщение": "Empty message",
+"сообщение можно изменить только в течение двух суток после отправки": "A message can only be edited within two days of sending",
+"аккаунт, с которого ушло сообщение, сейчас не в сети. Попробуйте позже": "The account that sent the message is offline right now. Try again later",
+"это сообщение не отправилось, с ним ничего сделать нельзя": "This message was not sent, nothing can be done with it"
+};
+const EN_RE = [
+  [/^Напишите сообщение подлиннее \(от (\d+) символов\)$/, (m) => `Write a longer message (at least ${m[1]} characters)`],
+  [/^Не удалось (отправить|изменить|удалить): (.*)$/, (m) => `Could not ${{отправить: "send", изменить: "edit", удалить: "delete"}[m[1]]}: ${t(m[2])}`],
+  [/^это сообщение уже нельзя (изменить|удалить)$/, (m) => `This message can no longer be ${m[1] === "изменить" ? "edited" : "deleted"}`],
+  [/^Telegram просит подождать (\d+) с, попробуйте позже$/, (m) => `Telegram asks to wait ${m[1]} s, try again later`],
+];
+let LANG = "ru";
+function t(s, v) {
+  let out = LANG === "en" && EN[s] !== undefined ? EN[s] : s;
+  if (LANG === "en" && EN[s] === undefined) {
+    for (const [re, fn] of EN_RE) { const m = re.exec(s); if (m) { out = fn(m); break; } }
+  }
+  return v ? out.replace(/\{(\w+)\}/g, (_, k) => (v[k] !== undefined ? v[k] : "")) : out;
+}
+const LOC = () => (LANG === "en" ? "en-GB" : "ru-RU");
+function applyLang() {
+  document.documentElement.lang = LANG;
+  document.title = t("Клиент в один клик");
+  document.querySelectorAll("[data-t]").forEach((el) => { el.textContent = t(el.dataset.t); });
+  document.querySelectorAll("[data-tp]").forEach((el) => { el.placeholder = t(el.dataset.tp); });
+  document.querySelectorAll("[data-ta]").forEach((el) => { el.setAttribute("aria-label", t(el.dataset.ta)); });
+}
 const S = {me: null, tab: "home", chats: [], chFilter: "all", chatId: null, packs: null, layer: null, chan: null, topup: null, inflight: 0};
 
 const ICON = {
+  inbox: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13l3-8h12l3 8"/><path d="M3 13v5a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5h-5l-1.5 2h-5L8 13z"/></svg>',
+  back: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>',
   send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3L10 14"/><path d="M21 3l-7 18-4-7-7-4 18-7z"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><path d="M12 7.5v9M7.5 12h9"/></svg>',
   gift: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5C10 3 12 8 12 8s2-5 4.5-5a2.5 2.5 0 0 1 0 5"/></svg>',
@@ -369,29 +652,30 @@ const ICON = {
   help: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7"/><circle cx="12" cy="17" r=".6" fill="currentColor"/></svg>'
 };
 const STAR = '<svg class="star" aria-hidden="true"><use href="#star"/></svg>';
-const STARS = ["звезду", "звезды", "звёзд"];
+const STARS = {ru: ["звезду", "звезды", "звёзд"], en: ["star", "stars"]};
 const METHOD_ICON = {stars: '<svg class="star" style="width:26px;height:26px" aria-hidden="true"><use href="#star"/></svg>', card: ICON.card, crypto: ICON.coin, sbp: ICON.grid};
 
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 }
 function plural(n, forms) {
-  const a = Math.abs(n) % 100, b = a % 10;
-  if (a > 10 && a < 20) return forms[2];
-  if (b > 1 && b < 5) return forms[1];
-  if (b === 1) return forms[0];
-  return forms[2];
+  if (LANG === "en") return Math.abs(n) === 1 ? forms.en[0] : forms.en[1];
+  const f = forms.ru, a = Math.abs(n) % 100, b = a % 10;
+  if (a > 10 && a < 20) return f[2];
+  if (b > 1 && b < 5) return f[1];
+  if (b === 1) return f[0];
+  return f[2];
 }
-const MSG = ["сообщение", "сообщения", "сообщений"];
-const fmt = (n) => Number(n || 0).toLocaleString("ru-RU");
+const MSG = {ru: ["сообщение", "сообщения", "сообщений"], en: ["message", "messages"]};
+const fmt = (n) => Number(n || 0).toLocaleString(LOC());
 function when(iso) {
   if (!iso) return "";
   const d = new Date(iso), now = new Date();
   const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const diff = Math.round((day(now) - day(d)) / 86400000);
-  if (diff === 0) return d.toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit"});
-  if (diff === 1) return "Вчера";
-  return d.toLocaleDateString("ru-RU", {day: "numeric", month: "short"});
+  if (diff === 0) return d.toLocaleTimeString(LOC(), {hour: "2-digit", minute: "2-digit"});
+  if (diff === 1) return t("Вчера");
+  return d.toLocaleDateString(LOC(), {day: "numeric", month: "short"});
 }
 function initials(name) {
   const p = String(name || "?").replace(/^@/, "").trim().split(/\s+/);
@@ -426,7 +710,7 @@ async function api(path, method, body) {
   let data = null;
   try { data = await res.json(); } catch (e) { data = null; }
   if (!res.ok) {
-    const err = new Error((data && typeof data.detail === "string" && data.detail) || "Что-то пошло не так, попробуйте ещё раз");
+    const err = new Error(t((data && typeof data.detail === "string" && data.detail) || "Что-то пошло не так, попробуйте ещё раз"));
     err.status = res.status;
     err.data = data;
     throw err;
@@ -442,12 +726,12 @@ function renderHome() {
   if (!me) return;
   const plaque = $("plaque"), orb = $("orb"), hint = $("hint");
   const gift = me.gift.amount, ch = me.channel, bal = shownBalance(), pend = shownPending();
-  const leads = me.leads || {new: 0, searching: false}, free = leads.new - pend;
+  const leads = me.leads || {searching: false};
   plaque.className = "plaque";
   if (bal > 0) {
     const giftMode = !me.has_paid && bal <= gift;
     if (giftMode) {
-      const label = bal >= gift ? `${gift} ${plural(gift, MSG)}` : `Осталось ${bal} из ${gift}`;
+      const label = bal >= gift ? `${gift} ${plural(gift, MSG)}` : t("Осталось {a} из {b}", {a: bal, b: gift});
       plaque.innerHTML = `<div class="txt"><span style="color:var(--blue);display:flex">${ICON.gift}</span>${label}</div><div class="bar"><i style="width:${Math.round(bal / gift * 100)}%"></i></div>`;
     } else {
       plaque.classList.add("single");
@@ -455,7 +739,7 @@ function renderHome() {
     }
   } else {
     plaque.classList.add("off");
-    plaque.innerHTML = `<div class="txt">${ICON.check}Сообщения закончились</div><div class="bar"></div>`;
+    plaque.innerHTML = `<div class="txt">${ICON.check}${t("Сообщения закончились")}</div><div class="bar"></div>`;
   }
   const blue = (icon, label, aria) => {
     orb.innerHTML = `<span class="orb-halo"></span><span class="orb"><span class="in">${icon}<span class="lbl">${label}</span></span></span>`;
@@ -464,66 +748,87 @@ function renderHome() {
   orb.disabled = false;
   if (!ch || ch.status === "failed") {
     S.orbMode = "channel";
-    blue(ICON.link, "Что продвигаем?", "Рассказать, что вы продвигаете");
-    hint.textContent = ch && ch.error ? ch.error : "Укажите канал, продукт или нишу: остальное сделаем сами";
+    blue(ICON.link, t("Что продвигаем?"), t("Рассказать, что вы продвигаете"));
+    hint.textContent = ch && ch.error ? t(ch.error) : t("Укажите канал, продукт или нишу: остальное сделаем сами");
   } else if (ch.status === "building") {
     S.orbMode = "wait";
     orb.disabled = true;
-    orb.innerHTML = `<span class="orb gray"><span class="in"><span class="spin" style="margin:0"></span><span class="lbl">${ch.kind === "topic" ? "Готовим текст…" : "Читаем канал…"}</span></span></span>`;
-    orb.setAttribute("aria-label", ch.kind === "topic" ? "Готовим текст" : "Читаем канал");
-    hint.textContent = "Это займёт около минуты";
-  } else if (bal > 0 && free <= 0) {
-    // сообщения есть, но людей пока нет: умный парсинг ещё ищет клиентов под тему покупателя
-    S.orbMode = "wait";
-    orb.disabled = true;
-    orb.innerHTML = `<span class="orb gray"><span class="in"><span class="spin" style="margin:0"></span><span class="lbl">Ищем клиентов…</span></span></span>`;
-    orb.setAttribute("aria-label", "Ищем клиентов");
-    hint.textContent = pend > 0 && !leads.searching ? `Отправляем… в очереди ${pend}`
-      : leads.searching ? "Подбираем людей под вашу тему. Это может занять до часа, мы напишем, когда найдём."
-      : "Пока не нашли людей под вашу тему. Продолжаем искать, мы напишем.";
+    orb.innerHTML = `<span class="orb gray"><span class="in"><span class="spin" style="margin:0"></span><span class="lbl">${t(ch.kind === "topic" ? "Готовим текст…" : "Читаем канал…")}</span></span></span>`;
+    orb.setAttribute("aria-label", t(ch.kind === "topic" ? "Готовим текст" : "Читаем канал"));
+    hint.textContent = t("Это займёт около минуты");
   } else if (bal <= 0) {
     S.orbMode = "topup";
-    orb.innerHTML = `<span class="orb-halo" style="border-color:rgba(100,120,150,.2)"></span><span class="orb gray"><span class="in">${ICON.plus}<span class="lbl">Пополнить баланс</span></span></span>`;
-    orb.setAttribute("aria-label", "Пополнить баланс");
-    hint.textContent = pend > 0 ? `Отправляем… в очереди ${pend}` : (me.gift.claimed ? "Пополните баланс, чтобы продолжить" : "");
+    orb.innerHTML = `<span class="orb-halo" style="border-color:rgba(100,120,150,.2)"></span><span class="orb gray"><span class="in">${ICON.plus}<span class="lbl">${t("Пополнить баланс")}</span></span></span>`;
+    orb.setAttribute("aria-label", t("Пополнить баланс"));
+    hint.textContent = pend > 0 ? waitHint(pend, leads) : (me.gift.claimed ? t("Пополните баланс, чтобы продолжить") : "");
   } else {
     S.orbMode = "send";
-    blue(ICON.send, "Отправить", "Отправить одно сообщение");
-    hint.textContent = pend > 0 ? `Отправляем… в очереди ${pend}`
-      : me.sent ? `Отправлено ${fmt(me.sent)} · клиентов ждёт ${fmt(free)}` : `Нашли клиентов: ${fmt(free)}. Каждое нажатие отправляет одно сообщение`;
+    blue(ICON.send, t("Отправить"), t("Отправить одно сообщение"));
+    hint.textContent = pend > 0 ? waitHint(pend, leads)
+      : me.sent ? t("Отправлено {n} · ответы в «Чатах»", {n: fmt(me.sent)}) : t("Нажмите: найдём человека под вашу тему и напишем ему");
   }
+}
+
+function waitHint(pend, leads) {
+  // каждое нажатие — поиск одного человека умным парсингом, потом отправка
+  return leads.searching ? t("Ищем человека под вашу тему… в очереди {n}", {n: pend}) : t("Отправляем… в очереди {n}", {n: pend});
 }
 
 $("orb").addEventListener("click", (ev) => {
   if (!S.me) return;
   if (S.orbMode === "channel") { hap("medium"); openChannel(); }
   else if (S.orbMode === "topup") { hap("medium"); openTopup(); }
-  else if (S.orbMode === "send") tapSend(ev);
+  else if (S.orbMode === "send") tapSend();
 });
 
-function floatPlus(ev) {
-  // «+1» вылетает из точки нажатия, как в играх-кликерах
-  const r = $("orb").getBoundingClientRect();
+/* Что вылетает из кнопки при нажатии: пузырь сообщения; позже сюда можно добавить монетку со звоном */
+const FLY_ITEMS = {
+  bubble: '<svg viewBox="0 0 34 30" aria-hidden="true"><path d="M7 1h20a6 6 0 0 1 6 6v10a6 6 0 0 1-6 6H18l-8 6v-6H7a6 6 0 0 1-6-6V7a6 6 0 0 1 6-6z" fill="currentColor"/><path d="M9 9h16M9 15h10" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>',
+};
+const FLY_STYLE = "bubble";
+
+function flyToChats() {
+  // маленький пузырь вылетает из кнопки, делает дугу и улетает во вкладку «Чаты»
+  const tab = document.querySelector('.tab[data-tab="chats"]');
+  const target = tab && tab.querySelector("svg");
+  if (!target) return;
+  const pop = () => { tab.classList.remove("pop"); void tab.offsetWidth; tab.classList.add("pop"); };
+  const reduced = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduced || !document.body.animate) { pop(); return; }
+  const o = $("orb").getBoundingClientRect(), d = target.getBoundingClientRect();
+  const sx = o.left + o.width / 2, sy = o.top + o.height / 2;
+  const ex = d.left + d.width / 2, ey = d.top + d.height / 2;
+  const jx = (Math.random() - 0.5) * 50;                       // чтобы подряд летящие пузыри не слипались
+  const topX = sx + (ex - sx) * 0.25 + jx, topY = Math.min(sy, ey) - o.height * 0.55;
+  const midX = sx + (ex - sx) * 0.7 + jx * 0.4, midY = (topY + ey) / 2;
   const el = document.createElement("span");
-  el.className = "plus";
-  el.textContent = "+1";
-  el.style.left = (ev && ev.clientX ? ev.clientX : r.left + r.width / 2) + "px";
-  el.style.top = (ev && ev.clientY ? ev.clientY : r.top + r.height / 2) + "px";
+  el.className = "fly";
+  el.innerHTML = FLY_ITEMS[FLY_STYLE];
   document.body.appendChild(el);
-  el.addEventListener("animationend", () => el.remove());
-  setTimeout(() => el.remove(), 1200);
+  const at = (x, y, sc, rot) => `translate(${x}px,${y}px) scale(${sc}) rotate(${rot}deg)`;
+  const anim = el.animate([
+    {transform: at(sx, sy, 0.3, -8), opacity: 0, offset: 0},
+    {transform: at(topX, topY, 1.15, -4), opacity: 1, offset: 0.3, easing: "cubic-bezier(.4,0,.9,.6)"},
+    {transform: at(midX, midY, 0.85, 6), opacity: 1, offset: 0.7},
+    {transform: at(ex, ey, 0.3, 10), opacity: 0.9, offset: 1},
+  ], {duration: 800, easing: "cubic-bezier(.3,.1,.5,1)", fill: "forwards"});
+  const done = () => { el.remove(); pop(); };
+  anim.addEventListener("finish", done);
+  anim.addEventListener("cancel", () => el.remove());
+  setTimeout(() => { if (el.isConnected) done(); }, 1500);
 }
-async function tapSend(ev) {
+async function tapSend() {
   if (shownBalance() <= 0) return;
   hap("light");
   S.inflight += 1;               // показываем результат нажатия сразу, сервер подтвердит следом
-  floatPlus(ev);
+  flyToChats();
   renderHome();
   try {
     const r = await api("tap", "POST");
     S.me.balance = r.balance;        // остальные ещё не дошедшие нажатия вычитает shownBalance()
     S.me.pending = r.pending;
     S.me.sent = r.sent;
+    refreshMe();                     // «в пути» появится в Чатах сразу
   } catch (e) {
     hap("error");
     toast(e.message);
@@ -545,8 +850,8 @@ function confirmBox(text) {
 function maybeGift() {
   const me = S.me;
   if (!me || me.gift.claimed) return;
-  $("giftTitle").textContent = `${me.gift.amount} ${plural(me.gift.amount, MSG)} в подарок`;
-  $("giftText").textContent = `Попробуйте рассылку без оплаты: отправьте до ${me.gift.amount} ${plural(me.gift.amount, MSG)}.`;
+  $("giftTitle").textContent = t("{n} {w} в подарок", {n: me.gift.amount, w: plural(me.gift.amount, MSG)});
+  $("giftText").textContent = t("Попробуйте рассылку без оплаты: отправьте до {n} {w}.", {n: me.gift.amount, w: plural(me.gift.amount, MSG)});
   $("scrim").classList.add("on");
   $("gift").classList.add("on");
 }
@@ -632,7 +937,7 @@ async function pollChannel() {
     const ch = S.me.channel;
     if (!ch || ch.status === "building") continue;
     if (ch.status === "ready") { hap("success"); C.stage = "ready"; C.text = ch.text; }
-    else { hap("error"); C.stage = "input"; C.required = true; C.error = ch.error || "Не получилось, попробуйте ещё раз"; }
+    else { hap("error"); C.stage = "input"; C.required = true; C.error = t(ch.error || "Не получилось, попробуйте ещё раз"); }
     renderChannel();
     renderHome();
   }
@@ -674,35 +979,35 @@ async function saveText() {
 function renderChannel() {
   const C = S.chan, body = $("sheetBody"), topic = S.me.channel && S.me.channel.kind === "topic";
   if (C.stage === "input") {
-    body.innerHTML = `<h2>Что вы продвигаете?</h2>
+    body.innerHTML = `<h2>${t("Что вы продвигаете?")}</h2>
       <textarea id="chanIn" class="field" rows="2" maxlength="300" autocomplete="off" autocapitalize="none" spellcheck="false"
-        placeholder="Канал, продукт или ниша" aria-label="Канал, продукт или ниша" style="min-height:76px;resize:none;padding:14px 16px">${esc(C.value)}</textarea>
+        placeholder="${t("Канал, продукт или ниша")}" aria-label="${t("Канал, продукт или ниша")}" style="min-height:76px;resize:none;padding:14px 16px">${esc(C.value)}</textarea>
       ${C.error ? `<div class="err">${esc(C.error)}</div>` : ""}
-      <div class="note">Пришлите ссылку на канал или @имя. Или коротко напишите, чем занимаетесь, например «маникюр в Москве». Остальное сделаем сами и подготовим текст сообщения.</div>`;
+      <div class="note">${t("Пришлите ссылку на канал или @имя. Или коротко напишите, чем занимаетесь, например «маникюр в Москве». Остальное сделаем сами и подготовим текст сообщения.")}</div>`;
     const ok = () => C.value.trim().length >= MIN_TOPIC;
-    const sync = () => setMain("Продолжить", submitChannel, {enabled: ok()});
+    const sync = () => setMain(t("Продолжить"), submitChannel, {enabled: ok()});
     $("chanIn").addEventListener("input", (ev) => { C.value = ev.target.value; sync(); });
     $("chanIn").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); if (ok()) submitChannel(); } });
     sync();
   } else if (C.stage === "building") {
-    body.innerHTML = `<h2 style="text-align:center">${topic ? "Готовим текст" : "Читаем канал"}</h2><div class="spin"></div>
-      <div class="note" style="text-align:center">Пишем текст сообщения. Обычно это около минуты. Окно можно закрыть, мы продолжим.</div>`;
-    setMain("Закрыть", closeSheet);
+    body.innerHTML = `<h2 style="text-align:center">${t(topic ? "Готовим текст" : "Читаем канал")}</h2><div class="spin"></div>
+      <div class="note" style="text-align:center">${t("Пишем текст сообщения. Обычно это около минуты. Окно можно закрыть, мы продолжим.")}</div>`;
+    setMain(t("Закрыть"), closeSheet);
   } else if (C.stage === "ready") {
-    body.innerHTML = `<h2>Готово</h2>
-      <div class="note" style="margin-top:0">Так увидят ваше сообщение люди:</div>
+    body.innerHTML = `<h2>${t("Готово")}</h2>
+      <div class="note" style="margin-top:0">${t("Так увидят ваше сообщение люди:")}</div>
       <div class="bubble" style="margin-bottom:20px">${esc(C.text)}</div>
-      <button class="btn soft" id="chanEdit" type="button">Изменить текст</button>`;
+      <button class="btn soft" id="chanEdit" type="button">${t("Изменить текст")}</button>`;
     $("chanEdit").onclick = () => { hap("select"); C.stage = "edit"; renderChannel(); };
-    setMain("Начать", closeSheet);
+    setMain(t("Начать"), closeSheet);
   } else {
-    body.innerHTML = `<h2>Текст сообщения</h2>
-      <textarea id="txt" maxlength="1000" aria-label="Текст сообщения">${esc(C.text)}</textarea>
+    body.innerHTML = `<h2>${t("Текст сообщения")}</h2>
+      <textarea id="txt" maxlength="1000" aria-label="${t("Текст сообщения")}">${esc(C.text)}</textarea>
       <div class="note" id="txtHint"></div>`;
     const sync = () => {
       const n = C.text.trim().length;
-      $("txtHint").textContent = n < MIN_TEXT ? `Нужно хотя бы ${MIN_TEXT} символов.` : "";
-      setMain("Сохранить", saveText, {enabled: n >= MIN_TEXT});
+      $("txtHint").textContent = n < MIN_TEXT ? t("Нужно хотя бы {n} символов.", {n: MIN_TEXT}) : "";
+      setMain(t("Сохранить"), saveText, {enabled: n >= MIN_TEXT});
     };
     $("txt").addEventListener("input", (ev) => { C.text = ev.target.value; sync(); });
     sync();
@@ -722,20 +1027,72 @@ async function openTopup() {
 function renderTopup() {
   const T = S.topup, P = S.packs;
   const pack = P.packs.find((p) => p.id === T.pack);
-  $("sheetBody").innerHTML = `<h2 style="margin-top:12px">Пополнить</h2>
+  $("sheetBody").innerHTML = `<h2 style="margin-top:12px">${t("Пополнить")}</h2>
     <div class="packs">${P.packs.map((p) => `<button class="pack ${p.id === T.pack ? "on" : ""}" data-pack="${esc(p.id)}" type="button">
-      ${p.badge ? `<span class="tag">${esc(p.badge)}</span>` : ""}<b>${fmt(p.messages)}</b><small>${plural(p.messages, MSG)}</small>
-      <span class="price">${STAR}<span>${fmt(p.stars)}</span></span></button>`).join("")}</div>
-    <div class="label">Способ оплаты</div>
+      ${p.badge ? `<span class="tag">${esc(t(p.badge))}</span>` : ""}<b>${fmt(p.messages)}</b><small>${plural(p.messages, MSG)}</small>
+      <span class="price ${T.method === "crypto" ? "usdt" : ""}">${T.method === "crypto" ? `<span>${usdt(p.usdt)} USDT</span>` : `${STAR}<span>${fmt(p.stars)}</span>`}</span></button>`).join("")}</div>
+    <div class="label">${t("Способ оплаты")}</div>
     <div class="card" style="padding:0 16px">${P.methods.map((m) => `<div class="method ${m.available ? "" : "off"}" data-method="${esc(m.id)}" data-available="${m.available ? 1 : 0}">
-      <div class="l"><span class="ic">${METHOD_ICON[m.id] || ICON.card}</span>${esc(m.title)}</div>
-      ${m.available ? `<span class="radio ${m.id === T.method ? "on" : ""}">${m.id === T.method ? ICON.check : ""}</span>` : `<span class="pill mut">Скоро</span>`}</div>`).join("")}</div>`;
+      <div class="l"><span class="ic">${METHOD_ICON[m.id] || ICON.card}</span>${esc(t(m.title))}</div>
+      ${m.available ? `<span class="radio ${m.id === T.method ? "on" : ""}">${m.id === T.method ? ICON.check : ""}</span>` : `<span class="pill mut">${t("Скоро")}</span>`}</div>`).join("")}</div>`;
   $("sheetBody").querySelectorAll("[data-pack]").forEach((el) => el.onclick = () => { T.pack = el.dataset.pack; hap("select"); renderTopup(); });
   $("sheetBody").querySelectorAll("[data-method]").forEach((el) => el.onclick = () => {
-    if (el.dataset.available !== "1") { toast(`${el.textContent.replace("Скоро", "").trim()} появится позже`); return; }
+    if (el.dataset.available !== "1") { toast(t("{x} появится позже", {x: el.textContent.replace(t("Скоро"), "").trim()})); return; }
     T.method = el.dataset.method; hap("select"); renderTopup();
   });
-  setMain(`Оплатить ${fmt(pack.stars)} ${plural(pack.stars, STARS)}`, pay);
+  setMain(T.method === "crypto" ? t("Оплатить {n} USDT", {n: usdt(pack.usdt)}) : t("Оплатить {n} {w}", {n: fmt(pack.stars), w: plural(pack.stars, STARS)}), pay);
+  syncBack();
+}
+const usdt = (n) => Number(n || 0).toLocaleString(LOC(), {minimumFractionDigits: 2, maximumFractionDigits: 3});
+function copyText(text) {
+  // буфер обмена: в части клиентов Telegram navigator.clipboard недоступен, тогда через временное поле
+  const done = () => { hap("success"); toast(t("Скопировано")); };
+  if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(done, () => legacyCopy(text, done)); return; }
+  legacyCopy(text, done);
+}
+function legacyCopy(text, done) {
+  const ta = document.createElement("textarea");
+  ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand("copy"); done(); } catch (e) { toast(text); }
+  ta.remove();
+}
+let cryptoTimer = null;
+function stopCryptoWatch() { clearInterval(cryptoTimer); cryptoTimer = null; }
+function showCrypto(inv) {
+  // экран перевода USDT: сумма и адрес с кнопками «скопировать», дальше приложение само ждёт зачисления
+  const left = () => Math.max(0, Math.round((new Date(inv.expires_at).getTime() - Date.now()) / 60000));
+  $("sheetBody").innerHTML = `<h2 style="margin-top:12px">${t("Оплата USDT")}</h2>
+    <div class="note" style="margin-top:8px">${t("Отправьте ровно эту сумму в сети TRON ({net}). Сообщения начислятся сами, обычно за 1–3 минуты.", {net: esc(inv.network)})}</div>
+    <div class="card cryptobox">
+      <div class="k">${t("Сумма")}</div>
+      <button class="copyrow" id="cpAmount" type="button"><b>${esc(inv.amount)} ${esc(inv.token)}</b><span>${t("Копировать")}</span></button>
+      <div class="k" style="margin-top:14px">${t("Адрес кошелька")} · ${esc(inv.network)}</div>
+      <button class="copyrow addr" id="cpAddr" type="button"><b>${esc(inv.address)}</b><span>${t("Копировать")}</span></button>
+    </div>
+    <div class="note warn">${t("Важно: сумма должна совпасть до последнего знака, иначе платёж не найдётся автоматически. Только USDT и только сеть TRC20: перевод в другой сети будет потерян.")}</div>
+    <div class="note" id="cryptoLeft"></div>`;
+  $("cpAmount").onclick = () => copyText(inv.amount);
+  $("cpAddr").onclick = () => copyText(inv.address);
+  const left0 = () => { $("cryptoLeft") && ($("cryptoLeft").textContent = t("Счёт действует ещё {n} мин", {n: left()})); };
+  left0();
+  const check = async (manual) => {
+    let r;
+    try { r = await api("invoice/" + inv.payload); } catch (e) { if (manual) toast(e.message); return; }
+    if (r.status === "paid") {
+      stopCryptoWatch();
+      hap("success");
+      toast(t("Оплачено! Сообщения уже на балансе"));
+      await refreshMe();
+      closeSheet();
+      if (S.tab === "profile") renderProfile();
+    } else if (manual) {
+      toast(t("Перевода пока не видно. Обычно это 1–3 минуты"));
+    }
+  };
+  stopCryptoWatch();
+  cryptoTimer = setInterval(() => { if (!S.layer || S.layer !== "topup") { stopCryptoWatch(); return; } left0(); check(false); }, 5000);
+  setMain(t("Проверить оплату"), () => check(true));
   syncBack();
 }
 async function pay() {
@@ -745,18 +1102,19 @@ async function pay() {
   try { inv = await api("invoice", "POST", {pack_id: T.pack, method: T.method}); }
   catch (e) { mainProgress(false); toast(e.message); return; }
   mainProgress(false);
+  if (inv.method === "crypto") { showCrypto(inv); return; }
   const done = async (status) => {
     if (status === "paid") {
       hap("success");
-      toast("Оплачено! Сообщения уже на балансе");
+      toast(t("Оплачено! Сообщения уже на балансе"));
       await refreshMe();
       closeSheet();
       if (S.tab === "profile") renderProfile();
     } else if (status === "pending") {
-      toast("Проверяем оплату. Можно закрыть — мы напишем");
+      toast(t("Проверяем оплату. Можно закрыть — мы напишем"));
     } else if (status === "failed") {
       hap("error");
-      toast("Оплата не прошла. Попробуйте ещё раз");
+      toast(t("Оплата не прошла. Попробуйте ещё раз"));
     }
   };
   if (DEMO) { demoPay(inv.payload); done("paid"); return; }
@@ -764,6 +1122,50 @@ async function pay() {
 }
 
 /* ── Чаты ────────────────────────────────────────────────────────── */
+/* «В пути»: сообщения, которые ещё ищут человека или отправляются; по готовности они уходят в диалоги */
+const CLOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+function agoLabel(iso) {
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  return s < 45 ? t("сейчас") : t("{n} мин", {n: Math.max(1, Math.round(s / 60))});
+}
+function renderTransit() {
+  const box = $("transit"), head = $("dlgHead"), list = (S.me && S.me.transit) || [];
+  const text = (S.me && S.me.channel && S.me.channel.text) || "";
+  if (!box.firstChild) box.innerHTML = `<div class="sect"><span id="trTitle"></span></div><div class="card list" id="trCard"></div>`;
+  const card = $("trCard"), want = new Set(list.map((x) => String(x.id)));
+  $("trTitle").textContent = `${t("В пути")} · ${list.length}`;
+  card.querySelectorAll(".tr-row").forEach((el) => {
+    if (want.has(el.dataset.id)) return;
+    el.remove();
+  });
+  list.forEach((x) => {
+    let el = card.querySelector(`.tr-row[data-id="${x.id}"]`);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "tr-row";
+      el.dataset.id = x.id;
+      el.innerHTML = `<span class="tr-ava ghost"></span><span class="grow" style="min-width:0"><span class="tr-bar ghost"></span><span class="sub pv"></span></span>
+        <span class="meta"><span class="tm">${CLOCK}<span class="ago"></span></span><span class="st"></span></span>`;
+      card.prepend(el);                     // новое сверху, как «сейчас» в списке
+    }
+    el.querySelector(".pv").textContent = text;
+    el.querySelector(".ago").textContent = agoLabel(x.at);
+    el.querySelector(".st").textContent = x.stage === "send" ? t("Отправляем") : t("Ищем человека");
+  });
+  syncTransitBox();
+}
+function syncTransitBox() {
+  const show = !!$("trCard") && $("trCard").children.length > 0;
+  $("transit").hidden = !show;
+  $("dlgHead").hidden = !show;
+}
+function syncTransitBadge(bump) {
+  const n = ((S.me && S.me.transit) || []).length, b = $("trBadge");
+  b.hidden = !n;
+  b.textContent = n;
+  if (bump) { b.classList.remove("bump"); void b.offsetWidth; b.classList.add("bump"); }
+}
+
 async function loadChats() {
   try { S.chats = (await api("chats")).chats; } catch (e) { toast(e.message); return; }
   renderChats();
@@ -771,20 +1173,20 @@ async function loadChats() {
 function renderChats() {
   const box = $("chatList"), f = S.chFilter;
   const count = {all: S.chats.length, replied: S.chats.filter((c) => c.replied).length};
-  $("chFilter").innerHTML = [["all", "Все"], ["replied", "Ответили"]].map(([id, label]) =>
+  $("chFilter").innerHTML = [["all", t("Все")], ["replied", t("Ответили")]].map(([id, label]) =>
     `<button type="button" role="radio" aria-checked="${f === id}" data-filter="${id}" class="${f === id ? "on" : ""}">${label}${count[id] ? ` · ${count[id]}` : ""}</button>`).join("");
   $("chFilter").querySelectorAll("[data-filter]").forEach((b) => b.onclick = () => { hap("select"); S.chFilter = b.dataset.filter; renderChats(); });
   const list = S.chats.filter((c) => f === "all" || c.replied);
   if (!list.length) {
     box.innerHTML = f === "replied"
-      ? `<div class="empty"><b>Ответов пока нет</b>Они появятся здесь, когда кто-то ответит.</div>`
-      : `<div class="empty"><b>Пока никому не писали</b>Нажмите на большую кнопку: отправленные сообщения и ответы появятся здесь.</div>`;
+      ? `<div class="empty"><b>${t("Ответов пока нет")}</b>${t("Они появятся здесь, когда кто-то ответит.")}</div>`
+      : `<div class="empty"><b>${t("Пока никому не писали")}</b>${t("Нажмите на большую кнопку: отправленные сообщения и ответы появятся здесь.")}</div>`;
     return;
   }
   box.innerHTML = `<div class="card list">${list.map((c, i) => {
-    const name = c.display_name || (c.username ? "@" + c.username : "Без имени");
-    const last = (c.last_message_from_me ? "Вы: " : "") + (c.last_message_text || "");
-    const mark = c.unread ? '<span class="dot"></span>' : c.replied ? '<span class="pill ok">Ответил</span>' : "";
+    const name = c.display_name || (c.username ? "@" + c.username : t("Без имени"));
+    const last = (c.last_message_from_me ? t("Вы: ") : "") + (c.last_message_text || "");
+    const mark = c.unread ? '<span class="dot"></span>' : c.replied ? '<span class="pill ok">${t("Ответил")}</span>' : "";
     return `<button class="row" data-chat="${c.id}" type="button"><span class="ava t${i % 3}">${esc(initials(name))}</span>
       <span class="grow"><span class="name" style="display:block">${esc(name)}</span><span class="sub ${c.unread ? "new" : ""}" style="display:block">${esc(last)}</span></span>
       <span class="meta">${esc(when(c.last_message_at))}${mark}</span></button>`;
@@ -798,6 +1200,8 @@ async function openChat(id) {
   $("tabs").hidden = true;
   $("msgs").innerHTML = "";
   $("chatHead").innerHTML = "";
+  S.chatUrl = null;
+  $("composer").classList.remove("only-tg");
   syncBack();
   await loadChat(true);
 }
@@ -814,19 +1218,43 @@ function closeChat() {
 function stamp(iso) {
   // Время под сообщением: сегодня только часы и минуты, раньше добавляем дату
   if (!iso) return "";
-  const d = new Date(iso), hm = d.toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit"});
+  const d = new Date(iso), hm = d.toLocaleTimeString(LOC(), {hour: "2-digit", minute: "2-digit"});
   const same = d.toDateString() === new Date().toDateString();
-  return same ? hm : `${d.toLocaleDateString("ru-RU", {day: "numeric", month: "short"})}, ${hm}`;
+  return same ? hm : `${d.toLocaleDateString(LOC(), {day: "numeric", month: "short"})}, ${hm}`;
 }
 function msgHtml(m) {
   const acts = m.can_edit || m.can_delete;
   const notes = [stamp(m.at)];
-  if (m.edited) notes.push("изменено");
-  if (m.status === "failed") notes.push("не отправлено");
+  if (m.edited) notes.push(t("изменено"));
+  if (m.status === "failed") notes.push(t("не отправлено"));
   return `<div class="mrow ${m.out ? "out" : ""}">
-    <div class="msg ${m.out ? "out" : ""} ${m.status === "failed" ? "fail" : ""}" ${acts ? `data-mid="${m.id}" tabindex="0" role="button" aria-label="Действия с сообщением"` : ""}>${esc(m.text || "")}</div>
+    <div class="msg ${m.out ? "out" : ""} ${m.status === "failed" ? "fail" : ""}" ${acts ? `data-mid="${m.id}" tabindex="0" role="button" aria-label="${t("Действия с сообщением")}"` : ""}>${esc(m.text || "")}</div>
     <div class="mt ${m.status === "failed" ? "bad" : ""}">${esc(notes.filter(Boolean).join(" · "))}</div></div>`;
 }
+const TGICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.4 3.3 2.9 10.5c-.9.4-.9 1.2-.2 1.4l4.7 1.5 1.8 5.6c.2.6.4.8.9.8.4 0 .6-.2.9-.5l2.2-2.2 4.6 3.4c.8.5 1.5.2 1.7-.8l3-14.3c.3-1.2-.4-1.8-1.1-1.5zM8.6 13.4l9.4-5.9c.4-.3.8-.1.5.2l-7.8 7-.3 3.4z"/></svg>';
+const TG_NOTE = "Откроется ваш Telegram: вы напишете человеку со своего аккаунта, а не с того, с которого шла рассылка.";
+function syncComposer(canReply) {
+  // «Перейти в Telegram» живёт в шапке; если аккаунт рассылки забанен, внизу остаётся только эта кнопка
+  $("composer").classList.toggle("only-tg", !canReply);
+  $("tgNote").textContent = t(TG_NOTE);
+  $("tgOnlyBtn").disabled = !S.chatUrl;
+  $("tgOnlyBtn").lastElementChild.textContent = !canReply && !S.chatUrl ? t("Ответить нельзя") : t("Перейти в Telegram");
+}
+async function openTelegramChat() {
+  if (!S.chatUrl) return;
+  let known = false;
+  try { known = localStorage.getItem("oc_tg_ok") === "1"; } catch (e) { /* хранилище недоступно */ }
+  if (!known) {
+    // первый раз объясняем: откроется личный Telegram человека, а не аккаунт рассылки
+    if (!(await confirmBox(t(TG_NOTE + " Продолжить?")))) return;
+    try { localStorage.setItem("oc_tg_ok", "1"); } catch (e) { /* не страшно */ }
+  }
+  hap("light");
+  if (!DEMO && tg.openTelegramLink) tg.openTelegramLink(S.chatUrl);
+  else window.open(S.chatUrl, "_blank", "noopener");
+}
+$("tgOnlyBtn").addEventListener("click", openTelegramChat);
+$("chatHead").addEventListener("click", (ev) => { if (ev.target.closest("#tgBtn")) openTelegramChat(); });
 async function loadChat(scroll) {
   const id = S.chatId;
   if (!id) return;
@@ -837,8 +1265,12 @@ async function loadChat(scroll) {
   if (!scroll && sig === S.chatSig) return;           // ничего не изменилось: не трогаем экран и прокрутку
   S.chatSig = sig;
   S.chatMsgs = d.messages;
-  const name = d.chat.name || (d.chat.username ? "@" + d.chat.username : "Диалог");
-  $("chatHead").innerHTML = `<span class="ava">${esc(initials(name))}</span><span class="grow"><span class="name" style="display:block">${esc(name)}</span>${d.chat.username ? `<span class="sub" style="display:block">@${esc(d.chat.username)}</span>` : ""}</span>`;
+  S.chatUrl = d.chat.tg_url || null;
+  const canReply = d.chat.can_reply !== false;
+  syncComposer(canReply);
+  const name = d.chat.name || (d.chat.username ? "@" + d.chat.username : t("Диалог"));
+  $("chatHead").innerHTML = `<span class="ava">${esc(initials(name))}</span><span class="grow"><span class="name" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</span>${d.chat.username ? `<span class="sub" style="display:block">@${esc(d.chat.username)}</span>` : ""}</span>`
+    + (S.chatUrl && canReply ? `<button id="tgBtn" class="tgtop" type="button" aria-label="${t("Перейти в Telegram")}">${TGICON}<span>${t("Перейти в Telegram")}</span></button>` : "");
   const box = $("msgs");
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
   box.innerHTML = d.messages.map(msgHtml).join("");
@@ -864,8 +1296,8 @@ function openMsgMenu(id, el) {
   closeMsgMenu();
   hap("select");
   const menu = $("msgMenu");
-  menu.innerHTML = (m.can_edit ? `<button type="button" role="menuitem" data-act="edit">${ICON.pencil}Изменить</button>` : "")
-    + (m.can_delete ? `<button type="button" role="menuitem" class="danger" data-act="del">${ICON.trash}Удалить</button>` : "");
+  menu.innerHTML = (m.can_edit ? `<button type="button" role="menuitem" data-act="edit">${ICON.pencil}${t("Изменить")}</button>` : "")
+    + (m.can_delete ? `<button type="button" role="menuitem" class="danger" data-act="del">${ICON.trash}${t("Удалить")}</button>` : "");
   menu.hidden = false;
   $("menuCatch").hidden = false;
   el.classList.add("sel");
@@ -885,13 +1317,13 @@ $("menuCatch").addEventListener("click", closeMsgMenu);
 $("msgs").addEventListener("scroll", () => { if (S.menuEl) closeMsgMenu(); });
 
 async function deleteMsg(m) {
-  const ok = await confirmBox("Удалить сообщение? Оно исчезнет и у собеседника.");
+  const ok = await confirmBox(t("Удалить сообщение? Оно исчезнет и у собеседника."));
   if (!ok || !S.chatId) return;
   try {
     await api(`chats/${S.chatId}/messages/${m.id}`, "DELETE");
     if (S.editing && S.editing.id === m.id) cancelEdit();
     hap("success");
-    toast("Сообщение удалено");
+    toast(t("Сообщение удалено"));
     await loadChat(false);
   } catch (e) { hap("error"); toast(e.message); }
 }
@@ -908,7 +1340,7 @@ function startEdit(m) {
   $("editBar").hidden = false;
   replyText.value = S.editing.text;
   $("sendBtn").innerHTML = ICON.tick;
-  $("sendBtn").setAttribute("aria-label", "Сохранить изменения");
+  $("sendBtn").setAttribute("aria-label", t("Сохранить изменения"));
   $("sendBtn").disabled = !replyText.value.trim();
   sizeReply();
   replyText.focus();
@@ -920,7 +1352,7 @@ function cancelEdit() {
   replyText.value = "";
   sizeReply();
   $("sendBtn").innerHTML = ICON.up;
-  $("sendBtn").setAttribute("aria-label", "Отправить");
+  $("sendBtn").setAttribute("aria-label", t("Отправить"));
   $("sendBtn").disabled = true;
 }
 $("editCancel").addEventListener("click", () => { hap("light"); cancelEdit(); });
@@ -939,7 +1371,7 @@ $("sendBtn").addEventListener("click", async () => {
       await api(`chats/${S.chatId}/messages/${ed.id}`, "PATCH", {text});
       cancelEdit();
       hap("success");
-      toast("Сообщение изменено");
+      toast(t("Сообщение изменено"));
       await loadChat(false);
     } catch (e) { hap("error"); toast(e.message); $("sendBtn").disabled = false; }
     return;
@@ -973,7 +1405,7 @@ function closeSupport() {
   if (S.tab === "profile") renderProfile();
 }
 function supportHtml(list) {
-  const hello = `<div class="mrow"><div class="msg">Здравствуйте! Напишите, чем помочь, и мы ответим здесь.</div></div>`;
+  const hello = `<div class="mrow"><div class="msg">${t("Здравствуйте! Напишите, чем помочь, и мы ответим здесь.")}</div></div>`;
   return hello + list.map((m) => `<div class="mrow ${m.out ? "out" : ""}"><div class="msg ${m.out ? "out" : ""}">${esc(m.text)}</div><div class="mt">${esc(stamp(m.at))}</div></div>`).join("");
 }
 async function loadSupport(scroll) {
@@ -1010,6 +1442,120 @@ $("supSend").addEventListener("click", async () => {
   } catch (e) { hap("error"); toast(e.message); $("supSend").disabled = false; }
 });
 
+/* ── Панель оператора: обращения людей в поддержку ──────────────────── */
+S.ops = {order: "new", filter: "all", q: "", threads: [], counts: {all: 0, waiting: 0, unread: 0}};
+async function openOps() {
+  S.opsOpen = true;
+  $("opsScreen").hidden = false;
+  $("tabs").hidden = true;
+  syncBack();
+  await loadOps();
+}
+function closeOps() {
+  S.opsOpen = false;
+  $("opsScreen").hidden = true;
+  $("tabs").hidden = false;
+  syncBack();
+  refreshMe();
+  if (S.tab === "profile") renderProfile();
+}
+async function loadOps() {
+  if (!S.opsOpen) return;
+  const o = S.ops;
+  let d;
+  try { d = await api(`ops/threads?order=${o.order}&filter=${o.filter}&q=${encodeURIComponent(o.q)}`); } catch (e) { toast(e.message); return; }
+  if (!S.opsOpen) return;
+  o.threads = d.threads;
+  o.counts = d.counts;
+  renderOps();
+}
+function renderOps() {
+  const o = S.ops, c = o.counts;
+  $("opsSub").textContent = `${fmt(c.all)} ${plural(c.all, {ru: ["обращение", "обращения", "обращений"], en: ["request", "requests"]})} · ${fmt(c.waiting)} ждут ответа`;
+  $("opsOrder").innerHTML = [["new", "Сначала новые"], ["old", "Сначала старые"]].map(([id, label]) =>
+    `<button type="button" role="radio" aria-checked="${o.order === id}" data-order="${id}" class="${o.order === id ? "on" : ""}">${label}</button>`).join("");
+  $("opsFilter").innerHTML = [["all", "Все", c.all], ["waiting", "Ждут ответа", c.waiting]].map(([id, label, n]) =>
+    `<button type="button" class="chip ${o.filter === id ? "on" : ""}" data-filter="${id}">${label} · ${fmt(n)}</button>`).join("");
+  $("opsOrder").querySelectorAll("[data-order]").forEach((b) => b.onclick = () => { hap("select"); o.order = b.dataset.order; loadOps(); });
+  $("opsFilter").querySelectorAll("[data-filter]").forEach((b) => b.onclick = () => { hap("select"); o.filter = b.dataset.filter; loadOps(); });
+  const box = $("opsList");
+  if (!o.threads.length) {
+    box.innerHTML = `<div class="empty"><b>${o.q || o.filter === "waiting" ? "Ничего не найдено" : "Обращений пока нет"}</b>${o.q ? "Попробуйте другое слово." : o.filter === "waiting" ? "Все обращения отвечены." : "Здесь появятся сообщения людей из поддержки."}</div>`;
+    return;
+  }
+  const keep = box.scrollTop;
+  box.innerHTML = `<div class="card list">${o.threads.map((x, i) => {
+    const last = (x.waiting ? "" : "Вы: ") + (x.last_text || "");
+    return `<button class="row" data-uid="${x.id}" type="button"><span class="ava t${x.id % 3}">${esc(initials(x.name))}</span>
+      <span class="grow"><span class="name" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.name)}</span>
+        <span class="sub ${x.unread ? "new" : ""}" style="display:block">${esc(last)}</span></span>
+      <span class="meta">${esc(when(x.last_at))}${x.unread ? `<span class="cnt">${x.unread}</span>` : x.waiting ? `<span class="pill wait">Ждёт</span>` : ""}</span></button>`;
+  }).join("")}</div>`;
+  box.scrollTop = keep;
+  box.querySelectorAll("[data-uid]").forEach((el) => el.onclick = () => { hap("select"); openOpsThread(+el.dataset.uid); });
+}
+let opsSearchTimer;
+$("opsSearch").addEventListener("input", (ev) => {
+  clearTimeout(opsSearchTimer);
+  opsSearchTimer = setTimeout(() => { S.ops.q = ev.target.value.trim(); loadOps(); }, 250);
+});
+
+async function openOpsThread(uid) {
+  S.opsUid = uid;
+  S.opsSig = null;
+  $("opsThread").hidden = false;
+  $("opsMsgs").innerHTML = "";
+  $("opsHead").innerHTML = "";
+  syncBack();
+  await loadOpsThread(true);
+}
+function closeOpsThread() {
+  S.opsUid = null;
+  $("opsThread").hidden = true;
+  syncBack();
+  loadOps();
+  refreshMe();
+}
+function opsMsgsHtml(list) {
+  return list.map((m) => `<div class="mrow ${m.out ? "out" : ""}"><div class="msg ${m.out ? "out" : ""}">${esc(m.text)}</div><div class="mt">${esc(stamp(m.at))}</div></div>`).join("");
+}
+async function loadOpsThread(scroll) {
+  const uid = S.opsUid;
+  if (!uid) return;
+  let d;
+  try { d = await api("ops/threads/" + uid); } catch (e) { toast(e.message); return; }
+  if (S.opsUid !== uid) return;
+  const sig = JSON.stringify(d);
+  if (!scroll && sig === S.opsSig) return;
+  S.opsSig = sig;
+  $("opsHead").innerHTML = `${DEMO ? `<button class="backbtn" id="opsThreadBack" type="button" aria-label="Назад">${ICON.back}</button>` : ""}<span class="ava">${esc(initials(d.user.name))}</span><span class="grow"><span class="name" style="display:block">${esc(d.user.name)}</span>${d.user.username ? `<span class="sub" style="display:block">@${esc(d.user.username)}</span>` : `<span class="sub" style="display:block">id ${d.user.id}</span>`}</span>`;
+  if ($("opsThreadBack")) $("opsThreadBack").onclick = () => closeOpsThread();
+  const box = $("opsMsgs"), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  box.innerHTML = opsMsgsHtml(d.messages);
+  if (scroll || atBottom) box.scrollTop = box.scrollHeight;
+}
+const opsReply = $("opsReply");
+function sizeOps() {
+  opsReply.style.height = "auto";
+  opsReply.style.height = Math.min(140, opsReply.scrollHeight) + "px";
+}
+opsReply.addEventListener("input", () => { $("opsSend").disabled = !opsReply.value.trim(); sizeOps(); });
+$("opsSend").addEventListener("click", async () => {
+  const text = opsReply.value.trim();
+  if (!text || !S.opsUid) return;
+  $("opsSend").disabled = true;
+  try {
+    const d = await api(`ops/threads/${S.opsUid}/reply`, "POST", {text});
+    opsReply.value = "";
+    sizeOps();
+    hap("light");
+    S.opsSig = JSON.stringify(d);
+    const box = $("opsMsgs");
+    box.innerHTML = opsMsgsHtml(d.messages);
+    box.scrollTop = box.scrollHeight;
+  } catch (e) { hap("error"); toast(e.message); $("opsSend").disabled = false; }
+});
+
 /* ── Профиль ─────────────────────────────────────────────────────── */
 async function renderProfile() {
   const me = S.me;
@@ -1017,28 +1563,33 @@ async function renderProfile() {
   let pays = [];
   try { pays = (await api("payments")).payments; } catch (e) { /* покажем без истории */ }
   const u = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) || {};
-  const name = [u.first_name || me.user.first_name, u.last_name].filter(Boolean).join(" ") || "Вы";
+  const name = [u.first_name || me.user.first_name, u.last_name].filter(Boolean).join(" ") || t("Вы");
   const photo = u.photo_url ? `<img src="${esc(u.photo_url)}" alt="">` : esc(initials(name));
   const pref = themePref();
   $("profileBody").innerHTML = `
     <div class="me"><span class="ava">${photo}</span><div><div class="name" style="font-size:20px">${esc(name)}</div>${me.user.username ? `<div class="sub">@${esc(me.user.username)}</div>` : ""}</div></div>
-    <div class="card bal"><div class="k">Баланс</div><div class="v"><b>${fmt(me.balance)}</b><span>${plural(me.balance, MSG)}</span></div>
-      <button class="btn primary" id="profTopup" type="button" style="margin-top:16px">Пополнить</button></div>
-    <h2 class="sec">Рассылка</h2>
+    <div class="card bal"><div class="k">${t("Баланс")}</div><div class="v"><b>${fmt(me.balance)}</b><span>${plural(me.balance, MSG)}</span></div>
+      <button class="btn primary" id="profTopup" type="button" style="margin-top:16px">${t("Пополнить")}</button></div>
+    <h2 class="sec">${t("Рассылка")}</h2>
     <div class="card" style="padding:0 18px;margin-bottom:24px">${me.channel && me.channel.status === "ready"
-      ? `<button class="kv" id="profChannel" type="button"><span>${me.channel.kind === "topic" ? "Ниша" : "Канал"}</span><b>${esc(channelLabel(me.channel))}</b><i>${ICON.chev}</i></button>
-         <button class="kv" id="profText" type="button"><span>Текст</span><b>${esc(me.channel.text)}</b><i>${ICON.chev}</i></button>`
-      : `<button class="kv" id="profChannel" type="button"><span>Продвигаем</span><b style="color:var(--blue)">${me.channel && me.channel.status === "building" ? "Готовим…" : "Указать"}</b><i>${ICON.chev}</i></button>`}</div>
-    <h2 class="sec">История платежей</h2>
+      ? `<button class="kv" id="profChannel" type="button"><span>${t(me.channel.kind === "topic" ? "Ниша" : "Канал")}</span><b>${esc(channelLabel(me.channel))}</b><i>${ICON.chev}</i></button>
+         <button class="kv" id="profText" type="button"><span>${t("Текст")}</span><b>${esc(me.channel.text)}</b><i>${ICON.chev}</i></button>`
+      : `<button class="kv" id="profChannel" type="button"><span>${t("Продвигаем")}</span><b style="color:var(--blue)">${t(me.channel && me.channel.status === "building" ? "Готовим…" : "Указать")}</b><i>${ICON.chev}</i></button>`}</div>
+    <h2 class="sec">${t("История платежей")}</h2>
     ${pays.length ? `<div class="card" style="padding:0 18px">${pays.map((p) => `<div class="pay"><div><div class="name">${fmt(p.messages)} ${plural(p.messages, MSG)}</div><div class="sub">${esc(when(p.paid_at || p.created_at))}</div></div>
-      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px"><b style="display:flex;align-items:center;gap:6px">${STAR}${fmt(p.amount)}</b>
-      ${p.status === "paid" ? `<span class="pill ok">${ICON.check}Оплачено</span>` : `<span class="pill bad">${ICON.x}Не прошла</span>`}</div></div>`).join("")}</div>`
-      : `<div class="card empty" style="padding:24px">Платежей пока нет</div>`}
-    <h2 class="sec" style="margin-top:24px">Тема</h2>
-    <div class="card" style="padding:6px"><div class="seg" role="radiogroup" aria-label="Тема оформления">${THEMES.map(([id, label]) =>
-      `<button type="button" role="radio" aria-checked="${pref === id}" data-theme-pref="${id}" class="${pref === id ? "on" : ""}">${label}</button>`).join("")}</div></div>
-    <button class="card link-row" id="profSupport" type="button"><span style="display:flex;align-items:center;gap:12px"><span style="color:var(--blue);display:flex">${ICON.help}</span>Поддержка${me.support_unread ? '<span class="dot"></span>' : ""}</span><span style="color:var(--ink3);display:flex">${ICON.chev}</span></button>`;
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px"><b style="display:flex;align-items:center;gap:6px">${p.currency === "USDT" ? `${usdt(p.amount / 1e6)} USDT` : `${STAR}${fmt(p.amount)}`}</b>
+      ${p.status === "paid" ? `<span class="pill ok">${ICON.check}${t("Оплачено")}</span>` : `<span class="pill bad">${ICON.x}${t("Не прошла")}</span>`}</div></div>`).join("")}</div>`
+      : `<div class="card empty" style="padding:24px">${t("Платежей пока нет")}</div>`}
+    <h2 class="sec" style="margin-top:24px">${t("Тема")}</h2>
+    <div class="card" style="padding:6px"><div class="seg" role="radiogroup" aria-label="${t("Тема оформления")}">${THEMES.map(([id, label]) =>
+      `<button type="button" role="radio" aria-checked="${pref === id}" data-theme-pref="${id}" class="${pref === id ? "on" : ""}">${t(label)}</button>`).join("")}</div></div>
+    <h2 class="sec" style="margin-top:24px">${t("Язык")}</h2>
+    <div class="card" style="padding:6px"><div class="seg" role="radiogroup" aria-label="${t("Язык")}">${LANGS.map(([id, label]) =>
+      `<button type="button" role="radio" aria-checked="${LANG === id}" data-lang-pref="${id}" class="${LANG === id ? "on" : ""}">${label}</button>`).join("")}</div></div>
+    ${me.operator ? `<button class="card link-row" id="profOps" type="button"><span style="display:flex;align-items:center;gap:12px"><span style="color:var(--blue);display:flex">${ICON.inbox}</span>Обращения клиентов${me.ops_unread ? `<span class="cnt">${me.ops_unread}</span>` : ""}</span><span style="color:var(--ink3);display:flex">${ICON.chev}</span></button>` : ""}
+    <button class="card link-row" id="profSupport" type="button"><span style="display:flex;align-items:center;gap:12px"><span style="color:var(--blue);display:flex">${ICON.help}</span>${t("Поддержка")}${me.support_unread ? '<span class="dot"></span>' : ""}</span><span style="color:var(--ink3);display:flex">${ICON.chev}</span></button>`;
   $("profTopup").onclick = () => openTopup();
+  $("profileBody").querySelectorAll("[data-lang-pref]").forEach((b) => b.onclick = () => { hap("select"); changeLang(b.dataset.langPref); });
   $("profChannel").onclick = () => openChannel(me.channel && me.channel.status === "ready" ? "change" : undefined);
   if ($("profText")) $("profText").onclick = () => openChannel("text");
   $("profileBody").querySelectorAll("[data-theme-pref]").forEach((b) => b.onclick = () => {
@@ -1051,6 +1602,7 @@ async function renderProfile() {
     });
   });
   $("profSupport").onclick = () => { hap("select"); openSupport(); };
+  if ($("profOps")) $("profOps").onclick = () => { hap("select"); openOps(); };
 }
 
 /* ── Навигация ───────────────────────────────────────────────────── */
@@ -1058,7 +1610,7 @@ function showTab(tab) {
   S.tab = tab;
   ["home", "chats", "profile"].forEach((t) => { $(t).hidden = t !== tab; });
   document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
-  if (tab === "chats") loadChats();
+  if (tab === "chats") { renderTransit(); loadChats(); }
   if (tab === "profile") renderProfile();
   if (tab === "home") renderHome();
 }
@@ -1066,10 +1618,12 @@ document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () 
 
 function syncBack() {
   if (DEMO || !tg.BackButton) return;
-  if ((S.layer && !locked()) || S.chatId || S.support) tg.BackButton.show(); else tg.BackButton.hide();
+  if ((S.layer && !locked()) || S.chatId || S.support || S.opsOpen || S.opsUid) tg.BackButton.show(); else tg.BackButton.hide();
 }
 function goBack() {
   if (locked()) return;
+  if (S.opsUid) { closeOpsThread(); return; }
+  if (S.opsOpen) { closeOps(); return; }
   if (S.support) { closeSupport(); return; }
   if (S.menuEl) { closeMsgMenu(); return; }
   if (S.editing) { cancelEdit(); return; }
@@ -1082,29 +1636,42 @@ function goBack() {
 if (!DEMO && tg.BackButton) tg.BackButton.onClick(goBack);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") goBack(); });
 
+const FAIL_TEXT = {"не нашли подходящего человека": "Не нашли подходящего человека", "поиск не удался": "Поиск не удался",
+  "нет свободного аккаунта": "Сейчас не получилось отправить", "некому отправить": "Не нашли подходящего человека"};
+function failText(err) { return t(FAIL_TEXT[err] || "Сообщение не ушло"); }
+
 async function refreshMe() {
   const was = S.me && S.me.channel && S.me.channel.status;
+  const prevSent = S.me ? S.me.sent : null, prevTr = S.me ? (S.me.transit || []).length : 0;
   try {
     S.me = await api("me");
   } catch (e) {
-    if (e.status === 401) fatal("Откройте приложение заново из бота", e.message);
+    if (e.status === 401) fatal(t("Откройте приложение заново из бота"), t(e.message));
     return;
   }
   if (was === "building" && S.me.channel && S.me.channel.status === "ready" && S.layer !== "channel") {
     hap("success");
-    toast("Готово. Ищем клиентов под вашу тему");
+    toast(t("Готово. Нажмите на кнопку, чтобы отправить первое сообщение"));
   }
-  if (S.leadsWas === 0 && S.me.leads && S.me.leads.new > 0 && S.layer !== "channel") {
-    hap("success");
-    toast(`Нашли клиентов: ${S.me.leads.new}. Можно отправлять`);
+  const fail = S.me.leads && S.me.leads.last_fail;
+  if (fail && S.lastFail !== undefined && fail.id !== S.lastFail) {
+    hap("warning");
+    toast(t("{x}. Сообщение вернули на баланс", {x: failText(fail.error)}));
   }
-  S.leadsWas = S.me.leads ? S.me.leads.new : undefined;
+  S.lastFail = fail ? fail.id : null;
   const u = $("unread");
   u.hidden = !S.me.unread;
   u.textContent = S.me.unread > 99 ? "99+" : S.me.unread;
   const su = $("unreadSupport");
   su.hidden = !S.me.support_unread;
   su.textContent = S.me.support_unread > 9 ? "9+" : S.me.support_unread;
+  const trNow = (S.me.transit || []).length;
+  syncTransitBadge(trNow > prevTr);
+  if (prevSent !== null && S.me.sent > prevSent) hap("light");
+  if (S.tab === "chats") {
+    renderTransit();
+    if (trNow < prevTr) loadChats();           // что-то ушло: диалог появится в списке сразу
+  }
   if (S.tab === "home") renderHome();
 }
 function fatal(title, text) {
@@ -1115,6 +1682,41 @@ function fatal(title, text) {
 }
 
 /* ── Старт ───────────────────────────────────────────────────────── */
+const LANGS = [["ru", "Русский"], ["en", "English"]];
+function guessLang() {
+  const code = ((tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.language_code) || "").toLowerCase();
+  return code && !/^(ru|uk|be|kk)/.test(code) ? "en" : "ru";
+}
+function useLang(lang) {
+  LANG = lang === "en" ? "en" : "ru";
+  applyLang();
+  if (S.me) { renderHome(); if (S.tab === "chats") renderChats(); }
+}
+async function changeLang(lang) {
+  if (lang === LANG) return;
+  try { await api("lang", "POST", {lang}); } catch (e) { toast(e.message); return; }
+  S.me.lang = lang;
+  useLang(lang);
+  if (S.tab === "profile") renderProfile();
+  if (S.tab === "chats") renderChats();
+}
+function pickLang() {
+  // первый вход: без выбора языка дальше не пускаем
+  return new Promise((resolve) => {
+    const box = $("langScreen");
+    box.hidden = false;
+    box.querySelectorAll("[data-lang]").forEach((b) => b.onclick = async () => {
+      hap("medium");
+      box.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+      try { await api("lang", "POST", {lang: b.dataset.lang}); }
+      catch (e) { box.querySelectorAll("button").forEach((x) => { x.disabled = false; }); toast(e.message); return; }
+      S.me.lang = b.dataset.lang;
+      box.hidden = true;
+      useLang(b.dataset.lang);
+      resolve();
+    });
+  });
+}
 const THEMES = [["auto", "Авто"], ["light", "Светлая"], ["dark", "Тёмная"]];
 function themePref() {
   try { const v = localStorage.getItem("oc_theme"); if (THEMES.some((t) => t[0] === v)) return v; } catch (e) { /* хранилище недоступно */ }
@@ -1138,6 +1740,7 @@ function applyTheme() {
     try { tg.setHeaderColor(bg); tg.setBackgroundColor(bg); tg.setBottomBarColor && tg.setBottomBarColor(bottom); } catch (e) { /* старые клиенты */ }
   }
 }
+let startOpsOnly = false;
 async function start() {
   if (!DEMO) {
     tg.ready();
@@ -1146,42 +1749,103 @@ async function start() {
     tg.onEvent("themeChanged", applyTheme);
   }
   applyTheme();
+  LANG = guessLang();
+  applyLang();
   await refreshMe();
   if (!S.me) return;
+  if (S.me.lang) useLang(S.me.lang); else await pickLang();
   renderHome();
   maybeGift();
   const q = new URLSearchParams(location.search);
+  if (q.get("ops") !== null && S.me.operator) {
+    showTab("profile");
+    await openOps();
+    if (/^\d+$/.test(q.get("ops"))) openOpsThread(+q.get("ops"));
+    startOpsOnly = true;
+  }
   const startChat = q.get("chat") || ((tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || "").replace(/^chat_/, "");
-  if (startChat && /^\d+$/.test(startChat)) { showTab("chats"); openChat(+startChat); }
+  if (startOpsOnly) { /* уже открыли панель оператора */ }
+  else if (startChat && /^\d+$/.test(startChat)) { showTab("chats"); openChat(+startChat); }
   else if (q.get("support") || ((tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || "") === "support") { showTab("profile"); openSupport(); }
   else if (S.me.gift.claimed && !S.me.channel) openChannel();       // без канала, продукта или ниши отправлять нельзя
   const tick = async () => {
     if (!document.hidden) {
-      if (S.support) loadSupport(false);
+      if (S.opsUid) loadOpsThread(false);
+      else if (S.opsOpen) loadOps();
+      else if (S.support) loadSupport(false);
       else if (S.chatId) loadChat(false);
       else if (S.tab === "chats" && !S.layer) loadChats();
       if (!S.layer || S.layer === "channel") await refreshMe();
     }
     const busy = S.me && (S.me.pending > 0 || (S.me.channel && S.me.channel.status === "building"));
-    const slow = S.me && S.me.leads && S.me.leads.searching;
-    setTimeout(tick, busy ? 2000 : slow ? 15000 : 5000);
+    setTimeout(tick, busy ? 2000 : 5000);
   };
   setTimeout(tick, 5000);
 }
 
 /* ── Демо-режим (страница открыта не из Telegram) ────────────────── */
-const DEMO_DB = {leadsNew: 0, searching: false, support: [], balance: 0, gift_claimed: false, has_paid: false, channel: null, sent: 0, pending: 0, payments: [], seq: 10,
+const DEMO_DB = {lang: null, searching: false, support: [], balance: 0, gift_claimed: false, has_paid: false, channel: null, sent: 0, pending: 0, transit: [], ops: [], payments: [], seq: 10,
   chats: [{id: 1, username: "anna_k", display_name: "Анна К.", last_message_at: new Date().toISOString(), last_message_text: "Сколько это стоит?", last_message_from_me: 0, unread: 1, replied: true,
            messages: [{id: 1, out: true, text: "Здравствуйте! Хочу предложить вам курс по нейросетям.", at: new Date(Date.now() - 3600e3).toISOString()},
                       {id: 2, out: false, text: "Сколько это стоит?", at: new Date().toISOString()}]}]};
 const DEMO_TEXT = "Здравствуйте! Веду канал «НейроМагия» про нейросети в жизни и бизнесе. Думаю, вам может быть полезно. Расскажу подробнее?";
 const DEMO_NAMES = ["Иван П.", "Мария С.", "Олег Т.", "Дарья Л.", "Сергей Н.", "Елена В.", "Павел Р.", "Ольга Д."];
+/* Демо панели оператора: много людей пишут в поддержку (открывается, если window.DEMO_OPS) */
+function genOps() {
+  const names = ["Иван Петров", "Мария Соколова", "Олег Тарасов", "Дарья Лебедева", "Сергей Новиков", "Елена Волкова", "Павел Рябов", "Ольга Дмитриева",
+    "Алексей Орлов", "Наталья Крылова", "Артём Фролов", "Анна Захарова", "Дмитрий Белов", "Юлия Киселёва", "Максим Зайцев", "Ксения Медведева",
+    "Игорь Гусев", "Татьяна Федорова", "Роман Исаев", "Вера Лазарева", "Кирилл Попов", "Алина Журавлёва", "Никита Блинов", "Светлана Ефимова",
+    "Андрей Тимофеев", "Полина Маслова", "Егор Никитин", "Диана Ершова", "Виктор Ковалёв", "Марина Сидорова", "Глеб Макаров", "Алёна Чернова",
+    "Тимур Гаврилов", "Екатерина Жукова", "Станислав Муравьёв", "Яна Комарова", "Денис Родионов", "Валерия Мельникова", "Руслан Савин", "Софья Анисимова"];
+  const nick = ["ivan_p", "masha_s", "tarasov_o", "dasha_l", "serg_n", "volkova_e", "pavel_r", "olga_d", "orlov_a", "nata_k", "frolov_art", "anna_z", "belov_d", "yulia_k", "zaitsev", "ksu_m"];
+  const asks = ["Не пришла оплата Stars, списали, а сообщений не добавилось", "Как изменить текст сообщения?", "Можно ли отправлять в свой город?", "Почему никто не отвечает на рассылку?",
+    "Здравствуйте! Подскажите, как пополнить баланс картой?", "Сообщение не отправилось, вернули на баланс. Почему?", "Можно сменить канал, который продвигаем?", "Сколько сообщений в день можно отправлять?",
+    "Хочу вернуть деньги за пакет 200 сообщений", "Спасибо, всё работает!", "Приложение не открывается на айфоне", "А будет оплата через СБП?", "Как найти людей именно из моей ниши?",
+    "Ответили в чате, но не вижу ответа в приложении", "Можно ли написать человеку повторно?", "Подарочные сообщения закончились, что дальше?"];
+  const answers = ["Здравствуйте! Проверили, всё в порядке, сообщения добавлены.", "Да, в профиле нажмите на текст и измените его.", "Сейчас уточним и вернёмся с ответом.", "Спасибо за обращение, передали разработчикам."];
+  const now = Date.now(), out = [];
+  names.forEach((name, i) => {
+    const t0 = now - (i * 41 + (i * i) % 23 * 7) * 60e3 - 2 * 60e3;       // чем больше i, тем раньше писал
+    const msgs = [{out: false, text: asks[i % asks.length], at: t0 - (i % 3) * 3600e3}];
+    if (i % 3 === 1) msgs.push({out: true, text: answers[i % answers.length], at: t0 - (i % 3) * 3600e3 + 600e3}, {out: false, text: asks[(i + 5) % asks.length], at: t0});
+    else if (i % 3 === 2) msgs.push({out: true, text: answers[i % answers.length], at: t0});
+    else if (i % 4 === 0) msgs.push({out: false, text: "Жду ответа, вопрос срочный.", at: t0});
+    msgs.forEach((m, j) => { m.id = i * 10 + j + 1; m.at = new Date(m.at).toISOString(); });
+    const unread = msgs.slice().reverse().findIndex((m) => m.out);
+    out.push({id: 1000 + i, name, username: nick[i] || null, msgs, unread: unread < 0 ? msgs.length : unread});
+  });
+  return out;
+}
+function demoOps(path, method, body, wait, fail) {
+  const D = DEMO_DB;
+  const m = path.match(/^ops\/threads(?:\/(\d+))?(\/reply)?(?:\?(.*))?$/);
+  if (!m) return null;
+  if (!m[1]) {
+    const q = new URLSearchParams(m[3] || ""), needle = (q.get("q") || "").toLowerCase().replace(/^@/, "");
+    let rows = D.ops.map((t) => ({id: t.id, name: t.name, username: t.username, last_text: t.msgs[t.msgs.length - 1].text, last_at: t.msgs[t.msgs.length - 1].at,
+      waiting: !t.msgs[t.msgs.length - 1].out, unread: t.unread, total: t.msgs.length}));
+    const counts = {all: rows.length, waiting: rows.filter((r) => r.waiting).length, unread: rows.filter((r) => r.unread).length};
+    if (q.get("filter") === "waiting") rows = rows.filter((r) => r.waiting);
+    if (needle) rows = rows.filter((r) => `${r.name} ${r.username || ""} ${r.last_text}`.toLowerCase().includes(needle));
+    rows.sort((a, b) => (q.get("order") === "old" ? 1 : -1) * (new Date(a.last_at) - new Date(b.last_at)));
+    return wait({threads: rows, counts});
+  }
+  const t = D.ops.find((x) => x.id === +m[1]);
+  if (!t) return fail(404, "Обращение не найдено");
+  if (m[2]) { t.msgs.push({id: Date.now(), out: true, text: body.text, at: new Date().toISOString()}); t.unread = 0; }
+  t.unread = 0;
+  return wait({user: {id: t.id, name: t.name, username: t.username}, messages: t.msgs.map((x) => ({...x}))});
+}
 function demoApi(path, method, body) {
   const D = DEMO_DB, wait = (v) => new Promise((r) => setTimeout(() => r(v), 150));
   const fail = (status, detail, data) => { const e = new Error(detail); e.status = status; e.data = data; return Promise.reject(e); };
+  if (window.DEMO_OPS) { const r = demoOps(path, method, body, wait, fail); if (r) return r; }
   if (path === "me") return wait({user: {id: 1, first_name: "Демо", username: "demo"}, balance: D.balance, has_paid: D.has_paid,
-    gift: {amount: 10, claimed: D.gift_claimed}, channel: D.channel && {...D.channel}, leads: {new: D.leadsNew, searching: D.searching}, pending: D.pending, sent: D.sent,
+    lang: D.lang, gift: {amount: 10, claimed: D.gift_claimed}, channel: D.channel && {...D.channel}, leads: {searching: D.searching, last_fail: null}, pending: D.pending, sent: D.sent,
+    transit: D.transit.map((x) => ({...x})),
+    ...(window.DEMO_OPS ? {operator: true, ops_unread: D.ops.filter((t) => t.unread).length} : {}),
     unread: D.chats.reduce((a, c) => a + c.unread, 0), support_unread: D.support.filter((m) => m.read === false).length});
+  if (path === "lang" && method === "POST") { D.lang = body.lang; return wait({lang: D.lang}); }
   if (path === "gift") { if (!D.gift_claimed) { D.gift_claimed = true; D.balance += 10; } return wait({claimed: true, balance: D.balance}); }
   if (path === "channel" && method === "GET") return wait({channel: D.channel && {...D.channel}});
   if (path === "channel" && method === "POST") {
@@ -1193,8 +1857,6 @@ function demoApi(path, method, body) {
     D.channel = {handle, kind, status: "building", text: "", error: null};
     setTimeout(() => {
       D.channel = {handle, kind, status: "ready", text, error: null};
-      D.searching = true;
-      setTimeout(() => { D.searching = false; D.leadsNew = 8; }, 5000);       // умный парсинг нашёл людей
     }, 2500);
     return wait({channel: {...D.channel}});
   }
@@ -1207,17 +1869,21 @@ function demoApi(path, method, body) {
   }
   if (path === "tap") {
     if (D.balance <= 0) return fail(402, "Сообщения закончились. Пополните баланс.");
-    if (D.leadsNew - D.pending <= 0) return fail(409, "Ищем ваших клиентов. Когда найдём, сообщим.");
     D.balance -= 1;
     D.pending += 1;
+    D.searching = true;
+    const tid = ++D.seq;
+    D.transit.push({id: tid, at: new Date().toISOString(), stage: "search"});
+    setTimeout(() => { const x = D.transit.find((y) => y.id === tid); if (x) x.stage = "send"; }, 2200);
     setTimeout(() => {
+      D.transit = D.transit.filter((y) => y.id !== tid);
+      D.searching = false;
       D.pending -= 1;
       D.sent += 1;
-      D.leadsNew -= 1;
       const id = ++D.seq, name = DEMO_NAMES[D.sent % DEMO_NAMES.length], at = new Date().toISOString();
       D.chats.unshift({id, username: "user" + id, display_name: name, last_message_at: at, last_message_text: D.channel.text, last_message_from_me: 1, unread: 0, replied: false,
                        messages: [{id: id * 100, out: true, text: D.channel.text, at}]});
-    }, 1200);
+    }, 4500);
     return wait({balance: D.balance, pending: D.pending, sent: D.sent});
   }
   if (path === "chats") return wait({chats: D.chats.map(({messages, ...c}) => c)});
@@ -1238,14 +1904,39 @@ function demoApi(path, method, body) {
     if (!c) return fail(404, "Диалог не найден");
     if (m[2]) { c.messages.push({id: Date.now(), out: true, text: body.text, at: new Date().toISOString()}); c.last_message_text = body.text; c.last_message_from_me = 1; return wait({ok: true}); }
     c.unread = 0;
-    return wait({chat: {id: c.id, name: c.display_name, username: c.username}, messages: c.messages.map((x) => ({...x, status: "ok", can_edit: !!x.out, can_delete: !!x.out, edited: !!x.edited}))});
+    return wait({chat: {id: c.id, name: c.display_name, username: c.username, tg_url: "https://t.me/" + c.username, can_reply: !c.banned}, messages: c.messages.map((x) => ({...x, status: "ok", can_edit: !!x.out, can_delete: !!x.out, edited: !!x.edited}))});
   }
   if (path === "offer") return new Promise((r) => setTimeout(() => r({text: "Здравствуйте! Веду канал «НейроМагия» про нейросети в жизни и бизнесе. Думаю, вам может быть полезно. Расскажу подробнее?"}), 700));
-  if (path === "packs") return wait({packs: [{id: "p200", messages: 200, stars: 350}, {id: "p500", messages: 500, stars: 800}, {id: "p1000", messages: 1000, stars: 1400, badge: "Выгоднее"}],
-    methods: [{id: "stars", title: "Telegram Stars", available: true}, {id: "crypto", title: "Криптовалюта", available: false}]});
+  if (path === "packs") return wait({packs: [{id: "p200", messages: 200, stars: 360, usdt: 7.24}, {id: "p500", messages: 500, stars: 900, usdt: 18.1}, {id: "p1000", messages: 1000, stars: 1800, usdt: 36.2}],
+    methods: [{id: "stars", title: "Telegram Stars", available: true}, {id: "crypto", title: "Криптовалюта (USDT)", available: true}]});
+  if (path === "invoice" && body.method === "crypto") {
+    const pk = {p200: ["7.241", 200], p500: ["18.101", 500], p1000: ["36.201", 1000]}[body.pack_id] || ["7.241", 200];
+    D.pending = body.pack_id;
+    D.crypto = {payload: "demo-" + D.seq++, at: Date.now()};
+    return wait({method: "crypto", payload: D.crypto.payload, address: "TNazA3VskRtRksK11ZbaQHqifRt46R9Boa", network: "TRC20", token: "USDT", amount: pk[0],
+      expires_at: new Date(Date.now() + 120 * 60e3).toISOString(), status: "pending"});
+  }
+  if (path.startsWith("invoice/") && D.crypto) {
+    if (Date.now() - D.crypto.at > 9000 && !D.crypto.paid) { D.crypto.paid = true; demoPay(); }
+    return wait({status: D.crypto.paid ? "paid" : "pending", balance: D.balance});
+  }
   if (path === "invoice") { D.pending = body.pack_id; return wait({link: "demo", payload: "demo-" + D.seq++}); }
   if (path === "payments") return wait({payments: D.payments});
   return fail(404, "Нет такого метода");
+}
+window.DEMO_OPS = window.DEMO_OPS || (DEMO && /[?&]demo_ops/.test(location.search));
+if (window.DEMO_OPS) {
+  Object.assign(DEMO_DB, {lang: "ru", gift_claimed: true, balance: 37, ops: genOps(),
+    channel: {handle: "neuro_magic", kind: "channel", status: "ready", text: DEMO_TEXT, error: null}});
+  window.addEventListener("load", () => setTimeout(async () => {
+    if (!S.me || !S.me.operator) return;
+    const v = window.DEMO_OPS_VIEW || {};                    // какой вид показать сразу (для макета)
+    Object.assign(S.ops, {order: v.order || "new", filter: v.filter || "all"});
+    if (v.dark) { S.themePref = "dark"; applyTheme(); }
+    showTab("profile");
+    await openOps();
+    if (v.open) openOpsThread(v.open);
+  }, 1200));
 }
 function demoPay() {
   const D = DEMO_DB, map = {p200: [200, 350], p500: [500, 800], p1000: [1000, 1400]}, v = map[D.pending] || [500, 800];

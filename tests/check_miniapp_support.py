@@ -54,7 +54,7 @@ assert mini._channel_view(store.get_user(1))["kind"] == "topic"
 assert mini._channel_view(store.get_user(2)) is None
 
 # ── поддержка ────────────────────────────────────────────────────────────────
-sent, delivered = [], []
+sent, delivered, kbs = [], [], []
 
 
 async def fake_send(chat_id, text, *, button=None, query=""):
@@ -64,9 +64,10 @@ async def fake_send(chat_id, text, *, button=None, query=""):
 next_id = {"n": 500}
 
 
-async def fake_deliver(chat_id, text):
+async def fake_deliver(chat_id, text, *, keyboard=None):
     next_id["n"] += 1
     delivered.append((chat_id, next_id["n"], text))
+    kbs.append(keyboard)
     return next_id["n"]
 
 
@@ -134,4 +135,52 @@ run(mini._deliver_support())
 assert delivered[-1][0] == 777 and "Не пришла оплата" in delivered[-1][2] and "Ольга" in delivered[-1][2]
 # у покупателей свои переписки
 assert [m["text"] for m in store.support_messages(2)] == ["Не пришла оплата"]
+# ── панель оператора: обращения по людям, сортировка по времени, ответ из приложения ──
+import time  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
+mini._seen.clear()
+assert kbs[0] is None or "ops=" in str(kbs[0]), "копия оператору приходит с кнопкой «Открыть обращения»"
+op2 = store.upsert_user(888, username="Other_Op", first_name="Второй", last_name=None)
+assert mini._is_operator(op2) is True and store.state_get("operator:other_op") == "888", "вход в приложение запоминает id оператора"
+assert mini._is_operator(store.get_user(1)) is False, "обычный покупатель не оператор"
+try:
+    mini.current_operator(store.get_user(1))
+    raise AssertionError("покупателю панель не открывается")
+except HTTPException as e:
+    assert e.status_code == 403
+assert mini._is_operator({"tg_id": 5555, "username": "other_op"}) is False, "чужой аккаунт с занятым именем — не оператор"
+assert sorted(mini._operator_ids()) == [777, 888]
+
+store.upsert_user(3, username="petr", first_name="Пётр", last_name="К")
+store.support_add(3, "in", "Здравствуйте, нужна помощь с оплатой")
+data = store.ops_threads("new")
+assert [t["tg_id"] for t in data["threads"]] == [3, 2, 1], "сначала новые"
+assert [t["tg_id"] for t in store.ops_threads("old")["threads"]] == [1, 2, 3], "сначала старые"
+assert data["counts"] == {"all": 3, "waiting": 2, "unread": 2}, data["counts"]
+assert [t["tg_id"] for t in store.ops_threads("new", only_waiting=True)["threads"]] == [3, 2], "без ответа: у Ивана последним ответила поддержка"
+assert [t["tg_id"] for t in store.ops_threads("old", q="оплат")["threads"]] == [2, 3], "поиск по тексту и имени"
+assert [t["tg_id"] for t in store.ops_threads("new", q="@petr")["threads"]] == [3]
+view = mini.ops_threads(order="old", filter="waiting", q="", user=op2)
+assert [t["id"] for t in view["threads"]] == [2, 3] and view["threads"][0]["name"] == "Ольга" and view["threads"][0]["waiting"] is True
+assert store.ops_unread_threads() == 2
+t = mini.ops_thread(3, op2)
+assert t["user"]["name"] == "Пётр К" and t["messages"][0]["out"] is False and store.ops_unread_threads() == 1, "открыли — прочитано"
+
+# ответ из приложения: в чат покупателя и в бот, а если у покупателя открыто приложение — только в чат
+sent.clear()
+res = run(mini.ops_reply(2, mini.SupportIn(text="Проверили, оплата прошла."), op2))
+assert res["messages"][-1] == {**res["messages"][-1], "out": True, "text": "Проверили, оплата прошла."}
+assert any(x[0] == 2 and "Ответ поддержки" in x[1] for x in sent) and store.ops_threads()["counts"]["waiting"] == 1
+sent.clear()
+mini._seen[3] = time.time()
+run(mini.ops_reply(3, mini.SupportIn(text="Сейчас посмотрю"), op2))
+assert not [x for x in sent if x[0] == 3] and store.support_messages(3)[-1]["direction"] == "out"
+try:
+    run(mini.ops_reply(404, mini.SupportIn(text="x"), op2))
+    raise AssertionError("несуществующее обращение")
+except HTTPException as e:
+    assert e.status_code == 404
+# убрали имя из MINIAPP_OPERATORS — доступ пропал, хотя id уже запомнен
+os.environ["MINIAPP_OPERATORS"] = "VanLove2048"
+assert mini._is_operator(op2) is False and mini._operator_ids() == [777]
 print("ALL OK")

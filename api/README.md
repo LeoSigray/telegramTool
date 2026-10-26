@@ -173,6 +173,9 @@ initData), `api/miniapp_channel.py` (канал или ниша, текст), `a
 | POST | `/miniapp/api/gift` | Получить подарок (один раз) |
 | GET, POST | `/miniapp/api/channel` | Что продвигает покупатель: прочитать состояние / указать канал, продукт или нишу |
 | PUT  | `/miniapp/api/channel/text` | Поправить текст сообщения |
+| POST | `/miniapp/api/lang` | Язык интерфейса `ru` или `en` (выбирается при первом входе в боте и в Профиле) |
+| GET | `/miniapp/api/ops/threads` | Только операторы (MINIAPP_OPERATORS): обращения людей в поддержку, `order=new\|old`, `filter=all\|waiting`, `q` |
+| GET, POST | `/miniapp/api/ops/threads/{id}` и `/reply` | Операторам: диалог с человеком и ответ из приложения |
 | POST | `/miniapp/api/tap` | Одно нажатие: списывает 1 сообщение и ставит отправку в очередь |
 | GET  | `/miniapp/api/chats`, `/miniapp/api/chats/{id}` | Диалоги покупателя (отправленные и ответы) |
 | POST | `/miniapp/api/chats/{id}/reply` | Ответить |

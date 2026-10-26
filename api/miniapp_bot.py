@@ -132,10 +132,13 @@ def open_app_keyboard(text: str = "Открыть", query: str = "") -> dict:
     return {"inline_keyboard": [[{"text": text, "web_app": {"url": app_url(query)}}]]}
 
 
-async def send(chat_id: int, text: str, *, button: str | None = None, query: str = "") -> None:
+async def send(chat_id: int, text: str, *, button: str | None = None, query: str = "",
+               keyboard: dict | None = None) -> None:
     """Сообщение покупателю. Ошибки только логируем: уведомление не важнее основной работы."""
     params: dict = {"chat_id": chat_id, "text": text}
-    if button and public_url():
+    if keyboard:
+        params["reply_markup"] = keyboard
+    elif button and public_url():
         params["reply_markup"] = open_app_keyboard(button, query)
     try:
         await call("sendMessage", **params)
@@ -143,10 +146,13 @@ async def send(chat_id: int, text: str, *, button: str | None = None, query: str
         log.warning("[miniapp-bot] не отправил сообщение %s: %s", chat_id, e)
 
 
-async def deliver(chat_id: int, text: str) -> int | None:
+async def deliver(chat_id: int, text: str, *, keyboard: dict | None = None) -> int | None:
     """Сообщение, номер которого нужен вызывающему (копия для оператора поддержки). None — не дошло."""
+    params: dict = {"chat_id": chat_id, "text": text}
+    if keyboard:
+        params["reply_markup"] = keyboard
     try:
-        res = await call("sendMessage", chat_id=chat_id, text=text)
+        res = await call("sendMessage", **params)
         return int(res["message_id"])
     except Exception as e:  # noqa: BLE001
         log.warning("[miniapp-bot] не доставил %s: %s", chat_id, e)
@@ -169,9 +175,9 @@ async def setup() -> None:
     try:
         await call("setWebhook", url=f"{public_url()}/miniapp/bot/webhook",
                    secret_token=webhook_secret(),
-                   allowed_updates=["message", "pre_checkout_query"])
+                   allowed_updates=["message", "callback_query", "pre_checkout_query"])
         await call("setChatMenuButton",
-                   menu_button={"type": "web_app", "text": "Открыть",
+                   menu_button={"type": "web_app", "text": "Open · Открыть",
                                 "web_app": {"url": app_url()}})
         log.info("[miniapp-bot] вебхук и кнопка меню настроены")
     except Exception as e:  # noqa: BLE001
@@ -182,25 +188,60 @@ async def setup() -> None:
 #  Тексты бота
 # ──────────────────────────────────────────────────────────────────────────
 
-WELCOME = ("Здравствуйте! Это «Клиент в один клик».\n\n"
-           "Пришлите свой канал и нажимайте на большую кнопку: каждое нажатие отправляет "
-           "одно сообщение. Отвечайте людям прямо здесь. Первые 10 сообщений — в подарок.")
+LANGS = ("ru", "en")
+LANG_PROMPT = "Выберите язык / Choose your language"
+
+_T = {
+    "welcome": {
+        "ru": ("Здравствуйте! Это «Клиент в один клик».\n\n"
+               "Скажите, что вы продвигаете, и нажимайте на большую кнопку: каждое нажатие отправляет "
+               "одно сообщение. Отвечайте людям прямо здесь. Первые 10 сообщений — в подарок."),
+        "en": ("Hello! This is “Client in One Click”.\n\n"
+               "Tell us what you promote and tap the big button: every tap sends one message. "
+               "Reply to people right here. Your first 10 messages are a gift."),
+    },
+    "open": {"ru": "Открыть", "en": "Open"},
+    "open_app": {"ru": "Открыть приложение", "en": "Open the app"},
+    "reply_button": {"ru": "Ответить", "en": "Reply"},
+    "person": {"ru": "Человек", "en": "Someone"},
+    "stale_invoice": {"ru": "Счёт устарел, создайте новый в приложении",
+                      "en": "This invoice has expired, create a new one in the app"},
+}
 
 
-def reply_text(name: str | None, text: str | None) -> str:
-    who = name or "Человек"
+def lang_of(user: dict | None) -> str:
+    lang = (user or {}).get("lang")
+    return lang if lang in LANGS else "ru"
+
+
+def tx(key: str, lang: str = "ru") -> str:
+    return _T[key].get(lang) or _T[key]["ru"]
+
+
+def lang_keyboard() -> dict:
+    """Кнопки выбора языка: 1 Русский, 2 English."""
+    return {"inline_keyboard": [[{"text": "1  Русский", "callback_data": "lang:ru"},
+                                 {"text": "2  English", "callback_data": "lang:en"}]]}
+
+
+def reply_text(name: str | None, text: str | None, lang: str = "ru") -> str:
+    who = name or tx("person", lang)
     body = (text or "").strip()
     if len(body) > 160:
         body = body[:157] + "…"
-    return f"💬 Новый ответ от {who}" + (f":\n«{body}»" if body else "")
+    head = "💬 Новое сообщение от" if lang != "en" else "💬 New message from"
+    return f"{head} {who}" + (f":\n«{body}»" if body else "")
 
 
-def support_text(text: str) -> str:
+def support_text(text: str, lang: str = "ru") -> str:
     body = (text or "").strip()
     if len(body) > 300:
         body = body[:297] + "…"
-    return f"💬 Ответ поддержки:\n«{body}»"
+    head = "💬 Ответ поддержки:" if lang != "en" else "💬 Support replied:"
+    return f"{head}\n«{body}»"
 
 
-def paid_text(messages: int) -> str:
+def paid_text(messages: int, lang: str = "ru") -> str:
+    if lang == "en":
+        return f"Payment received: +{messages} messages. You can send now."
     return f"Оплата получена: +{messages} сообщений. Можно отправлять."

@@ -103,6 +103,10 @@ assert store.get_user(2)["channel_status"] == "failed"
 assert store.reserve(1, 1) and store.get_user(1)["balance"] == 9
 t1 = store.enqueue_tap(1)
 assert store.pending_taps(1) == 1 and store.sent_total(1) == 0
+# человека под это нажатие ещё нет: отправлять нечего, сначала поиск
+assert store.claim_next_tap() is None and store.next_search() == 1
+store.add_leads(1, [{"username": "gate"}])
+assert store.next_search() is None, "человек найден: поиск больше не нужен"
 tap = store.claim_next_tap()
 assert tap["id"] == t1 and store.claim_next_tap() is None, "одно нажатие берём один раз"
 store.release_tap(t1)
@@ -113,6 +117,8 @@ assert store.finish_tap(t1, status="failed", error="некому") is not None
 assert store.get_user(1)["balance"] == 10, "ошибка возвращает сообщение"
 assert store.finish_tap(t1, status="failed") is None, "повтор не возвращает второй раз"
 assert store.pending_taps(1) == 0
+with sqlite3.connect(dbp) as c:
+    c.execute("DELETE FROM mini_leads WHERE tg_id=1")
 
 # 4. отправка: поддельный клиент и аккаунт
 class Ent:
@@ -280,25 +286,33 @@ assert run(send._process({"id": t4, "tg_id": 2})) is False
 assert store.get_user(2)["balance"] == 5 and store.sent_total(2) == 0
 print("taps and sending: ok")
 
-# поиск клиентов: очередь, прерванный поиск, повторный поиск
-store.parse_enqueue(1)
-assert store.get_user(1)["parse_status"] == "queued"
-store.parse_enqueue(1)                                  # повторный вызов ничего не ломает
-job = store.parse_claim()
-assert job["tg_id"] == 1 and store.get_user(1)["parse_status"] == "running" and store.parse_claim() is None
-store.parse_enqueue(1)                                  # идущий поиск не сбрасывается
+# поиск человека: только по нажатию и по одному
+with sqlite3.connect(dbp) as c:
+    c.execute("DELETE FROM mini_leads WHERE tg_id=1")
+    c.execute("UPDATE mini_taps SET status='failed' WHERE status IN ('queued','sending')")
+assert store.next_search() is None, "без нажатия поиск не запускается"
+store.reserve(1, 1)
+t5 = store.enqueue_tap(1)
+assert store.next_search() == 1 and store.claim_next_tap() is None
+assert [(x["id"], x["stage"]) for x in store.transit(1)] == [(t5, "search")], "нажатие без человека: ищем"
+store.add_leads(1, [{"username": "transit1"}])
+t6 = store.enqueue_tap(1)
+assert [x["stage"] for x in store.transit(1)] == ["send", "search"], "старое нажатие отправляется, новое ищет"
+with sqlite3.connect(dbp) as c:
+    c.execute("DELETE FROM mini_taps WHERE id=?", (t6,))
+    c.execute("DELETE FROM mini_leads WHERE username='transit1'")
+store.parse_set(1, "running")
 assert store.get_user(1)["parse_status"] == "running"
-assert store.parse_recover() == 1 and store.get_user(1)["parse_status"] == "queued"
-store.parse_claim()
-store.parse_finish(1, "done")
-u = store.get_user(1)
-assert u["parse_status"] == "done" and u["parse_runs"] == 1 and u["parse_finished_at"]
-# клиентов почти нет, баланс есть, прошло время: ставим повторный поиск
-assert store.parse_topup_candidates(5, 0, 12) == [1]
-assert store.parse_topup_candidates(5, 3600, 12) == [], "рано: поиск закончился только что"
-assert store.parse_topup_candidates(5, 0, 1) == [], "лимит поисков исчерпан"
-store.add_leads(1, [{"username": f"u{i}"} for i in range(6)])
-assert store.parse_topup_candidates(5, 0, 12) == [], "клиентов достаточно"
+assert store.parse_recover() == 1 and store.get_user(1)["parse_status"] == "failed"
+store.parse_set(1, "done")
+assert store.get_user(1)["parse_runs"] >= 1 and store.get_user(1)["parse_finished_at"]
+assert store.oldest_waiting_tap(1)["id"] == t5
+store.finish_tap(t5, status="failed", error="не нашли подходящего человека")
+assert store.last_failed_tap(1)["error"] == "не нашли подходящего человека"
+assert store.next_search() is None
+assert store.known_leads(1) == set()
+store.add_leads(1, [{"username": "Known1"}])
+assert store.known_leads(1) == {"known1"}
 # другой канал или ниша: старые клиенты и счётчик поисков сбрасываются
 store.set_channel_building(1, "mychan", "topic")
 assert store.leads_new(1) == 0 and store.get_user(1)["parse_status"] is None and store.get_user(1)["parse_runs"] == 0

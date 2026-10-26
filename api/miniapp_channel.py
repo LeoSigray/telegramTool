@@ -6,8 +6,8 @@ api/miniapp_channel.py — что покупатель продвигает и �
 «маникюр в Москве», «онлайн-школа английского»). Если это канал, сервис читает
 название, описание и свежие посты (как умный парсинг строит профиль клиента,
 parsing/smart/profile.py). Если продукт или ниша, текст пишется по этой фразе.
-Дальше бесплатная нейронка пишет первое сообщение, а умный парсинг (api/miniapp_parse.py)
-ищет клиентов под этот канал или нишу.
+Дальше бесплатная нейронка пишет первое сообщение, а людей под этот канал или нишу по одному
+на каждое нажатие ищет умный парсинг (api/miniapp_parse.py).
 
 Текст можно поправить в профиле. Если нейронка недоступна, текст собирается шаблоном.
 """
@@ -204,7 +204,6 @@ async def _build(tg_id: int, kind: str, value: str, strict: bool) -> None:
             profile = _topic_profile(value)
         text = await make_text(profile)
         await asyncio.to_thread(store.set_channel_ready, tg_id, text)
-        await asyncio.to_thread(store.parse_enqueue, tg_id)        # клиентов под эту тему ищет умный парсинг
         log.info("[miniapp] подключено: %s %r (покупатель %s)", profile["kind"], value[:60], tg_id)
     except ChannelError as e:
         await asyncio.to_thread(store.set_channel_failed, tg_id, str(e))

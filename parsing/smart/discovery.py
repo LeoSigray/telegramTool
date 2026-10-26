@@ -461,11 +461,18 @@ async def graph_round(client, profile, params, store, lex, log, state: Discovery
     frontier = state.frontier(params)[:params.graph_seeds]
     seeds = []
     reread: list = []
+    flooded = False
     for z in frontier:
         z["expanded"] = True
-        if z["ent"] is None and z["src"].username:
-            z["ent"] = await _safe(lambda: client.get_entity(z["src"].username), params, log,
-                                   z["src"].label())
+        if z["ent"] is None and z["src"].username and not flooded:
+            try:
+                z["ent"] = await _safe(lambda: client.get_entity(z["src"].username), params, log,
+                                       z["src"].label())
+            except _Flood:
+                # лимит на открытие @имён: остальные зёрна уже не открыть, идём с теми, что есть
+                flooded = True
+                state.stop = True
+                continue
             await _pause(0.5, 1.0)
         if z["ent"] is not None:
             seeds.append((z["src"], z["ent"], z["probe"]))

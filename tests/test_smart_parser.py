@@ -453,6 +453,42 @@ class OnlineFakeClientTests(unittest.TestCase):
         except ImportError:
             self.skipTest("telethon не установлен")
 
+    def test_people_handed_over_as_found(self):
+        """on_found отдаёт людей по мере нахождения, каждого один раз и до конца прогона."""
+        from unittest import mock
+
+        from parsing.smart.run import run_smart_parse
+
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(*_a, **_k):
+            await real_sleep(0)
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(asyncio, "sleep", fast_sleep):
+            client = FakeClient()
+            params = P(channel="@client_crm", no_llm=True, check_contacted=False, people=10,
+                       search_messages=False, db_path=os.path.join(tmp, "s.db"),
+                       profiles_dir=os.path.join(tmp, "p"), out=os.path.join(tmp, "o", "a.xlsx"))
+            batches, at_end = [], []
+
+            def on_found(people):
+                batches.append([c.author.username for c in people if c.author])
+
+            def on_people(people):
+                at_end.append(sorted(c.author.username for c in people if c.author))
+
+            try:
+                asyncio.run(run_smart_parse(params, client=client, echo=False,
+                                            on_found=on_found, on_people=on_people))
+            except PermissionError:
+                pass                              # Windows держит открытый xlsx: к проверке не относится
+            flat = [u for b in batches for u in b]
+            self.assertTrue(flat, "никого не отдали")
+            self.assertEqual(len(flat), len(set(flat)), "каждый человек отдаётся один раз")
+            self.assertIn("buyer_ivan", flat)
+            if at_end:                            # итоговый список не содержит никого, кого не отдали раньше
+                self.assertTrue(set(at_end[0]) >= set(flat), (at_end, flat))
+
     def test_full_online_pipeline(self):
         from unittest import mock
 
@@ -1391,7 +1427,7 @@ class WebSearchTests(unittest.TestCase):
                  "https://b.ru/x": '<a href="https://t.me/chat_one">1</a>'}
         calls = {"search": 0, "page": 0}
 
-        async def fake_search(http, q, n):
+        async def fake_search(http, q, n, proxy=None):
             calls["search"] += 1
             return list(pages)
 
@@ -1408,7 +1444,7 @@ class WebSearchTests(unittest.TestCase):
         async def fast_sleep(*_a, **_k):
             await real_sleep(0)
         with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(ws, "ddg_search", fake_search), \
+                mock.patch.object(ws, "search_routes", lambda: [ws.Route("fake", fake_search, 0.0)]), \
                 mock.patch.object(ws.WebFinder, "_page", fake_page), \
                 mock.patch.object(asyncio, "sleep", fast_sleep):
             st = Store(os.path.join(tmp, "s.db"))
@@ -1421,6 +1457,59 @@ class WebSearchTests(unittest.TestCase):
             f2 = ws.WebFinder(st, P(channel="@x"), Log())
             asyncio.run(f2.run(["чаты селлеров"]))
             self.assertEqual(calls["search"], 1, "выдача поисковика берётся из кеша")
+            st.close()
+
+    def test_engines_rotate_and_cool_down(self):
+        """Поисковик отказал — остывает, запрос уходит следующему; t.me из выдачи — сразу кандидат."""
+        from unittest import mock
+
+        from parsing.smart import websearch as ws
+
+        hits = {"captcha": 0, "empty": 0, "good": 0}
+
+        async def captcha(http, q, n, proxy=None):
+            hits["captcha"] += 1
+            raise ws.WebBlocked("DuckDuckGo ответил 202")
+
+        async def empty(http, q, n, proxy=None):
+            hits["empty"] += 1
+            raise ws.NoResults("bing")
+
+        async def good(http, q, n, proxy=None):
+            hits["good"] += 1
+            return ["https://t.me/shoes_opt_chat", "https://site.ru/list"]
+
+        async def no_page(self, http, url):
+            return {}
+
+        class Log:
+            def info(self, *a): pass
+            def warn(self, *a): pass
+
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(*_a, **_k):
+            await real_sleep(0)
+        routes =[ws.Route("A", captcha, 0.0), ws.Route("B", empty, 0.0), ws.Route("C", good, 0.0)]
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(ws, "search_routes", lambda: routes), \
+                mock.patch.object(ws.WebFinder, "_page", no_page), \
+                mock.patch.object(asyncio, "sleep", fast_sleep):
+            st = Store(os.path.join(tmp, "s.db"))
+            f = ws.WebFinder(st, P(channel="@x"), Log())
+            ranked = asyncio.run(f.run(["чаты обувь опт", "оптовики обуви чат"]))
+            self.assertEqual(ranked, ["shoes_opt_chat"], "ссылка t.me в выдаче — кандидат без скачивания страниц")
+            self.assertIn("выдача поисковика", f.via("shoes_opt_chat"))
+            self.assertEqual(hits, {"captcha": 1, "empty": 1, "good": 2},
+                             "отказавшие остывают и во втором запросе не трогаются")
+            self.assertGreater(routes[0].cool_until, routes[1].cool_until, "капча остывает дольше пустой выдачи")
+            self.assertEqual(f.engines["C"], 2)
+
+            # все честно ответили «пусто» — это пустая выдача, а не блокировка
+            routes[:] = [ws.Route("B1", empty, 0.0), ws.Route("B2", empty, 0.0)]
+            f2 = ws.WebFinder(st, P(channel="@x"), Log())
+            self.assertEqual(asyncio.run(f2.run(["запрос без выдачи"])), [])
+            self.assertFalse(f2.blocked)
             st.close()
 
     def test_web_queries_fallback_without_llm(self):

@@ -159,11 +159,14 @@ def _rank_people(read: list, store, profile, lex, params, now, own_ids, audience
 
 
 async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_people=None,
-                          handle_signals: bool = True) -> str:
+                          on_found=None, handle_signals: bool = True) -> str:
     """Полный прогон. Возвращает путь к Excel.
 
-    on_people(result) — вызывается со списком найденных людей перед записью отчёта (так их забирает
-    мини-приложение). handle_signals=False — не трогать Ctrl+C: нужно, когда парсинг идёт внутри
+    on_people(people) — вызывается перед записью отчёта со списком найденных людей и следом
+    запасом (params.reserve); так их забирает мини-приложение. on_found(people) — отдаёт людей
+    по мере нахождения: как только после полной проверки появляется кто-то новый, не дожидаясь
+    конца прогона (каждый человек приходит один раз); с ним поиск заканчивается, когда отдано
+    params.people человек. handle_signals=False — не трогать Ctrl+C: нужно, когда парсинг идёт внутри
     чужого процесса (веб-сервиса), у которого свои обработчики сигналов."""
     if not params.channel:
         raise RuntimeError("не указан канал клиента")
@@ -398,14 +401,6 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
             read.extend(src for src, _ in batch)
             return True
 
-        while await read_next_wave():
-            have = count_now(read)
-            log.info("сбор", f"прочитано источников: {len(read)}, подходящих людей: {have} "
-                             f"(нужно {params.people}, с запасом {goal}), раундов поиска: "
-                             f"{state.round}")
-            if have >= goal:
-                break
-
         # 4. финальный разбор: LLM, проверка аудитории, био. Если после всех проверок людей
         #    меньше нужного, а в очереди есть чаты — дочитываем ещё волну и повторяем
         judge = LLMJudge(store, profile, params, log) if use_llm else None
@@ -494,14 +489,50 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
                     "junk": junk_metrics, "sources": sources, "messages": messages, "authors": authors,
                     "chat_info": chat_info, "pairs": interest.chat_pairs(people_by_chat, sources)}
 
-        final = await final_pass()
+        sent_ids: set = set()            # кому уже отдали через on_found
+        cached: dict = {"final": None, "read": -1}
+        checked = 0
+
+        async def checked_pass() -> dict:
+            """Полный разбор по тому, что прочитано; тот же результат не считаем дважды."""
+            if cached["final"] is None or cached["read"] != len(read):
+                cached["final"], cached["read"] = await final_pass(), len(read)
+            return cached["final"]
+
+        def hand_over(final: dict) -> None:
+            """Отдаёт вызывающему тех, кто прошёл все проверки и ещё не был отдан."""
+            fresh = [c for c in final["result"] if c.msg.sender_id not in sent_ids]
+            if not fresh:
+                return
+            sent_ids.update(c.msg.sender_id for c in fresh)
+            log.info("отдача", f"найден(о) {len(fresh)}: отдаём сразу, всего отдано {len(sent_ids)} "
+                               f"из {params.people}")
+            on_found(fresh)
+
+        while await read_next_wave():
+            have = count_now(read)
+            log.info("сбор", f"прочитано источников: {len(read)}, подходящих людей: {have} "
+                             f"(нужно {params.people}, с запасом {goal}), раундов поиска: "
+                             f"{state.round}")
+            if on_found is not None and have > checked:
+                # по правилам кто-то уже подходит: проверяем по-настоящему и отдаём сразу
+                checked = have
+                hand_over(await checked_pass())
+                if len(sent_ids) >= params.people:
+                    break
+            if have >= goal and on_found is None:
+                break
+
+        final = await checked_pass()
         rounds = 0
         while len(final["result"]) < params.people and rounds < params.topup_rounds and not stop["v"]:
             if not await read_next_wave():
                 break
             rounds += 1
             log.info("сбор", f"после финальных проверок не хватает людей — дочитали волну {rounds}")
-            final = await final_pass()
+            final = await checked_pass()
+            if on_found is not None:
+                hand_over(final)
 
         # статусы источников: мусор по содержимому, непрочитанные из очереди
         filter_sources({s.chat_id: s for s in read}, final["messages"], final["authors"], lex,
@@ -521,6 +552,8 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
             store.save_decision(params.channel, src)
 
         result, reserve, no_u = final["result"], final["reserve"], final["no_u"]
+        if on_found is not None:
+            hand_over(final)
         if not params.offline:
             from collections import Counter
             per_src = Counter(c.msg.source_id for c in result)
@@ -543,7 +576,7 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
         if len(result) < params.people:
             log.warn("итог", f"нашлось {len(result)} из {params.people} нужных людей")
         if on_people is not None:
-            on_people(result)
+            on_people(result + reserve)
         log.info("отчёт", f"сохраняю {out_path}")
         path = write_report(out_path, result, no_u, prep.dropped, report, cqi, profile, params, log,
                             junk_metrics, reserve, final["chat_info"], final["pairs"])
