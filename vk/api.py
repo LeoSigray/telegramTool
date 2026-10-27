@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Тонкий клиент VK API (user access token). Лимит VK — 3 запроса/с на токен."""
+"""Тонкий клиент VK API (user access token). Лимит VK — 3 запроса/с на токен.
+
+Прокси: VK_PROXY (socks5://логин:пароль@хост:порт или http://…) — запросы к VK идут через него, чтобы аккаунты
+не светились с адреса сервера. Без VK_PROXY запросы идут напрямую."""
+import os
 import time
 
 import requests
@@ -20,8 +24,13 @@ class VKError(Exception):
 
 
 class VKApi:
-    def __init__(self, token: str, *, session=None, sleep=time.sleep, clock=time.monotonic):
+    def __init__(self, token: str, *, session=None, sleep=time.sleep, clock=time.monotonic, proxy: str | None = None):
         self.token = token
+        px = (proxy if proxy is not None else os.getenv("VK_PROXY", "")).strip()
+        if session is None and px:
+            px = px.replace("socks5://", "socks5h://", 1)        # DNS тоже через прокси
+            session = requests.Session()
+            session.proxies = {"http": px, "https": px}
         self._http = session or requests
         self._sleep, self._clock = sleep, clock
         self._last = 0.0

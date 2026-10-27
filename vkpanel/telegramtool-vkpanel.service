@@ -1,0 +1,18 @@
+[Unit]
+Description=telegramTool: VK-панель (бот управления рассылкой VK, только для двух человек)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=tg
+Group=tg
+WorkingDirectory=/home/tg/telegramTool
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/tg/telegramTool/.venv/bin/python -m vkpanel
+Restart=always
+RestartSec=20
+
+[Install]
+WantedBy=multi-user.target

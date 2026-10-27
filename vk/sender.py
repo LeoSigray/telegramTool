@@ -13,17 +13,21 @@ import time
 from datetime import datetime, timezone
 
 from . import config as cfg
-from . import store
+from . import messages, store
 from .api import AUTH_FAILED, CAPTCHA, CANT_WRITE, FLOOD, NO_RIGHTS, VALIDATION, VKApi, VKError
 
 MAX_BAD_IN_ROW = 10   # столько неудач подряд без единой отправки — значит, что-то не так с токеном/правами
 
 
-def render(text: str, target: dict) -> str:
-    """{name} -> имя получателя (если имени нет — подстановка убирается вместе с пробелом)."""
-    name = (target.get("first_name") or "").strip()
-    out = text.replace("{name}", name)
-    return out.replace("  ", " ").strip() if not name else out
+def render(text: str, target: dict, link: str = "") -> str:
+    """{name} -> имя получателя, {link} -> ссылка (если имени нет — подстановка убирается вместе с пробелом)."""
+    return messages.render(text, target, link)
+
+
+def daily_limit() -> int:
+    """Новых диалогов с одного аккаунта за сутки: настройка из панели (/limit) или значение по умолчанию."""
+    raw = store.get_setting("dm_limit")
+    return int(raw) if raw and raw.isdigit() and int(raw) > 0 else cfg.DM_LIMIT_PER_ACCOUNT
 
 
 def _usable(acc: dict, now: datetime) -> bool:
@@ -33,16 +37,20 @@ def _usable(acc: dict, now: datetime) -> bool:
         until = datetime.strptime(acc["rest_until"], store._FMT).replace(tzinfo=timezone.utc)
         if until > now:
             return False
-    return store.sent_last_24h(acc["id"], now) < cfg.DM_LIMIT_PER_ACCOUNT
+    return store.sent_last_24h(acc["id"], now) < daily_limit()
 
 
-def run_broadcast(text: str, limit: int, *, api_factory=VKApi, sleep=time.sleep,
-                  rng: random.Random | None = None, now=None, on_event=print) -> dict:
+def run_broadcast(text, limit: int, *, api_factory=VKApi, sleep=time.sleep,
+                  rng: random.Random | None = None, now=None, on_event=print,
+                  link: str = "", should_stop=lambda: False) -> dict:
     """
     Отправляет текст первым `limit` целям со статусом new (по убыванию score).
+    text — одна строка или список вариантов [(имя, текст), ...]: каждому человеку свой, случайный.
+    link подставляется вместо {link}; should_stop() — просьба остановиться (после текущего сообщения).
     Возвращает {'sent', 'closed', 'failed', 'left'} и причину остановки в 'stop'.
     """
     rng = rng or random.Random()
+    options = [("—", text)] if isinstance(text, str) else list(text)
     now = now or (lambda: datetime.now(timezone.utc))
     stats = {"sent": 0, "closed": 0, "failed": 0, "stop": None}
     targets = store.list_targets("new", limit)
@@ -52,6 +60,10 @@ def run_broadcast(text: str, limit: int, *, api_factory=VKApi, sleep=time.sleep,
 
     for t in targets:
         acc = None
+        if should_stop():
+            stats["stop"] = "остановлено вручную"
+            break
+        variant, body = rng.choice(options)
         while True:
             accounts = [a for a in store.list_accounts() if _usable(a, now())]
             if not accounts:
@@ -63,7 +75,7 @@ def run_broadcast(text: str, limit: int, *, api_factory=VKApi, sleep=time.sleep,
             label = acc["name"] or acc["id"]
             try:
                 api.call("messages.send", user_id=t["user_id"], random_id=rng.randint(1, 2 ** 31 - 1),
-                         message=render(text, t))
+                         message=render(body, t, link))
             except VKError as e:
                 if e.code in (FLOOD, CAPTCHA, VALIDATION):
                     store.set_account_status(acc["id"], "resting", cfg.REST_AFTER_FLOOD_H)
@@ -77,14 +89,14 @@ def run_broadcast(text: str, limit: int, *, api_factory=VKApi, sleep=time.sleep,
                     continue
                 if e.code in CANT_WRITE:
                     store.mark_target(t["user_id"], "closed", label, e.message)
-                    store.log_send(acc["id"], t["user_id"], "closed", e.message)
+                    store.log_send(acc["id"], t["user_id"], "closed", e.message, variant)
                     stats["closed"] += 1
                     bad += 1
                     on_event(f"  ✗ {t['user_id']}: написать нельзя ({e.message})")
                     sleep(rng.uniform(*cfg.SKIP_DELAY))
                     break
                 store.mark_target(t["user_id"], "failed", label, f"{e.code}: {e.message}")
-                store.log_send(acc["id"], t["user_id"], "failed", f"{e.code}: {e.message}")
+                store.log_send(acc["id"], t["user_id"], "failed", f"{e.code}: {e.message}", variant)
                 stats["failed"] += 1
                 bad += 1
                 on_event(f"  ✗ {t['user_id']}: ошибка VK {e.code} — {e.message}")
@@ -95,7 +107,7 @@ def run_broadcast(text: str, limit: int, *, api_factory=VKApi, sleep=time.sleep,
                 break
             else:
                 store.mark_target(t["user_id"], "sent", label)
-                store.log_send(acc["id"], t["user_id"], "sent")
+                store.log_send(acc["id"], t["user_id"], "sent", None, variant)
                 stats["sent"] += 1
                 bad = 0
                 on_event(f"  ✓ [{label}] -> id{t['user_id']} {t['first_name']} "

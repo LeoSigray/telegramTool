@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Хранилище VK в общей SQLite-базе (data/database.db): цели и токены-аккаунты."""
+"""Хранилище VK: цели, токены-аккаунты, настройки, ответы.
+
+По умолчанию лежит в общей базе проекта (data/database.db), но на сервере VK живёт отдельно от Mini App:
+путь задаёт VK_DB_PATH (например, data/vk.db), и ни один покупатель Mini App этих таблиц не видит."""
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -17,10 +21,22 @@ def ts(dt: datetime | None = None) -> str:
     return (dt or _now()).astimezone(timezone.utc).strftime(_FMT)
 
 
+def db_path() -> str:
+    return os.getenv("VK_DB_PATH", "").strip() or _db.DB_PATH
+
+
 @contextmanager
 def _c():
-    conn = sqlite3.connect(_db.DB_PATH, timeout=15)
+    path = db_path()
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    new_file = not os.path.exists(path)
+    conn = sqlite3.connect(path, timeout=15)
     conn.row_factory = sqlite3.Row
+    if new_file:
+        try:
+            os.chmod(path, 0o600)             # здесь токены и пароли аккаунтов: читать может только владелец
+        except OSError:
+            pass
     try:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS vk_targets (
@@ -40,11 +56,42 @@ def _c():
             id INTEGER PRIMARY KEY AUTOINCREMENT, login TEXT NOT NULL, password TEXT,
             extra TEXT, order_id TEXT, product TEXT, cost REAL, bought_at TEXT,
             has_token INTEGER NOT NULL DEFAULT 0, UNIQUE(login, order_id));
+        CREATE TABLE IF NOT EXISTS vk_settings (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE IF NOT EXISTS vk_replies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER, user_id INTEGER,
+            msg_id INTEGER, text TEXT, ts TEXT, notified INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(account_id, msg_id));
         """)
+        _migrate(conn)
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate(conn) -> None:
+    """Колонки, которых не было в первой версии (старые базы дополняются на лету)."""
+    def add(table: str, col: str, kind: str) -> None:
+        if col not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
+    for col, kind in (("age", "INTEGER"), ("last_seen", "INTEGER"), ("act", "REAL"), ("a_w", "REAL"),
+                      ("edu_status", "TEXT"), ("source", "TEXT")):
+        add("vk_targets", col, kind)
+    add("vk_sends", "variant", "TEXT")
+
+
+# ── настройки (ссылка-рефералка, лимиты и т. п.) ────────────────────────────
+
+def get_setting(key: str, default: str | None = None) -> str | None:
+    with _c() as c:
+        row = c.execute("SELECT value FROM vk_settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with _c() as c:
+        c.execute("INSERT INTO vk_settings(key,value) VALUES (?,?)"
+                  " ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
 
 
 # ── цели ────────────────────────────────────────────────────────────────────
@@ -60,15 +107,18 @@ def save_targets(rows: list[dict]) -> tuple[int, int]:
         for r in rows:
             exists = c.execute("SELECT 1 FROM vk_targets WHERE user_id=?", (r["user_id"],)).fetchone()
             vals = (r["first_name"], r["last_name"], r["communities"], r["a"], r["b"], r["score"],
-                    r.get("university"), r.get("start_year"))
+                    r.get("university"), r.get("start_year"), r.get("age"), r.get("last_seen"),
+                    r.get("act"), r.get("a_w"), r.get("edu_status"))
             if exists:
                 c.execute("""UPDATE vk_targets SET first_name=?, last_name=?, communities=?, a=?, b=?,
-                             score=?, university=?, start_year=?, collected_at=? WHERE user_id=?""",
+                             score=?, university=?, start_year=?, age=?, last_seen=?, act=?, a_w=?,
+                             edu_status=?, collected_at=? WHERE user_id=?""",
                           (*vals, now, r["user_id"]))
                 upd += 1
             else:
                 c.execute("""INSERT INTO vk_targets(first_name,last_name,communities,a,b,score,
-                             university,start_year,collected_at,user_id) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                             university,start_year,age,last_seen,act,a_w,edu_status,collected_at,user_id)
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                           (*vals, now, r["user_id"]))
                 new += 1
     return new, upd
@@ -159,7 +209,47 @@ def sent_last_24h(account_id: int, now: datetime | None = None) -> int:
                          (account_id, since)).fetchone()["n"]
 
 
-def log_send(account_id: int, user_id: int, status: str, error: str | None = None) -> None:
+def log_send(account_id: int, user_id: int, status: str, error: str | None = None,
+             variant: str | None = None) -> None:
     with _c() as c:
-        c.execute("INSERT INTO vk_sends(account_id,user_id,status,error,ts) VALUES (?,?,?,?,?)",
-                  (account_id, user_id, status, error, ts()))
+        c.execute("INSERT INTO vk_sends(account_id,user_id,status,error,ts,variant) VALUES (?,?,?,?,?,?)",
+                  (account_id, user_id, status, error, ts(), variant))
+
+
+def sends_today() -> dict[str, int]:
+    """Сколько сообщений за сутки по статусам (sent/closed/failed) — для сводки."""
+    since = ts(_now() - timedelta(hours=24))
+    with _c() as c:
+        return {r["status"]: r["n"] for r in c.execute(
+            "SELECT status, COUNT(*) n FROM vk_sends WHERE ts>=? GROUP BY status", (since,))}
+
+
+def variant_stats() -> list[dict]:
+    """По вариантам текста: сколько отправлено и сколько ответили (ответ на сообщение этому человеку)."""
+    with _c() as c:
+        return [dict(r) for r in c.execute("""
+            SELECT COALESCE(s.variant,'—') variant, COUNT(*) sent,
+                   SUM(CASE WHEN EXISTS (SELECT 1 FROM vk_replies r WHERE r.user_id=s.user_id) THEN 1 ELSE 0 END) replied
+            FROM vk_sends s WHERE s.status='sent' GROUP BY s.variant ORDER BY sent DESC""")]
+
+
+# ── ответы ──────────────────────────────────────────────────────────────────
+
+def add_reply(account_id: int, user_id: int, msg_id: int, text: str) -> bool:
+    """Новый ответ от человека. False — такой уже видели."""
+    with _c() as c:
+        cur = c.execute("INSERT OR IGNORE INTO vk_replies(account_id,user_id,msg_id,text,ts) VALUES (?,?,?,?,?)",
+                        (account_id, user_id, msg_id, text, ts()))
+        return cur.rowcount > 0
+
+
+def unnotified_replies(limit: int = 50) -> list[dict]:
+    with _c() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT r.*, t.first_name, t.last_name FROM vk_replies r LEFT JOIN vk_targets t ON t.user_id=r.user_id"
+            " WHERE r.notified=0 ORDER BY r.id LIMIT ?", (limit,))]
+
+
+def mark_replies_notified(ids: list[int]) -> None:
+    with _c() as c:
+        c.executemany("UPDATE vk_replies SET notified=1 WHERE id=?", [(i,) for i in ids])
