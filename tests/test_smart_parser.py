@@ -914,6 +914,126 @@ class SeedsGraphTests(unittest.TestCase):
             self.assertEqual(state.graph_score[client.c8.id], 2.0)
 
 
+class LinkedChatsTests(unittest.TestCase):
+    """Привязанный чат канала — отдельный источник: в канале вещает автор, люди пишут в чате."""
+
+    @staticmethod
+    def _chat(cid: int, username: str, title: str = "Чат канала"):
+        from telethon.tl.types import Channel
+        return Channel(id=cid, title=title, photo=None,
+                       date=datetime.now(timezone.utc), megagroup=True,
+                       username=username, participants_count=500)
+
+    def test_linked_chat_added_to_pool(self):
+        from types import SimpleNamespace as NS
+
+        from parsing.smart import discovery as dv
+        from parsing.smart.models import Source
+        from parsing.smart.runlog import RunLog
+
+        chat = self._chat(777, "author_chat")
+
+        class Client:
+            def __init__(self):
+                self.asked = []
+
+            async def get_entity(self, cid):
+                self.asked.append(cid)
+                return chat
+
+        client = Client()
+        state = dv.DiscoveryState(set())
+        src = Source(100, "Канал автора", "author_ch", "channel")
+        src.linked_chat_id = 777
+        state.web_by_id[100] = 3.0        # канал пришёл из YouTube с весом
+
+        added = asyncio.run(dv._add_linked_chats(
+            client, [(src, NS(id=100))], state.pool, P(channel="x"), RunLog(echo=False), state))
+
+        self.assertEqual(added, [777], "привязанный чат должен попасть в пул")
+        self.assertEqual(client.asked, [777])
+        self.assertIn(777, state.pool.items)
+        self.assertIn("чат канала", state.pool.items[777][0].found_via)
+        self.assertEqual(state.web_by_id[777], 3.0, "чат наследует вес канала")
+
+        # повторно тот же чат не добавляется
+        again = asyncio.run(dv._add_linked_chats(
+            client, [(src, NS(id=100))], state.pool, P(channel="x"), RunLog(echo=False), state))
+        self.assertEqual(again, [])
+
+    def test_channel_without_linked_chat_is_skipped(self):
+        from types import SimpleNamespace as NS
+
+        from parsing.smart import discovery as dv
+        from parsing.smart.models import Source
+        from parsing.smart.runlog import RunLog
+
+        class Client:
+            async def get_entity(self, cid):
+                raise AssertionError("не должны спрашивать: у канала нет привязанного чата")
+
+        state = dv.DiscoveryState(set())
+        src = Source(101, "Канал", "ch", "channel")
+        src.linked_chat_id = 0
+        added = asyncio.run(dv._add_linked_chats(
+            Client(), [(src, NS(id=101))], state.pool, P(channel="x"), RunLog(echo=False), state))
+        self.assertEqual(added, [])
+
+    def test_per_round_cap(self):
+        from types import SimpleNamespace as NS
+
+        from parsing.smart import discovery as dv
+        from parsing.smart.models import Source
+        from parsing.smart.runlog import RunLog
+
+        maker = self._chat
+
+        class Client:
+            async def get_entity(self, cid):
+                return maker(cid, f"c{cid}", f"Чат {cid}")
+
+        state = dv.DiscoveryState(set())
+        srcs = []
+        for i in range(10):
+            s = Source(200 + i, f"Канал {i}", f"ch{i}", "channel")
+            s.linked_chat_id = 900 + i
+            srcs.append((s, NS(id=200 + i)))
+        params = P(channel="x", linked_chats_per_round=3)
+        added = asyncio.run(dv._add_linked_chats(
+            Client(), srcs, state.pool, params, RunLog(echo=False), state))
+        self.assertEqual(len(added), 3, "за раунд раскрываем не больше linked_chats_per_round")
+
+    def test_linked_chat_rules_are_relaxed(self):
+        """Привязанный чат не обязан иметь username и может быть мельче обычного порога.
+
+        Он получен из самого канала, а не найден поиском по имени, поэтому правило
+        «читаем только публичные» к нему не относится; а чат обсуждения всегда меньше канала.
+        """
+        from parsing.smart.models import Source
+        from parsing.smart.settings import Params
+
+        p = Params(channel="x")
+        self.assertTrue(p.linked_chats)
+        self.assertLess(p.linked_min_members, p.min_members_group,
+                        "для чата обсуждения порог должен быть ниже группового")
+
+        linked = Source(1, "Канал Chat", "", "group")
+        linked.from_linked = True
+        plain = Source(2, "Какой-то чат", "", "group")
+
+        def reject(s, params):
+            """Повтор правил из _qualify, которые мы изменили."""
+            mn = (params.linked_min_members if s.from_linked else
+                  params.min_members_channel if s.kind == "channel" else params.min_members_group)
+            if not s.username and not s.from_linked:
+                return "закрытый чат: читаем только публичные"
+            s.members = 40
+            return f"мало участников ({s.members} < {mn})" if s.members < mn else ""
+
+        self.assertEqual(reject(linked, p), "", "чат канала на 40 человек должен проходить")
+        self.assertIn("закрытый", reject(plain, p), "чужой чат без username по-прежнему мимо")
+
+
 class InterestModelTests(unittest.TestCase):
     """Интерес = текст (запрос) + пересечения (в скольких чатах ниши человек есть)."""
 

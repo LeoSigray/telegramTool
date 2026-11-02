@@ -638,6 +638,9 @@ def parse_args(argv=None) -> Params:
     p.add_argument("--no-warm", action="store_true",
                    help="не брать «тёплых» (без запроса, но активных в нескольких чатах ниши)")
     p.add_argument("--lang", default="ru", help="языки чатов через запятую (ru)")
+    p.add_argument("--no-linked-chats", action="store_true",
+                   help="не раскрывать привязанные чаты каналов (по умолчанию раскрываем: "
+                        "в канале пишет автор, а люди — в его чате)")
     p.add_argument("--min-seeds", type=int, default=5,
                    help="сколько хороших чатов-зёрен найти поиском, прежде чем идти по графу (5)")
     p.add_argument("--graph-depth", type=int, default=2, help="ступеней графа от зёрен (2)")
@@ -674,7 +677,7 @@ def parse_args(argv=None) -> Params:
     a = p.parse_args(argv)
     return Params(channel=a.channel, brief=a.brief, days=a.days, people=a.people, wave=a.wave,
                   source_cap=a.source_cap, min_pqi=a.min_pqi, min_interest=a.min_interest, warm=not a.no_warm, search_messages=not a.no_message_search,
-                  languages=a.lang, graph=not a.no_graph, members=not a.no_members, min_seeds=a.min_seeds, graph_depth=a.graph_depth,
+                  languages=a.lang, graph=not a.no_graph, linked_chats=not a.no_linked_chats, members=not a.no_members, min_seeds=a.min_seeds, graph_depth=a.graph_depth,
                   queries_target=a.queries, queries_per_round=a.per_round, max_rounds=a.max_rounds,
                   msgs_per_source=a.msgs_per_source,
                   llm_budget=a.llm_budget, no_llm=a.no_llm, llm_chain=a.llm_chain, embeddings=a.embeddings,

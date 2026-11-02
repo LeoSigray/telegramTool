@@ -17,6 +17,7 @@ class Source:
     members: int = 0
     linked_chat_id: int = 0
     is_member: bool = False
+    from_linked: bool = False      # это привязанный чат канала (получен из канала, не по имени)
     last_msg_id: int = 0
     harvested_at: str = ""
     # решение по источнику в рамках конкретного клиента

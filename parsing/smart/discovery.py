@@ -161,6 +161,7 @@ class DiscoveryState:
         self.web = None                   # WebFinder: поиск по статьям в интернете
         self.web_by_id: dict = {}         # chat_id → очки «советуют сайты»
         self.web_resolved: set = set()    # usernames из статей, которые уже проверяли
+        self.linked_seen: set = set()     # привязанные чаты каналов, уже добавленные в пул
 
     def add_seed(self, src, ent, probe, score: float, depth: int) -> None:
         cur = self.seeds.get(src.chat_id)
@@ -217,8 +218,49 @@ class _Pool:
         return s
 
 
+async def _add_linked_chats(client, linked: list, pool: _Pool, params, log,
+                            state: DiscoveryState) -> list:
+    """Привязанные чаты обсуждения каналов — как самостоятельные источники.
+
+    Канал (а из YouTube приходят почти одни каналы) — это вещание: там пишет автор, а не
+    покупатели, поэтому плотность запросов по теме у него почти всегда ноль и зерном он
+    не становится. Но у канала с комментариями есть привязанный ЧАТ, и вот в нём сидят
+    подписчики и пишут «ищу», «посоветуйте». Раньше его id только записывался в базу и
+    служил признаком «комментарии включены», сам чат в пул не попадал — и до людей в нём
+    дело не доходило. Теперь попадает и проходит обычную пробу наравне со всеми.
+    """
+    from telethon.tl.types import Channel
+
+    if not linked:
+        return []
+    added: list = []
+    for s, _ent in linked:
+        if state.stop or len(added) >= params.linked_chats_per_round:
+            break
+        cid = s.linked_chat_id
+        if not cid or cid in pool.exclude or cid in pool.items or cid in state.linked_seen:
+            continue
+        state.linked_seen.add(cid)
+        ent = await _safe(lambda: client.get_entity(cid), params, log, f"чат канала {s.label()}")
+        await _pause(0.5, 1.0)
+        if not isinstance(ent, Channel):
+            continue
+        new = pool.add(ent, f"чат канала {s.label()}")
+        if new is not None:
+            new.from_linked = True
+            # чат наследует вес канала: он пришёл из того же источника
+            w = max(state.web_by_id.get(s.chat_id, 0.0), state.graph_score.get(s.chat_id, 0.0))
+            if w:
+                state.web_by_id[new.chat_id] = max(state.web_by_id.get(new.chat_id, 0.0), w)
+            added.append(new.chat_id)
+    if added:
+        log.info("источники", f"привязанных чатов каналов добавлено: {len(added)} "
+                              "(в них комментарии подписчиков — там и ищем людей)")
+    return added
+
+
 async def _qualify(client, ids: list, pool: _Pool, profile, params, store, lex, log,
-                   report: list, budget: dict, state: DiscoveryState) -> list:
+                   report: list, budget: dict, state: DiscoveryState, depth: int = 0) -> list:
     """Отбор кандидатов: мусор → предфильтр по названию → детали → проба. Возвращает
     [(Source, entity, Probe)] прошедших."""
     from telethon.tl.functions.channels import GetFullChannelRequest
@@ -260,6 +302,7 @@ async def _qualify(client, ids: list, pool: _Pool, profile, params, store, lex, 
     state.checked_total += len(alive)
 
     checked = []
+    linked: list = []          # каналы с привязанным чатом: сам чат добавим в пул отдельно
     try:
         for s, ent in alive:
             full = await _safe(lambda: client(GetFullChannelRequest(ent)), params, log, s.label())
@@ -272,14 +315,19 @@ async def _qualify(client, ids: list, pool: _Pool, profile, params, store, lex, 
             s.about = getattr(fc, "about", "") or ""
             s.members = getattr(fc, "participants_count", 0) or s.members
             s.linked_chat_id = getattr(fc, "linked_chat_id", 0) or 0
-            min_members = params.min_members_channel if s.kind == "channel" else params.min_members_group
+            # привязанный чат канала живёт по своим меркам: он всегда меньше самого канала
+            # и обычно без username (попасть в него можно только через канал). Читать его
+            # мы вправе — ссылку на него дал сам канал, а не поиск по имени.
+            min_members = (params.linked_min_members if s.from_linked else
+                           params.min_members_channel if s.kind == "channel" else
+                           params.min_members_group)
             store.upsert_source(s)
             reason = junk_by_title(s, lex)
             if reason:
                 pass
             elif s.kind == "channel" and not s.linked_chat_id:
                 reason = "у канала нет комментариев"
-            elif not s.username:
+            elif not s.username and not s.from_linked:
                 reason = "закрытый чат: читаем только публичные"
             elif s.members and s.members < min_members:
                 reason = f"мало участников ({s.members} < {min_members})"
@@ -290,6 +338,7 @@ async def _qualify(client, ids: list, pool: _Pool, profile, params, store, lex, 
                 report.append(s)
             else:
                 checked.append((s, ent))
+                linked.append((s, ent))
     except _Flood:
         log.warn("источники", "детальная проверка прервана FloodWait")
         for s, ent in alive:
@@ -337,6 +386,14 @@ async def _qualify(client, ids: list, pool: _Pool, profile, params, store, lex, 
     log.info("источники", f"проба: прошли {len(passed)} из {len(checked)}"
                          + (f" (из каталога/кеша: {sum(1 for c in passed if c[2].from_cache)})"
                             if passed else ""))
+
+    # привязанные чаты проверенных каналов — в тот же раунд, иначе до людей дело не дойдёт.
+    # Рекурсия не глубже одного шага: у чата-обсуждения своего linked_chat_id уже нет.
+    if depth == 0 and params.linked_chats:
+        new_ids = await _add_linked_chats(client, linked, pool, params, log, state)
+        if new_ids:
+            passed += await _qualify(client, new_ids, pool, profile, params, store, lex, log,
+                                     report, budget, state, depth=1)
     return passed
 
 
