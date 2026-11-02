@@ -1540,6 +1540,47 @@ class YouTubeSearchTests(unittest.TestCase):
         self.assertEqual(yt.links_in(info["desc"]), ["design_ai", "design_ai_chat"])
         self.assertEqual(len(yt.INVITE_RE.findall(info["desc"])), 1)
 
+    def test_video_from_player(self):
+        """Описание из JSON-API — тот же разбор, что и из HTML-страницы."""
+        from parsing.smart import youtube as yt
+        info = yt.video_from_player({"videoDetails": {
+            "shortDescription": "канал t.me/design_ai чат t.me/design_ai_chat бот t.me/helper_bot",
+            "channelId": "UCaaaaaaaaaaaaaaaaaaaaaa", "author": "Анна Дизайн",
+            "viewCount": "12345"}})
+        self.assertEqual(info["author"], "Анна Дизайн")
+        self.assertEqual(info["channel_id"], "UCaaaaaaaaaaaaaaaaaaaaaa")
+        self.assertEqual(info["views"], 12345)
+        self.assertEqual(yt.links_in(info["desc"]), ["design_ai", "design_ai_chat"])
+        # битые или пустые просмотры не роняют разбор
+        self.assertEqual(yt.video_from_player({"videoDetails": {"viewCount": "н/д"}})["views"], 0)
+        self.assertEqual(yt.video_from_player({})["desc"], "")
+
+    def test_authors_from_search(self):
+        """Из выдачи JSON берём пару «видео → его автор»: на ней держится весь отбор."""
+        from parsing.smart import youtube as yt
+
+        def card(vid, cid, name):
+            return {"videoRenderer": {"videoId": vid, "ownerText": {"runs": [
+                {"text": name, "navigationEndpoint": {"browseEndpoint": {"browseId": cid}}}]}}}
+        # id видео у YouTube всегда ровно 11 символов — разбор на это опирается
+        v1, v2, v3 = "aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"
+        data = {"contents": {"items": [card(v1, "UC1", "Автор 1"), card(v2, "UC1", "Автор 1"),
+                                       card(v3, "UC2", "Автор 2"),
+                                       {"videoRenderer": {"videoId": "ddddddddddd"}}]}}
+        got = yt.authors_from_search(data)
+        self.assertEqual(got, [(v1, "UC1", "Автор 1"), (v2, "UC1", "Автор 1"),
+                               (v3, "UC2", "Автор 2")], "карточка без автора не в счёт")
+        self.assertEqual(yt.authors_from_search(data, cap=2), got[:2])
+        self.assertEqual(yt.authors_from_search({}), [])
+
+    def test_cap_by_author(self):
+        """Лимит считается по авторам, а не по видео, и у каждого автора — свой запас видео."""
+        from parsing.smart.youtube import _cap_by_author
+        items = [("v1", "UC1", "a"), ("v2", "UC1", "a"), ("v3", "UC1", "a"), ("v4", "UC1", "a"),
+                 ("v5", "UC2", "b"), ("v6", "UC3", "c")]
+        got = _cap_by_author(items, max_authors=2, per_author=3)
+        self.assertEqual([v for v, _c, _n in got], ["v1", "v2", "v3", "v5"])
+
     def test_one_author_one_vote(self):
         from unittest import mock
 
@@ -1550,7 +1591,7 @@ class YouTubeSearchTests(unittest.TestCase):
                   "v3": ("UC2", "Автор 2", ["school_chat"])}
 
         async def fake_search(self, http, q):
-            return list(videos)
+            return [(v, cid, author) for v, (cid, author, _l) in videos.items()]
 
         async def fake_video(self, http, vid):
             cid, author, links = videos[vid]
@@ -1565,7 +1606,7 @@ class YouTubeSearchTests(unittest.TestCase):
         async def fast_sleep(*_a, **_k):
             await real_sleep(0)
         with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(yt.YouTubeFinder, "_search_videos", fake_search), \
+                mock.patch.object(yt.YouTubeFinder, "_search", fake_search), \
                 mock.patch.object(yt.YouTubeFinder, "_video", fake_video), \
                 mock.patch.object(asyncio, "sleep", fast_sleep):
             st = Store(os.path.join(tmp, "s.db"))
@@ -1575,6 +1616,101 @@ class YouTubeSearchTests(unittest.TestCase):
             self.assertEqual(f.score["school_chat"], 2.0, "два видео одного автора — один голос")
             self.assertEqual(f.score["author1"], 1.0)
             self.assertIn("Автор 1", f.via("school_chat"))
+            st.close()
+
+    def test_one_author_read_once(self):
+        """Описание читается по одному видео на автора — в этом вся экономия времени."""
+        from unittest import mock
+
+        from parsing.smart import youtube as yt
+
+        videos = {"v1": ("UC1", "Автор 1", ["school_chat"]), "v2": ("UC1", "Автор 1", ["school_chat"]),
+                  "v3": ("UC1", "Автор 1", ["school_chat"]), "v4": ("UC2", "Автор 2", ["other_chat"])}
+        read = []
+
+        async def fake_search(self, http, q):
+            return [(v, cid, author) for v, (cid, author, _l) in videos.items()]
+
+        async def fake_video(self, http, vid):
+            read.append(vid)
+            cid, author, links = videos[vid]
+            return {"desc": "", "author": author, "channel_id": cid, "views": 1, "links": links, "invites": 0}
+
+        class Log:
+            def info(self, *a): pass
+            def warn(self, *a): pass
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(yt.YouTubeFinder, "_search", fake_search), \
+                mock.patch.object(yt.YouTubeFinder, "_video", fake_video):
+            st = Store(os.path.join(tmp, "s.db"))
+            f = yt.YouTubeFinder(st, P(channel="@x"), Log())
+            asyncio.run(f.run(["урок"]))
+            self.assertEqual(sorted(read), ["v1", "v4"],
+                             "у автора со ссылкой в первом видео остальные не читаем")
+            st.close()
+
+    def test_second_video_when_first_has_no_links(self):
+        """Если в первом видео автора ссылок нет — смотрим следующее, а не бросаем автора."""
+        from unittest import mock
+
+        from parsing.smart import youtube as yt
+
+        videos = {"v1": ("UC1", "Автор 1", []), "v2": ("UC1", "Автор 1", ["school_chat"])}
+
+        async def fake_search(self, http, q):
+            return [(v, cid, author) for v, (cid, author, _l) in videos.items()]
+
+        async def fake_video(self, http, vid):
+            cid, author, links = videos[vid]
+            return {"desc": "", "author": author, "channel_id": cid, "views": 1, "links": links, "invites": 0}
+
+        async def no_about(self, http, cid):
+            return []
+
+        class Log:
+            def info(self, *a): pass
+            def warn(self, *a): pass
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(yt.YouTubeFinder, "_search", fake_search), \
+                mock.patch.object(yt.YouTubeFinder, "_video", fake_video), \
+                mock.patch.object(yt.YouTubeFinder, "_channel_links", no_about):
+            st = Store(os.path.join(tmp, "s.db"))
+            f = yt.YouTubeFinder(st, P(channel="@x"), Log())
+            self.assertEqual(asyncio.run(f.run(["урок"])), ["school_chat"])
+            st.close()
+
+    def test_one_failed_query_does_not_stop_round(self):
+        """Отказ по одному запросу не отменяет раунд; раунд отменяется, только если упали все."""
+        from unittest import mock
+
+        from parsing.smart import youtube as yt
+
+        async def half_broken(self, http, q):
+            if q == "плохой":
+                raise RuntimeError("429")
+            return [("v1", "UC1", "Автор 1")]
+
+        async def all_broken(self, http, q):
+            raise RuntimeError("429")
+
+        async def fake_video(self, http, vid):
+            return {"desc": "", "author": "Автор 1", "channel_id": "UC1", "views": 1,
+                    "links": ["school_chat"], "invites": 0}
+
+        class Log:
+            def info(self, *a): pass
+            def warn(self, *a): pass
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(yt.YouTubeFinder, "_video", fake_video):
+            st = Store(os.path.join(tmp, "s.db"))
+            with mock.patch.object(yt.YouTubeFinder, "_search", half_broken):
+                f = yt.YouTubeFinder(st, P(channel="@x"), Log())
+                self.assertEqual(asyncio.run(f.run(["плохой", "хороший"])), ["school_chat"])
+                self.assertFalse(f.blocked)
+            with mock.patch.object(yt.YouTubeFinder, "_search", all_broken):
+                f2 = yt.YouTubeFinder(st, P(channel="@x"), Log())
+                self.assertEqual(asyncio.run(f2.run(["плохой", "тоже плохой"])), [])
+                self.assertTrue(f2.blocked)
             st.close()
 
     def test_yt_queries_fallback_without_llm(self):
