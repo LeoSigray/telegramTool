@@ -69,6 +69,7 @@ class Probe:
     hints: list = field(default_factory=list)      # @username из ссылок и пересылок
     fwd_ents: list = field(default_factory=list)   # каналы, из которых пересылали (сразу entity)
     from_cache: bool = False
+    from_linked: bool = False                      # чат обсуждения канала по теме клиента
     # заполняется в evaluate()
     requests: int = 0
     product_msgs: int = 0                          # сообщений, где речь о товаре клиента
@@ -241,6 +242,14 @@ def evaluate(probes: dict, profile, lex: tp.Lexicon, params, store) -> None:
             p.reason = f"мёртвый чат: {p.activity:.2f} сообщ. в день"
         elif p.junk and junk_verdict(p.junk, params):
             p.reason = junk_verdict(p.junk, params)
+        elif p.from_linked:
+            # Чат обсуждения канала, который уже прошёл отбор по теме клиента. Его
+            # релевантность доказана происхождением, а не словами внутри: покупатели курса
+            # «нейросети для ландшафтных дизайнеров» сидят в чате ПРО ЛАНДШАФТНЫЙ ДИЗАЙН и
+            # говорят про клумбы, а не про нейросети, — им потому курс и нужен. Требовать
+            # от них упоминаний товара значит выбрасывать ровно ту аудиторию, за которой шли.
+            # Мусор, язык и живость выше проверены как у всех.
+            pass
         elif product and n >= 10 and product_msgs == 0:
             p.reason = ("в чате не упоминается товар клиента ("
                         + ", ".join(list(profile.product_keywords)[:4]) + ")")

@@ -162,6 +162,8 @@ class DiscoveryState:
         self.web_by_id: dict = {}         # chat_id → очки «советуют сайты»
         self.web_resolved: set = set()    # usernames из статей, которые уже проверяли
         self.linked_seen: set = set()     # привязанные чаты каналов, уже добавленные в пул
+        self.msg_search_off = False       # глобальный поиск по сообщениям бесполезен на этом аккаунте
+        self.msg_search_empty = 0         # сколько раундов подряд он не дал ничего
 
     def add_seed(self, src, ent, probe, score: float, depth: int) -> None:
         cur = self.seeds.get(src.chat_id)
@@ -346,23 +348,35 @@ async def _qualify(client, ids: list, pool: _Pool, profile, params, store, lex, 
                 s.status, s.reason = "rejected", "не проверен (FloodWait)"
                 report.append(s)
 
-    # проба: смотрим содержимое
+    # проба: смотрим содержимое. Чаты независимы, поэтому идём пачками —
+    # последовательный обход с паузами занимал больше минуты на раунд.
     probes: dict = {}
-    for s, ent in checked:
-        if state.stop:
-            break
-        try:
-            probes[s.chat_id] = await probe_source(client, s, ent, params, store)
-        except Exception as e:  # noqa: BLE001
-            from telethon.errors import FloodWaitError
-            if isinstance(e, FloodWaitError) and e.seconds > params.max_flood_wait:
-                log.warn("источники", f"FloodWait {e.seconds} с на пробе — остальные без пробы")
-                break
-            s.status, s.reason = "rejected", f"проба не удалась: {str(e)[:80]}"
-            report.append(s)
-            continue
-        if not probes[s.chat_id].from_cache:
-            await _pause(1.0, 2.0)
+    psem = asyncio.Semaphore(params.probe_concurrency)
+    flood_stop = False
+
+    async def probe_one(s, ent):
+        nonlocal flood_stop
+        async with psem:
+            if state.stop or flood_stop:
+                return
+            try:
+                probes[s.chat_id] = await probe_source(client, s, ent, params, store)
+            except Exception as e:  # noqa: BLE001
+                from telethon.errors import FloodWaitError
+                if isinstance(e, FloodWaitError) and e.seconds > params.max_flood_wait:
+                    log.warn("источники", f"FloodWait {e.seconds} с на пробе — остальные без пробы")
+                    flood_stop = True
+                    return
+                s.status, s.reason = "rejected", f"проба не удалась: {str(e)[:80]}"
+                report.append(s)
+                return
+            if not probes[s.chat_id].from_cache:
+                await _pause(0.4, 0.9)
+
+    await asyncio.gather(*(probe_one(s, ent) for s, ent in checked))
+    for s, _ent in checked:
+        if s.chat_id in probes:
+            probes[s.chat_id].from_linked = s.from_linked
     evaluate_probes(probes, profile, lex, params, store)
 
     passed = []
@@ -669,7 +683,7 @@ async def discover_round(client, profile, params, store, lex, log, state: Discov
             except ImportError:
                 log.info("источники", "похожие каналы недоступны в этой версии Telethon")
 
-        if params.search_messages:
+        if params.search_messages and not state.msg_search_off:
             # глобальный поиск по сообщениям публичных чатов. В результат берём только
             # публичные группы и каналы, где аккаунт НЕ состоит: личные диалоги и чаты
             # самого аккаунта не используются.
@@ -714,6 +728,18 @@ async def discover_round(client, profile, params, store, lex, log, state: Discov
                                       f"аккаунта {own_total}, личные/закрытые {other_total}), "
                                       f"подходящих {hits_total}, новых чатов {new_chats} "
                                       f"({'; '.join(phrases[:3])}{' …' if len(phrases) > 3 else ''})")
+                # Глобальный поиск Telegram отдаёт сообщения только из чатов, где аккаунт
+                # состоит. У свежего аккаунта без групп он всегда пуст и впустую съедает
+                # ~40 с за раунд, поэтому после двух пустых раундов подряд выключаем его.
+                if new_chats == 0 and fresh_total == 0:
+                    state.msg_search_empty += 1
+                    if state.msg_search_empty >= 2:
+                        state.msg_search_off = True
+                        log.info("источники", "поиск по сообщениям ничего не даёт на этом "
+                                              "аккаунте (он не состоит в группах) — отключаю "
+                                              "до конца запуска, чтобы не терять время")
+                else:
+                    state.msg_search_empty = 0
     except _Flood:
         log.warn("источники", "поиск прерван из-за FloodWait, работаем с тем, что нашли")
 

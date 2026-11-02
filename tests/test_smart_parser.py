@@ -1033,6 +1033,61 @@ class LinkedChatsTests(unittest.TestCase):
         self.assertEqual(reject(linked, p), "", "чат канала на 40 человек должен проходить")
         self.assertIn("закрытый", reject(plain, p), "чужой чат без username по-прежнему мимо")
 
+    def test_linked_chat_not_required_to_mention_product(self):
+        """Главное: от чата аудитории не требуем слов товара, иначе теряем саму аудиторию.
+
+        Покупатели курса «нейросети для ландшафтных дизайнеров» сидят в чате про
+        ландшафтный дизайн и обсуждают клумбы. Обычный чат без слов товара по-прежнему
+        отбрасывается — послабление только для чатов, пришедших из тематического канала.
+        """
+        from parsing.smart.probe import Probe, evaluate
+        from parsing.smart.profile import Profile
+
+        prof = Profile(channel="x", topic_terms=["нейросеть", "дизайн"],
+                       product_keywords=["нейросеть", "midjourney"])
+        lex = tp.Lexicon()
+        params = P(channel="x", days=30)
+        now = datetime.now(timezone.utc)
+
+        def chat(sid, from_linked):
+            # живой чат про клумбы: слов товара нет вообще
+            p = Probe(from_linked=from_linked)
+            p.activity, p.lang, p.lang_share, p.lang_detected = 5.0, "ru", 1.0, 20
+            p.newest_age_days = 0.5
+            p.msgs = [Message(source_id=sid, msg_id=i, sender_id=1000 + i, date=now,
+                              text="подскажите какие многолетники посадить вдоль дорожки",
+                              sender_kind="user")
+                      for i in range(15)]
+            return p
+
+        with tempfile.TemporaryDirectory() as tmp:
+            st = Store(os.path.join(tmp, "s.db"))
+            probes = {1: chat(1, from_linked=False), 2: chat(2, from_linked=True)}
+            evaluate(probes, prof, lex, params, st)
+            self.assertIn("товар", probes[1].reason,
+                          "обычный чат без слов товара по-прежнему отбрасывается")
+            self.assertEqual(probes[2].reason, "",
+                             "чат из тематического канала проходит без слов товара")
+            st.close()
+
+    def test_linked_chat_still_checked_for_junk_and_life(self):
+        """Послабление не отключает защиту: мёртвый или нерусский чат отсеивается и из канала."""
+        from parsing.smart.probe import Probe, evaluate
+        from parsing.smart.profile import Profile
+
+        prof = Profile(channel="x", topic_terms=["дизайн"], product_keywords=["нейросеть"])
+        params = P(channel="x", days=30)
+
+        dead = Probe(from_linked=True)
+        dead.activity, dead.lang, dead.lang_share, dead.lang_detected = 0.01, "ru", 1.0, 20
+        dead.newest_age_days = 0.5
+
+        with tempfile.TemporaryDirectory() as tmp:
+            st = Store(os.path.join(tmp, "s.db"))
+            evaluate({3: dead}, prof, tp.Lexicon(), params, st)
+            self.assertIn("мёртвый", dead.reason, "мёртвый чат отсеивается и при from_linked")
+            st.close()
+
 
 class InterestModelTests(unittest.TestCase):
     """Интерес = текст (запрос) + пересечения (в скольких чатах ниши человек есть)."""
