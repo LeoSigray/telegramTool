@@ -196,6 +196,9 @@ class YouTubeFinder(WebFinder):
         self.bytes_down = 0                        # для замеров (tests/bench_youtube.py)
         self.http_calls = 0
         self.self_authors = 0                      # сколько авторов опознано как сам клиент
+        self.wrong_lang = 0                        # сколько авторов отсеяно по языку
+        self.langs: set = {x.strip().lower() for x in (params.languages or "ru").split(",")
+                           if x.strip()}
         # имена, по которым узнаём канал самого клиента: его видео вполне попадутся в выдаче,
         # ведь он эксперт по своей же теме
         self.own: set = {(params.channel or "").lower()} - {""}
@@ -203,6 +206,22 @@ class YouTubeFinder(WebFinder):
     def add_own(self, names) -> None:
         """Дополнить список «это сам клиент» (его чат обсуждения, другие его проекты)."""
         self.own |= {str(n).lower().lstrip("@") for n in names if n}
+
+    def foreign(self, info: dict) -> bool:
+        """Автор ведёт канал не на нашем языке — его зрители не наша аудитория.
+
+        Запросы мы пишем по-русски и просим у YouTube русскую выдачу (hl/gl), но он всё
+        равно подмешивает соседние языки: по «обучение дизайну» приезжают украинские,
+        казахские и английские каналы. Их Telegram-чаты потом честно проходят пробу
+        (там грамотный русский или своя кириллица), поэтому отсекать дешевле здесь —
+        до резолва имён в Telegram.
+
+        Если языка не видно (описание пустое или слишком короткое) — не судим и берём.
+        """
+        from .probe import detect_lang
+
+        lang = detect_lang(f"{info.get('author', '')} {info.get('desc', '')}")
+        return bool(lang) and lang not in self.langs
 
     # ── сеть ────────────────────────────────────────────────────────────────
     async def _get(self, http, url: str, **params) -> str:
@@ -407,6 +426,9 @@ class YouTubeFinder(WebFinder):
                 self.invites += info.get("invites", 0)
                 cid = info["channel_id"]
                 key = cid or info["author"] or vid
+                if self.foreign(info):
+                    self.wrong_lang += 1
+                    continue
                 if info["links"]:
                     # Автор, который ссылается на канал клиента, — это сам клиент (или его
                     # сотрудник). Его подписчики клиенту уже известны, а чат курса полон
@@ -432,6 +454,10 @@ class YouTubeFinder(WebFinder):
                     self.invites += info.get("invites", 0)
                     cid = info["channel_id"]
                     key = cid or info["author"] or vid
+                    if self.foreign(info):
+                        self.wrong_lang += 1
+                        empty_authors.pop(cid, None)
+                        continue
                     if info["links"]:
                         if self.own & set(info["links"]):
                             self.self_authors += 1
@@ -462,6 +488,8 @@ class YouTubeFinder(WebFinder):
                       + (f", закрытых приглашений (не берём) {self.invites}" if self.invites else "")
                       + (f", авторов-самого-клиента пропущено {self.self_authors}"
                          if self.self_authors else "")
+                      + (f", не на «{','.join(sorted(self.langs))}» пропущено {self.wrong_lang}"
+                         if self.wrong_lang else "")
                       + ("; чаще всего: " + ", ".join(f"@{n} ({int(self.score[n])} авт.)" for n in ranked[:6])
                          if ranked else ""))
         return ranked

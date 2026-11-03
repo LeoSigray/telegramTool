@@ -1944,6 +1944,87 @@ class YouTubeSearchTests(unittest.TestCase):
             self.assertNotIn("", f.own)
             st.close()
 
+    def test_foreign_authors_skipped(self):
+        """Русские запросы всё равно приводят соседние языки — отсекаем до Telegram."""
+        from unittest import mock
+
+        from parsing.smart import youtube as yt
+
+        videos = {
+            "a" * 11: ("UC1", "Дизайн Студия", "Мой канал про дизайн и курсы t.me/ru_chat"),
+            "b" * 11: ("UC2", "English Galaxy", "Learn English fast, join t.me/eng_chat"),
+            "c" * 11: ("UC3", "Дизайн Школа", "Ласкаво просимо, наша спільнота t.me/ua_chat"),
+            "d" * 11: ("UC4", "Qazaq Design", "Сәлеметсіз бе, арнамыз t.me/kk_chat"),
+        }
+
+        async def fake_search(self, http, q):
+            return [(v, cid, name) for v, (cid, name, _d) in videos.items()]
+
+        async def fake_video(self, http, vid):
+            cid, author, desc = videos[vid]
+            return {"desc": desc, "author": author, "channel_id": cid, "views": 1,
+                    "links": yt.links_in(desc), "invites": 0}
+
+        class Log:
+            def info(self, *a): pass
+            def warn(self, *a): pass
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(yt.YouTubeFinder, "_search", fake_search), \
+                mock.patch.object(yt.YouTubeFinder, "_video", fake_video):
+            st = Store(os.path.join(tmp, "s.db"))
+            f = yt.YouTubeFinder(st, P(channel="@x", languages="ru"), Log())
+            ranked = asyncio.run(f.run(["дизайн обучение"]))
+            self.assertEqual(ranked, ["ru_chat"], "берём только русскоязычного автора")
+            self.assertEqual(f.wrong_lang, 3)
+            st.close()
+
+    def test_foreign_filter_respects_languages_list(self):
+        """languages='ru,uk' — значит украинские каналы тоже наши."""
+        from unittest import mock
+
+        from parsing.smart import youtube as yt
+
+        videos = {"c" * 11: ("UC3", "Дизайн Школа", "Ласкаво просимо, спільнота t.me/ua_chat"),
+                  "b" * 11: ("UC2", "English Galaxy", "Learn English, join t.me/eng_chat")}
+
+        async def fake_search(self, http, q):
+            return [(v, cid, name) for v, (cid, name, _d) in videos.items()]
+
+        async def fake_video(self, http, vid):
+            cid, author, desc = videos[vid]
+            return {"desc": desc, "author": author, "channel_id": cid, "views": 1,
+                    "links": yt.links_in(desc), "invites": 0}
+
+        class Log:
+            def info(self, *a): pass
+            def warn(self, *a): pass
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(yt.YouTubeFinder, "_search", fake_search), \
+                mock.patch.object(yt.YouTubeFinder, "_video", fake_video):
+            st = Store(os.path.join(tmp, "s.db"))
+            f = yt.YouTubeFinder(st, P(channel="@x", languages="ru,uk"), Log())
+            self.assertEqual(asyncio.run(f.run(["дизайн"])), ["ua_chat"])
+            st.close()
+
+    def test_empty_description_is_not_judged(self):
+        """Пустое описание — язык неизвестен, автора не выбрасываем."""
+        from parsing.smart import youtube as yt
+
+        class Log:
+            def info(self, *a): pass
+            def warn(self, *a): pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            st = Store(os.path.join(tmp, "s.db"))
+            f = yt.YouTubeFinder(st, P(channel="@x", languages="ru"), Log())
+            self.assertFalse(f.foreign({"author": "", "desc": ""}))
+            self.assertFalse(f.foreign({"author": "AB", "desc": ""}), "слишком коротко — не судим")
+            self.assertTrue(f.foreign({"author": "English Galaxy",
+                                       "desc": "Learn English with us every day"}))
+            st.close()
+
     def test_yt_queries_fallback_without_llm(self):
         from parsing.smart.youtube import generate_yt_queries
 
