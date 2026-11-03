@@ -906,11 +906,11 @@ class SeedsGraphTests(unittest.TestCase):
             seeds[0][2].fwd_ents = [client.c8, client.g7]
             seeds[1][2].fwd_ents = [client.c8]
             params = P(channel="x", graph_resolves=0)
-            asyncio.run(dv._expand_graph(client, seeds, state.pool, params, RunLog(echo=False), state))
+            asyncio.run(dv._expand_graph(client, seeds, state.pool, params, None, RunLog(echo=False), state))
             self.assertEqual(state.graph_score[client.c8.id], 2.0)   # две пересылки по 1.0
             self.assertEqual(state.graph_score[client.g7.id], 1.0)
             # повторная связь от того же зерна не считается
-            asyncio.run(dv._expand_graph(client, seeds[:1], state.pool, params, RunLog(echo=False), state))
+            asyncio.run(dv._expand_graph(client, seeds[:1], state.pool, params, None, RunLog(echo=False), state))
             self.assertEqual(state.graph_score[client.c8.id], 2.0)
 
 
@@ -1032,6 +1032,45 @@ class LinkedChatsTests(unittest.TestCase):
 
         self.assertEqual(reject(linked, p), "", "чат канала на 40 человек должен проходить")
         self.assertIn("закрытый", reject(plain, p), "чужой чат без username по-прежнему мимо")
+
+    def test_dead_name_resolved_once(self):
+        """Мёртвое имя резолвим один раз: лимит Telegram тратится и на несуществующие.
+
+        Удалённый канал живёт в графе вечно — ссылки на него остаются в десятках чужих
+        чатов и возвращаются в каждом запуске. Резолв такого имени стоит ровно столько
+        же, сколько полезный, а суточный лимит ResolveUsername даёт FloodWait на 22 часа.
+        """
+        import asyncio
+        import tempfile
+        from types import SimpleNamespace
+
+        from parsing.smart.discovery import DiscoveryState, _resolve
+        from parsing.smart.runlog import RunLog
+        from parsing.smart.store import Store
+
+        calls = []
+
+        class FakeClient:
+            async def get_entity(self, key):
+                calls.append(key)
+                raise ValueError('No user has "ghost" as username')
+
+        with tempfile.TemporaryDirectory() as d:
+            st = Store(os.path.join(d, "t.db"))
+            state = DiscoveryState(set())
+            params, log = P(channel="x", days=30), RunLog(echo=False)
+
+            async def go():
+                return [await _resolve(FakeClient(), "ghost", params, log, st, state)
+                        for _ in range(3)]
+
+            got = asyncio.run(go())
+            self.assertEqual(got, [None, None, None], "мёртвое имя не даёт сущности")
+            self.assertEqual(len(calls), 1, f"резолв должен быть один, а было {len(calls)}")
+            self.assertEqual(state.names_skipped, 2, "два повтора взяты из кеша")
+            self.assertEqual(st.known_name("ghost"), 0, "запомнили, что имени нет")
+            self.assertIsNone(st.known_name("unseen"), "про чужое имя ничего не знаем")
+            st.close()
 
     def test_save_hit_takes_author_from_search(self):
         """Автор найденного сообщения — готовый лид, его нельзя терять вместе с чатом.

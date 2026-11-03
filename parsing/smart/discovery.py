@@ -165,6 +165,8 @@ class DiscoveryState:
         self.msg_search_off = False       # глобальный поиск по сообщениям бесполезен на этом аккаунте
         self.msg_search_empty = 0         # сколько раундов подряд он не дал ничего
         self.direct_people: set = set()   # авторы, взятые прямо из находок поиска (без пробы чата)
+        self.names_resolved = 0           # сколько @имён резолвили за запуск
+        self.names_skipped = 0            # сколько пропустили по кешу (мёртвые)
         self.own_names: set = set()       # имена каналов/чатов самого клиента (узнаём до резолва)
 
     def add_seed(self, src, ent, probe, score: float, depth: int) -> None:
@@ -426,7 +428,8 @@ async def _qualify(client, ids: list, pool: _Pool, profile, params, store, lex, 
 EDGE_W = {"fwd": 1.0, "rec": 0.7, "link": 0.5}   # пересылка точнее всего, ссылка шумнее
 
 
-async def _expand_graph(client, seeds: list, pool: _Pool, params, log, state: DiscoveryState) -> list:
+async def _expand_graph(client, seeds: list, pool: _Pool, params, store, log,
+                        state: DiscoveryState) -> list:
     """От зёрен: пересылки (без запросов), похожие каналы, ссылки t.me/@ (лимит).
     Каждой цели копится вес связей от РАЗНЫХ зёрен: чат, на который ссылаются несколько
     хороших чатов, — центральный в нише и проверяется первым."""
@@ -466,7 +469,7 @@ async def _expand_graph(client, seeds: list, pool: _Pool, params, log, state: Di
             if resolves >= params.graph_resolves:
                 continue
             resolves += 1
-            got = await _safe(lambda: client.get_entity(u), params, log, f"@{u}")
+            got = await _resolve(client, u, params, log, store, state)
             await _pause(1.5, 3.0)
             if isinstance(got, Channel):
                 edge(s.chat_id, got, kind, f"граф: {'пересылка' if kind == 'fwd' else 'ссылка'} в {s.label()}")
@@ -569,6 +572,27 @@ def _save_hit(store, ch, m, direct: set) -> bool:
     return new
 
 
+async def _resolve(client, name: str, params, log, store, state) -> object | None:
+    """Резолв @имени через кеш. None — имени нет или лимит исчерпан.
+
+    Telegram жёстко ограничивает contacts.ResolveUsername: открыть сотню новых имён за
+    минуты может только парсер, и суточный лимит отвечает FloodWait на ~22 часа. Поэтому
+    каждое имя резолвим один раз и исход храним: мёртвые имена иначе возвращаются в
+    каждом запуске через ссылки в чужих чатах и жгут лимит впустую.
+    """
+    u = (name or "").lower().lstrip("@")
+    if not u:
+        return None
+    known = store.known_name(u)
+    if known == 0:
+        state.names_skipped += 1
+        return None                       # уже проверяли: такого имени нет
+    ent = await _safe(lambda: client.get_entity(known or u), params, log, f"@{u}")
+    state.names_resolved += 1
+    store.remember_name(u, getattr(ent, "id", 0) if ent is not None else 0)
+    return ent
+
+
 async def graph_round(client, profile, params, store, lex, log, state: DiscoveryState):
     """Раунд графа: от лучших нерасширенных зёрен — новые кандидаты, отбор, новые зёрна."""
     state.round += 1
@@ -597,7 +621,7 @@ async def graph_round(client, profile, params, store, lex, log, state: Discovery
                     reread.append(added.chat_id)
     depth = min((z["depth"] for z in frontier), default=0) + 1
     try:
-        new_ids = await _expand_graph(client, seeds, state.pool, params, log, state)
+        new_ids = await _expand_graph(client, seeds, state.pool, params, store, log, state)
     except _Flood:
         new_ids = []
         log.warn("источники", "граф прерван из-за FloodWait")
@@ -641,7 +665,7 @@ async def _web_candidates(client, queries: list, pool: _Pool, params, store, log
         if state.stop:
             break
         state.web_resolved.add(name)
-        ent = await _safe(lambda: client.get_entity(name), params, log, f"@{name}")
+        ent = await _resolve(client, name, params, log, store, state)
         await _pause(0.8, 1.6)
         if ent is None:
             continue
@@ -655,7 +679,9 @@ async def _web_candidates(client, queries: list, pool: _Pool, params, store, log
             state.web_by_id[ent.id] = max(state.web_by_id.get(ent.id, 0.0), web.score[name])
     where = "из YouTube" if params.source == "youtube" else "из статей"
     log.info("источники", f"раунд {state.round}: {where} проверено в Telegram {len(todo)} имён, "
-                         f"новых чатов/каналов {added}")
+                         f"новых чатов/каналов {added}"
+                         + (f"; по кешу имён пропущено {state.names_skipped} "
+                            f"(их резолв Telegram уже отклонил)" if state.names_skipped else ""))
     return added
 
 
@@ -688,8 +714,7 @@ async def discover_round(client, profile, params, store, lex, log, state: Discov
                 for s in picked:
                     if s.chat_id in pool.exclude:
                         continue
-                    ent = await _safe(lambda: client.get_entity(s.username), params, log,
-                                      f"@{s.username}")
+                    ent = await _resolve(client, s.username, params, log, store, state)
                     if ent is not None and pool.add(ent, "каталог (прошлые запуски)"):
                         n_cat += 1
                     await _pause(0.5, 1.0)

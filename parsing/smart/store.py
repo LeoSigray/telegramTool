@@ -57,6 +57,13 @@ CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT, started_at TEXT,
     finished_at TEXT, out_path TEXT, stats TEXT
 );
+-- Что дал резолв @имени. Telegram жёстко ограничивает contacts.ResolveUsername:
+-- массовый резолв — главный признак парсера, и суточный лимит выдаёт FloodWait
+-- на ~22 часа. Поэтому помним исход: chat_id>0 — канал, 0 — имени не существует.
+-- Мёртвые имена иначе резолвятся заново в каждом запуске и жгут лимит впустую.
+CREATE TABLE IF NOT EXISTS known_names (
+    username TEXT PRIMARY KEY, chat_id INTEGER DEFAULT 0, checked_at TEXT
+);
 """
 
 
@@ -102,6 +109,30 @@ class Store:
         self.c.close()
 
     # ── источники ──────────────────────────────────────────────────────────
+
+    def known_name(self, username: str, max_age_days: int = 30) -> Optional[int]:
+        """Исход прошлого резолва: chat_id, 0 — имени не существует, None — не знаем.
+
+        Мёртвые имена живут в графе вечно: канал удалили, а ссылки на него остались в
+        десятках чатов, и каждый запуск резолвит их заново. Один такой впустую
+        потраченный вызов ничем не отличается от полезного — лимит тратится одинаково.
+        """
+        r = self.c.execute("SELECT chat_id, checked_at FROM known_names WHERE username=?",
+                           (username.lower().lstrip("@"),)).fetchone()
+        if not r:
+            return None
+        age = parse_iso(r["checked_at"])
+        if age and (datetime.now(timezone.utc) - age).days > max_age_days:
+            return None                       # вдруг имя заняли заново
+        return int(r["chat_id"])
+
+    def remember_name(self, username: str, chat_id: int) -> None:
+        self.c.execute(
+            "INSERT INTO known_names (username, chat_id, checked_at) VALUES (?,?,?)"
+            " ON CONFLICT(username) DO UPDATE SET chat_id=excluded.chat_id,"
+            " checked_at=excluded.checked_at",
+            (username.lower().lstrip("@"), int(chat_id or 0), _now()))
+        self.c.commit()
 
     def upsert_source(self, s: Source) -> None:
         self.c.execute(
