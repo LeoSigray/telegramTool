@@ -38,6 +38,12 @@ MAX_MINUTES = float(os.getenv("MINIAPP_PARSE_MINUTES", "15") or 15)  # пото�
 DAYS = int(os.getenv("MINIAPP_PARSE_DAYS", "30") or 30)              # окно свежести сообщений
 MAX_BATCH = 5                   # сколько людей ищем за один поиск, если нажали несколько раз подряд
 RESERVE = 10                    # запасные кандидаты: если лучший уже найден раньше, берём следующего
+# Прогрев: сколько людей искать заранее, до первого нажатия. Первый поиск по новому
+# каналу длится минуты (профиль, чаты, чтение), и ждать их у спиннера покупатель не будет.
+# Зато между вводом канала и первым нажатием он читает и правит текст рассылки — вот в это
+# время человек и ищется. К нажатию он уже готов, и поиск не запускается вовсе.
+PREWARM = int(os.getenv("MINIAPP_PREWARM", "2") or 2)
+PREWARM_RETRY_SEC = float(os.getenv("MINIAPP_PREWARM_RETRY", "900") or 900)
 ACCOUNT_TRIES = 3               # сколько аккаунтов пробовать, если поиск прервал лимит Telegram
 IDLE_SEC = 3.0
 _FLOOD_RE = re.compile(r"FloodWait (\d+) с")
@@ -177,6 +183,31 @@ async def find_people(user: dict, need: int) -> int:
     return got
 
 
+async def _prewarm_once() -> bool:
+    """Найти человека заранее тому, кто ещё не нажимал. True — что-то делали.
+
+    Идёт тем же воркером, что и обычный поиск, поэтому два поиска никогда не борются
+    за один аккаунт из пула. Запускается только в простое: реальные нажатия важнее.
+    """
+    if PREWARM <= 0:
+        return False
+    tg = store.next_prewarm(PREWARM)
+    if tg is None:
+        return False
+    # не долбимся в того, кому только что не смогли никого найти
+    last = store.state_get(f"prewarm_at:{tg}")
+    if last and time.time() - float(last) < PREWARM_RETRY_SEC:
+        return False
+    store.state_set(f"prewarm_at:{tg}", str(time.time()))
+    user = store.get_user(tg)
+    if not user:
+        return False
+    log.info("[miniapp-parse] прогрев: ищем человека заранее (покупатель %s)", tg)
+    got = await find_people(user, PREWARM)
+    log.info("[miniapp-parse] прогрев: нашли %d (покупатель %s)", got, tg)
+    return True
+
+
 async def worker_loop() -> None:
     """Ищет людей для покупателей, у которых нажатий больше, чем найденных людей."""
     stale = store.parse_recover()
@@ -187,7 +218,9 @@ async def worker_loop() -> None:
         try:
             tg = store.next_search()
             if tg is None:
-                await asyncio.sleep(IDLE_SEC)
+                # нажатий нет — время заранее поискать тем, кто только ввёл канал
+                if not await _prewarm_once():
+                    await asyncio.sleep(IDLE_SEC)
                 continue
             user = store.get_user(tg)
             need = min(store.search_need(tg), MAX_BATCH)

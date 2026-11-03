@@ -116,4 +116,34 @@ failed = store.last_failed_tap(8)
 assert failed["id"] == taps[-1] and failed["error"] == "не нашли подходящего человека"
 assert store.pending_taps(8) == 3 and store.oldest_waiting_tap(8)["id"] == taps[0] and store.newest_queued_tap(8) == late
 store.parse_set(8, "failed")
+
+# ── прогрев: ищем заранее, пока покупатель не нажал ──────────────────────────
+# Первый поиск по новому каналу длится минуты. Ждать их у спиннера покупатель не станет,
+# поэтому человек ищется в паузу между вводом канала и первым нажатием.
+store.upsert_user(20, username="fresh", first_name="F", last_name=None)
+store.set_channel_building(20, "fresh_shop", "channel")
+store.set_channel_ready(20, "Текст")
+assert store.next_search() != 20, "нажатий нет — обычный поиск этому не нужен"
+assert store.next_prewarm(2) == 20, "каналу без людей нужен прогрев"
+
+store.add_leads(20, [{"username": "warm1"}, {"username": "warm2"}])
+assert store.next_prewarm(2) is None, "запас набран — прогрев больше не нужен"
+
+# главное ради чего всё: первое нажатие НЕ запускает поиск, человек уже готов
+store.claim_gift(20, 5)
+store.enqueue_tap(20)
+assert store.next_search() != 20, "человек найден заранее — ждать нечего"
+assert store.search_need(20) == 0
+
+# реальные нажатия важнее прогрева: пока их больше, чем людей, прогрев не вмешивается
+store.upsert_user(21, username="busy", first_name="B", last_name=None)
+store.set_channel_building(21, "busy_shop", "channel")
+store.set_channel_ready(21, "Текст")
+store.claim_gift(21, 5)
+store.enqueue_tap(21)
+# закрываем хвост прошлого блока, чтобы очередь дошла до 21
+store.add_leads(8, [{"username": f"stub8_{i}"} for i in range(5)])
+assert store.next_search() == 21, "нажатие без человека — обычный поиск"
+assert store.next_prewarm(2) is None, "у кого есть нажатия, того греть не надо"
+
 print("ALL OK")

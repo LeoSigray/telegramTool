@@ -266,6 +266,27 @@ def next_search() -> int | None:
         return int(row["tg_id"]) if row else None
 
 
+def next_prewarm(min_leads: int) -> int | None:
+    """Покупатель, которому стоит найти человека ЗАРАНЕЕ, пока он не нажал.
+
+    Первый поиск по новому каналу — самый долгий: надо построить профиль, найти чаты,
+    прочитать их. Если ждать нажатия, покупатель смотрит на спиннер несколько минут и
+    уходит. Но между вводом канала и первым нажатием он читает и правит текст рассылки —
+    это свободное время, за которое человек успевает найтись.
+
+    Берём того, у кого канал готов, нажатий нет (иначе им займётся next_search) и
+    свободных людей меньше min_leads. Когда запас наберётся, условие перестанет
+    выполняться само.
+    """
+    with _conn() as c:
+        row = c.execute(
+            "SELECT u.tg_id FROM mini_users u WHERE u.channel_status='ready'"
+            " AND (SELECT COUNT(*) FROM mini_taps t WHERE t.tg_id=u.tg_id AND t.status='queued') = 0"
+            " AND (SELECT COUNT(*) FROM mini_leads l WHERE l.tg_id=u.tg_id AND l.status='new') < ?"
+            " ORDER BY u.tg_id LIMIT 1", (min_leads,)).fetchone()
+        return int(row["tg_id"]) if row else None
+
+
 def search_need(tg_id: int) -> int:
     """Сколько людей ещё надо найти: ждущих нажатий минус уже найденные и не тронутые."""
     with _conn() as c:
