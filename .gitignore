@@ -51,3 +51,6 @@ __pycache__/
 
 # avatar cache (runtime)
 avatars_cache/
+
+# резервные копии аватаров аккаунтов — личные данные, не в репозиторий
+data/avatars_backup_*/
