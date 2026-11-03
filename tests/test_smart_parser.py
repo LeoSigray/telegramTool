@@ -1033,6 +1033,51 @@ class LinkedChatsTests(unittest.TestCase):
         self.assertEqual(reject(linked, p), "", "чат канала на 40 человек должен проходить")
         self.assertIn("закрытый", reject(plain, p), "чужой чат без username по-прежнему мимо")
 
+    def test_save_hit_takes_author_from_search(self):
+        """Автор найденного сообщения — готовый лид, его нельзя терять вместе с чатом.
+
+        Глобальный поиск отдаёт сообщение «ищу поставщика» вместе с автором. Раньше из
+        находки брали только чат, а человека выбрасывали — хотя он и есть самый дешёвый
+        лид: запрос уже написан, пробовать и вычитывать чат ради него не нужно.
+        """
+        from telethon.tl.types import PeerUser
+
+        from parsing.smart.discovery import _save_hit
+        from types import SimpleNamespace
+
+        class FakeStore:
+            def __init__(self):
+                self.sources, self.msgs = {}, []
+
+            def get_source(self, cid):
+                return self.sources.get(cid)
+
+            def upsert_source(self, s):
+                self.sources[s.chat_id] = s
+
+            def add_messages(self, rows):
+                self.msgs.extend(rows)
+                return len(rows)
+
+        ch = SimpleNamespace(id=777, title="Оптовики", username="opt_chat",
+                             megagroup=True, participants_count=5000, left=False)
+        msg = SimpleNamespace(id=5, message="ищу поставщика айфонов оптом",
+                              from_id=PeerUser(user_id=42),
+                              date=datetime.now(timezone.utc), reply_to=None, fwd_from=None)
+
+        st, seen = FakeStore(), set()
+        self.assertTrue(_save_hit(st, ch, msg, seen), "новый автор — это новый лид")
+        self.assertEqual(st.msgs[0].sender_id, 42, "сохраняем именно автора запроса")
+        self.assertEqual(st.msgs[0].source_id, 777)
+        self.assertTrue(st.sources[777].is_member, "чат аккаунта помечен честно")
+        # тот же человек второй раз лидом не считается
+        self.assertFalse(_save_hit(st, ch, msg, seen), "повтор автора не новый лид")
+
+        # пост канала человеком не является
+        post = SimpleNamespace(id=6, message="акция", from_id=None,
+                               date=datetime.now(timezone.utc), reply_to=None, fwd_from=None)
+        self.assertFalse(_save_hit(st, ch, post, seen), "пост канала — не человек")
+
     def test_linked_chat_not_required_to_mention_product(self):
         """Главное: от чата аудитории не требуем слов товара, иначе теряем саму аудиторию.
 

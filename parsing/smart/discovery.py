@@ -164,6 +164,7 @@ class DiscoveryState:
         self.linked_seen: set = set()     # привязанные чаты каналов, уже добавленные в пул
         self.msg_search_off = False       # глобальный поиск по сообщениям бесполезен на этом аккаунте
         self.msg_search_empty = 0         # сколько раундов подряд он не дал ничего
+        self.direct_people: set = set()   # авторы, взятые прямо из находок поиска (без пробы чата)
         self.own_names: set = set()       # имена каналов/чатов самого клиента (узнаём до резолва)
 
     def add_seed(self, src, ent, probe, score: float, depth: int) -> None:
@@ -536,6 +537,38 @@ def load_saved_seeds(store, state: DiscoveryState, params, log) -> int:
     return n
 
 
+def _save_hit(store, ch, m, direct: set) -> bool:
+    """Сохранить автора найденного сообщения как кандидата. True — если это новый человек.
+
+    Глобальный поиск отдаёт сообщения вместе с авторами, а раньше из находки брался только
+    чат — сам человек, написавший «ищу поставщика», терялся. Это самый дешёвый лид: запрос
+    он уже написал, и ни проба чата, ни вычитывание сотен сообщений ради него не нужны.
+
+    Чат регистрируем источником, иначе сообщению некуда ссылаться и ранжирование его не
+    увидит. Пометка is_member сохраняет правду о том, что аккаунт в этом чате состоит.
+    """
+    from telethon.tl.types import PeerUser
+
+    from .harvest import to_message
+
+    sender = getattr(m, "from_id", None)
+    if not isinstance(sender, PeerUser) or not (m.message or "").strip():
+        return False                      # посты канала и служебные сообщения людьми не являются
+    row = to_message(ch.id, m)
+    if row is None:
+        return False
+    if store.get_source(ch.id) is None:
+        store.upsert_source(Source(chat_id=ch.id, title=getattr(ch, "title", "") or "",
+                                   username=(getattr(ch, "username", "") or ""),
+                                   kind="group" if getattr(ch, "megagroup", False) else "channel",
+                                   members=getattr(ch, "participants_count", 0) or 0,
+                                   is_member=not getattr(ch, "left", True)))
+    store.add_messages([row])
+    new = sender.user_id not in direct
+    direct.add(sender.user_id)
+    return new
+
+
 async def graph_round(client, profile, params, store, lex, log, state: DiscoveryState):
     """Раунд графа: от лучших нерасширенных зёрен — новые кандидаты, отбор, новые зёрна."""
     state.round += 1
@@ -709,6 +742,8 @@ async def discover_round(client, profile, params, store, lex, log, state: Discov
             phrases = unused[:params.phrases_per_round]
             hits_total, new_chats = 0, 0
             raw_total, own_total, fresh_total, other_total = 0, 0, 0, 0
+            direct_total = 0                 # людей, взятых прямо из находок поиска
+            direct = state.direct_people
             for phrase in phrases:
                 if state.stop:
                     break
@@ -722,12 +757,20 @@ async def discover_round(client, profile, params, store, lex, log, state: Discov
                     ch = getattr(m, "chat", None)
                     # возраст сообщения не важен: чат, где когда-то писали «куплю айфон», — кандидат;
                     # живой ли он сейчас, решит проба
-                    if m.date and m.date >= since:
+                    fresh = bool(m.date and m.date >= since)
+                    if fresh:
                         fresh_total += 1
                     if not isinstance(ch, Channel) or not (getattr(ch, "username", None)
                                                            or getattr(ch, "usernames", None)):
                         other_total += 1    # личные диалоги, закрытые чаты
                         continue
+                    # Автор найденного сообщения — уже готовый кандидат, и это самый
+                    # дешёвый лид из всех: человек прямо написал то, что ищет клиент, и
+                    # ради него не нужно ни пробовать чат, ни вычитывать его целиком.
+                    # Берём и в чатах, где аккаунт состоит: группа публичная, а в общий
+                    # пул источников такой чат всё равно не попадёт (ниже continue).
+                    if fresh and _save_hit(store, ch, m, direct):
+                        direct_total += 1
                     if not getattr(ch, "left", True):
                         own_total += 1
                         continue            # аккаунт состоит в этом чате: личное, не трогаем
@@ -743,12 +786,15 @@ async def discover_round(client, profile, params, store, lex, log, state: Discov
                 log.info("источники", f"раунд {state.round}: поиск по сообщениям, фраз {len(phrases)}, "
                                       f"найдено сообщений {raw_total} (свежих {fresh_total}, в чатах "
                                       f"аккаунта {own_total}, личные/закрытые {other_total}), "
-                                      f"подходящих {hits_total}, новых чатов {new_chats} "
+                                      f"подходящих {hits_total}, новых чатов {new_chats}, "
+                                      f"людей прямо из находок {direct_total} "
                                       f"({'; '.join(phrases[:3])}{' …' if len(phrases) > 3 else ''})")
                 # Глобальный поиск Telegram отдаёт сообщения только из чатов, где аккаунт
                 # состоит. У свежего аккаунта без групп он всегда пуст и впустую съедает
                 # ~40 с за раунд, поэтому после двух пустых раундов подряд выключаем его.
-                if new_chats == 0 and fresh_total == 0:
+                # Найденные люди — тоже результат: ради них поиск стоит держать включённым,
+                # даже когда новых чатов он не приносит.
+                if new_chats == 0 and fresh_total == 0 and direct_total == 0:
                     state.msg_search_empty += 1
                     if state.msg_search_empty >= 2:
                         state.msg_search_off = True
