@@ -267,7 +267,7 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
             changed = True
         if changed:
             profile.save(ppath)
-        terms = harvest_terms(profile, params)
+        terms = harvest_terms(profile, params, lex)
         if terms:
             log.info("сбор", "читаем чаты точечно — поиск внутри чата по: " + ", ".join(terms))
         if profile.seller_phrases:

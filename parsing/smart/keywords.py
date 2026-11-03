@@ -109,6 +109,19 @@ async def ground_profile(client, profile, params, log) -> bool:
                                "покупателя (один раз на профиль, ~1–2 мин)")
     hits = await _check(client, kws, params, log, "слов товара")
     hits.update(await _check(client, phrases, params, log, "фраз"))
+
+    # Ноль по ВСЕМ словам сразу — это не «таких слов нет в Telegram», а сломанный поиск.
+    # Глобальный поиск по сообщениям отдаёт только чаты, где аккаунт состоит, поэтому у
+    # свежего аккаунта без групп он всегда пуст. Поверив такому нулю, мы выбрасывали
+    # нормальные слова («айфон», «iphone»), и дальше точечное чтение искало по обрезку
+    # списка и приносило 0 сообщений из живых чатов.
+    if hits and not any(hits.values()):
+        profile.keywords_checked = True
+        log.warn("ключевые слова", f"глобальный поиск не нашёл НИ ОДНОГО из {len(hits)} слов и фраз "
+                                   "— так не бывает, значит он на этом аккаунте не работает "
+                                   "(аккаунт не состоит в группах). Профиль оставляю как есть.")
+        return True
+
     kept_kw, drop_kw = _keep(kws, hits, 3)
     kept_ph, drop_ph = _keep(phrases, hits, 5)
     profile.product_keywords = kept_kw + [k for k in profile.product_keywords[20:] if k not in kept_kw]
@@ -127,13 +140,35 @@ async def ground_profile(client, profile, params, log) -> bool:
     return True
 
 
-def harvest_terms(profile, params) -> list:
-    """По чему искать внутри чата при точечном чтении: лучшие слова товара и фразы покупателя.
-    Пустой список — читаем чат целиком (как раньше)."""
+def search_terms(profile, params, lex=None) -> list:
+    """Короткие маркеры намерения для поиска ВНУТРИ чата.
+
+    Почему не слова товара и не фразы покупателя:
+      * «айфон» — предмет, а не намерение: в чат летит «оплатил с айфона», «Т-банк на
+        айфон». Шум, в котором нужного человека ещё искать;
+      * «ищу оптовика на iPhone для магазина» — поиск Telegram работает по подстроке,
+        а такую фразу никто дословно не пишет. Стабильный ноль.
+
+    Берём короткие маркеры запроса из lexicon/intent.txt («ищу», «посоветуйте»,
+    «нужен подрядчик»). Они частотны, поэтому реально находятся, и несут НАМЕРЕНИЕ.
+    Чат к этому моменту уже отобран по теме клиента, так что «ищу» внутри него — это
+    «ищу то, чем торгует клиент». Тему и качество дальше проверяют правила
+    (features.py) и LLM, поэтому широкий маркер здесь не страшен.
+    """
     if not params.targeted:
         return []
-    from .profile import clean_product_keywords
-    kws = clean_product_keywords(profile.product_keywords)[:params.targeted_terms]
-    hits = getattr(profile, "keyword_hits", {}) or {}
-    phrases = [p for p in profile.buyer_phrases if not hits or hits.get(p, 0) > 0][:params.targeted_terms]
-    return kws + [p for p in phrases if p.lower() not in kws]
+    seen: set = set()
+    singles: list = []        # однословные («ищу», «нужен») — самые широкие и частотные
+    multi: list = []          # фразы («кто подскажет») — точнее, но встречаются реже
+    for raw in tp.read_lexicon("intent"):
+        t = str(raw).strip().lstrip("~")
+        if len(t) < 3 or t in seen:
+            continue
+        seen.add(t)
+        (singles if " " not in t else multi).append(t)
+    return (singles + multi)[:params.search_terms]
+
+
+def harvest_terms(profile, params, lex=None) -> list:
+    """По чему искать внутри чата при точечном чтении. Пустой список — читаем подряд."""
+    return search_terms(profile, params, lex)

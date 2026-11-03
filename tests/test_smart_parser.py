@@ -1565,13 +1565,37 @@ class KeywordQualityTests(unittest.TestCase):
         self.assertAlmostEqual(w[2], 1.0)
 
     def test_harvest_terms(self):
-        from parsing.smart.keywords import harvest_terms
+        """Внутри чата ищем НАМЕРЕНИЕ, а не товар.
+
+        По «айфон» поиск Telegram приносит «оплатил с айфона» и «Т-банк на айфон» — шум.
+        По длинной фразе «ищу оптовика на iPhone для магазина» — ровно ноль: поиск идёт
+        по подстроке, а так никто не пишет. Работают короткие маркеры запроса, а тему
+        и качество проверяют уже правила и LLM.
+        """
+        from parsing.smart.keywords import harvest_terms, search_terms
         prof = Profile(channel="x", product_keywords=["ai", "нейросети", "chatgpt"],
                        buyer_phrases=["посоветуйте нейросеть", "хочу нейрообучение"],
                        keyword_hits={"посоветуйте нейросеть": 4, "хочу нейрообучение": 0})
-        self.assertEqual(harvest_terms(prof, P(channel="@x")),
-                         ["нейросети", "chatgpt", "посоветуйте нейросеть"])
+        terms = harvest_terms(prof, P(channel="@x"))
+
+        self.assertIn("ищу", terms, "главный маркер запроса обязан быть")
+        self.assertTrue(any(t in terms for t in ("нужен", "требуется")))
+        self.assertNotIn("нейросети", terms, "название товара даёт шум, а не покупателей")
+        self.assertNotIn("посоветуйте нейросеть", terms,
+                         "длинную фразу поиск по подстроке не найдёт")
+        self.assertTrue(all(" " not in t for t in terms[:4]),
+                        "сначала однословные: они частотнее и находятся надёжнее")
+        self.assertEqual(terms, search_terms(prof, P(channel="@x")))
         self.assertEqual(harvest_terms(prof, P(channel="@x", targeted=False)), [])
+
+    def test_search_terms_cheaper_than_before(self):
+        """Маркеров меньше, чем было поисков: чтение чата стало дешевле, а не дороже."""
+        from parsing.smart.keywords import search_terms
+        p = P(channel="@x")
+        terms = search_terms(None, p)
+        self.assertLessEqual(len(terms), p.search_terms)
+        self.assertLess(1 + len(terms), 1 + p.targeted_terms * 2,
+                        "запросов на чат должно стать меньше прежних 13")
 
 
 class WebSearchTests(unittest.TestCase):
