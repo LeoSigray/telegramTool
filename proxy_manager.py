@@ -1,3 +1,5 @@
+import os
+
 import socks
 from urllib.parse import urlparse, parse_qs
 
@@ -83,6 +85,21 @@ def parse_mtproxy_link(url: str) -> tuple[str, int, str] | None:
     return server, port, secret
 
 
+def direct_sessions() -> set:
+    """Сессии, которым разрешён прямой выход без прокси — DIRECT_SESSIONS в .env.
+
+    Запрет на прямой выход существует против ферм: двадцать купленных аккаунтов с одного
+    IP — явный сигнал антиспаму. Но личный аккаунт владельца к ферме не относится: он и
+    так всю жизнь ходит с этого компьютера, и если завести его через чужой SOCKS5, для
+    Telegram это будет выглядеть как угон. Поэтому для перечисленных здесь сессий
+    (обычно одна, «personal») прокси не требуется.
+
+    Значение — имена сессий через запятую, например: DIRECT_SESSIONS=personal
+    """
+    raw = os.getenv("DIRECT_SESSIONS", "")
+    return {x.strip().lower() for x in raw.split(",") if x.strip()}
+
+
 class ProxyRequired(RuntimeError):
     """Прокси не задан или задан неверно — Telegram-клиент создавать нельзя."""
 
@@ -99,12 +116,17 @@ def client_kwargs_for(account: str) -> dict:
     Один IP на все аккаунты сразу — сильный сигнал для антиспама Telegram,
     что это ферма, а не разные люди. Персональный прокси на аккаунт — способ
     этого избежать.
+
+    Исключение — личные сессии из DIRECT_SESSIONS: см. direct_sessions().
     """
     raw = get_account_proxy(account) or load_proxy()
     if not raw:
+        if (account or "").lower() in direct_sessions():
+            return {}          # личная сессия: сознательно идём с IP владельца
         raise ProxyRequired(
             f"прокси не задан (аккаунт {account}). Задай прокси: Telegram → 6 (Настройки прокси). "
-            "Без прокси подключение запрещено, чтобы аккаунты не ходили с IP компьютера/VPN.")
+            "Без прокси подключение запрещено, чтобы аккаунты не ходили с IP компьютера/VPN. "
+            "Личному аккаунту прокси не нужен — впиши его сессию в DIRECT_SESSIONS в .env.")
 
     mt = parse_mtproxy_link(raw)
     if mt:

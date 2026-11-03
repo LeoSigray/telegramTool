@@ -1888,6 +1888,62 @@ class YouTubeSearchTests(unittest.TestCase):
                 self.assertTrue(f2.blocked)
             st.close()
 
+    def test_client_own_author_is_skipped(self):
+        """Клиент — эксперт по своей теме, его видео попадутся в выдаче.
+
+        Если автор ссылается на канал клиента, это он сам: его подписчики клиенту уже
+        известны, а чат курса полон оплативших учеников. Берём у такого автора НОЛЬ ссылок,
+        а не только сам канал, — иначе клиент получит в лидах собственных учеников.
+        """
+        from unittest import mock
+
+        from parsing.smart import youtube as yt
+
+        videos = {"a" * 11: ("UC1", "Сам клиент", ["neuroclub_ai", "neuroclub_chat", "kursanty"]),
+                  "b" * 11: ("UC2", "Чужой автор", ["other_chat"])}
+
+        async def fake_search(self, http, q):
+            return [(v, cid, author) for v, (cid, author, _l) in videos.items()]
+
+        async def fake_video(self, http, vid):
+            cid, author, links = videos[vid]
+            return {"desc": "", "author": author, "channel_id": cid, "views": 1,
+                    "links": links, "invites": 0}
+
+        class Log:
+            def info(self, *a): pass
+            def warn(self, *a): pass
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(yt.YouTubeFinder, "_search", fake_search), \
+                mock.patch.object(yt.YouTubeFinder, "_video", fake_video):
+            st = Store(os.path.join(tmp, "s.db"))
+            f = yt.YouTubeFinder(st, P(channel="@neuroclub_ai"), Log())
+            ranked = asyncio.run(f.run(["нейросети урок"]))
+            self.assertEqual(ranked, ["other_chat"], "от клиента не берём ничего")
+            self.assertNotIn("kursanty", f.score, "чат учеников клиента — не лиды")
+            self.assertNotIn("neuroclub_chat", f.score)
+            self.assertEqual(f.self_authors, 1)
+            st.close()
+
+    def test_own_names_collected_for_prefilter(self):
+        """Имена клиента собираются, чтобы отсеять его ДО запроса к Telegram."""
+        from parsing.smart import youtube as yt
+
+        class Log:
+            def info(self, *a): pass
+            def warn(self, *a): pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            st = Store(os.path.join(tmp, "s.db"))
+            f = yt.YouTubeFinder(st, P(channel="@neuroclub_ai"), Log())
+            self.assertIn("neuroclub_ai", f.own, "канал из params попадает сразу")
+            f.add_own(["@NeuroClub_Chat", "second_project", None, ""])
+            self.assertIn("neuroclub_chat", f.own, "регистр и @ нормализуются")
+            self.assertIn("second_project", f.own)
+            self.assertNotIn("", f.own)
+            st.close()
+
     def test_yt_queries_fallback_without_llm(self):
         from parsing.smart.youtube import generate_yt_queries
 

@@ -195,6 +195,14 @@ class YouTubeFinder(WebFinder):
         self.api_ok = True                         # JSON-API отвечает; False — идём по HTML
         self.bytes_down = 0                        # для замеров (tests/bench_youtube.py)
         self.http_calls = 0
+        self.self_authors = 0                      # сколько авторов опознано как сам клиент
+        # имена, по которым узнаём канал самого клиента: его видео вполне попадутся в выдаче,
+        # ведь он эксперт по своей же теме
+        self.own: set = {(params.channel or "").lower()} - {""}
+
+    def add_own(self, names) -> None:
+        """Дополнить список «это сам клиент» (его чат обсуждения, другие его проекты)."""
+        self.own |= {str(n).lower().lstrip("@") for n in names if n}
 
     # ── сеть ────────────────────────────────────────────────────────────────
     async def _get(self, http, url: str, **params) -> str:
@@ -400,6 +408,15 @@ class YouTubeFinder(WebFinder):
                 cid = info["channel_id"]
                 key = cid or info["author"] or vid
                 if info["links"]:
+                    # Автор, который ссылается на канал клиента, — это сам клиент (или его
+                    # сотрудник). Его подписчики клиенту уже известны, а чат курса полон
+                    # оплативших учеников: это не лиды. Поэтому не берём у него НИ ОДНОЙ
+                    # ссылки, а не только сам канал — тот и так отсеялся бы по exclude.
+                    if self.own & set(info["links"]):
+                        self.self_authors += 1
+                        self.log.info("YouTube", f"автор «{info['author'][:40]}» ссылается на канал "
+                                                 "клиента — это он сам, его ссылки не берём")
+                        continue
                     for name in info["links"]:
                         n_links += self._take(name, key, info, vid, touched)
                 elif cid:
@@ -416,6 +433,10 @@ class YouTubeFinder(WebFinder):
                     cid = info["channel_id"]
                     key = cid or info["author"] or vid
                     if info["links"]:
+                        if self.own & set(info["links"]):
+                            self.self_authors += 1
+                            empty_authors.pop(cid, None)
+                            continue
                         for name in info["links"]:
                             n_links += self._take(name, key, info, vid, touched)
                         empty_authors.pop(cid, None)
@@ -428,6 +449,9 @@ class YouTubeFinder(WebFinder):
                         return cid, await self._channel_links(http, cid)
                 for cid, links in await asyncio.gather(*(about_one(c) for c in still)):
                     _spare, info, src_vid = empty_authors[cid]
+                    if self.own & set(links):
+                        self.self_authors += 1
+                        continue
                     for name in links:
                         n_links += self._take(name, cid, info, src_vid, touched)
 
@@ -436,6 +460,8 @@ class YouTubeFinder(WebFinder):
                                  f"видео {n_videos}, ссылок на Telegram {n_links}, "
                                  f"разных каналов {len(ranked)}"
                       + (f", закрытых приглашений (не берём) {self.invites}" if self.invites else "")
+                      + (f", авторов-самого-клиента пропущено {self.self_authors}"
+                         if self.self_authors else "")
                       + ("; чаще всего: " + ", ".join(f"@{n} ({int(self.score[n])} авт.)" for n in ranked[:6])
                          if ranked else ""))
         return ranked

@@ -164,6 +164,7 @@ class DiscoveryState:
         self.linked_seen: set = set()     # привязанные чаты каналов, уже добавленные в пул
         self.msg_search_off = False       # глобальный поиск по сообщениям бесполезен на этом аккаунте
         self.msg_search_empty = 0         # сколько раундов подряд он не дал ничего
+        self.own_names: set = set()       # имена каналов/чатов самого клиента (узнаём до резолва)
 
     def add_seed(self, src, ent, probe, score: float, depth: int) -> None:
         cur = self.seeds.get(src.chat_id)
@@ -187,15 +188,25 @@ async def start_discovery(client, params, own_ids: set, log) -> DiscoveryState:
 
     exclude: set = set(own_ids)
     own_ent = None
+    own_names: set = {(params.channel or "").lower()} - {""}
     try:
         own_ent = await client.get_entity(params.channel)
         own_full = await client(GetFullChannelRequest(own_ent))
         exclude.add(own_ent.id)
-        if getattr(own_full.full_chat, "linked_chat_id", None):
-            exclude.add(own_full.full_chat.linked_chat_id)
+        if getattr(own_ent, "username", None):
+            own_names.add(own_ent.username.lower())
+        linked = getattr(own_full.full_chat, "linked_chat_id", None)
+        if linked:
+            exclude.add(linked)
+            # имя чата обсуждения тоже нужно: по нему мы узнаём «это сам клиент» ДО резолва
+            for ch in (getattr(own_full, "chats", None) or []):
+                if ch.id == linked and getattr(ch, "username", None):
+                    own_names.add(ch.username.lower())
     except Exception as e:  # noqa: BLE001
         log.warn("источники", f"не удалось прочитать канал клиента: {str(e)[:120]}")
-    return DiscoveryState(exclude, own_ent)
+    state = DiscoveryState(exclude, own_ent)
+    state.own_names = own_names
+    return state
 
 
 class _Pool:
@@ -578,6 +589,9 @@ async def _web_candidates(client, queries: list, pool: _Pool, params, store, log
         else:
             from .websearch import WebFinder
             state.web = WebFinder(store, params, log)
+        # YouTube должен знать имена клиента: его собственные видео попадутся в выдаче
+        if hasattr(state.web, "add_own"):
+            state.web.add_own(state.own_names)
     web = state.web
     for q in queries:
         state.used.add(q.lower())
@@ -585,7 +599,10 @@ async def _web_candidates(client, queries: list, pool: _Pool, params, store, log
     if web.blocked and not ranked:
         return None
     todo = [n for n in sorted(web.score, key=lambda n: -web.score[n])
-            if n not in state.web_resolved and n not in pool.seen_usernames][:params.web_resolves]
+            if n not in state.web_resolved and n not in pool.seen_usernames
+            # имя клиента отсеиваем ДО резолва: иначе тратим запрос к Telegram и паузу
+            # на канал, который всё равно выбросит pool.exclude
+            and n not in state.own_names][:params.web_resolves]
     added = 0
     for name in todo:
         if state.stop:
