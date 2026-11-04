@@ -82,24 +82,45 @@ def _clean_list(items, limit: int, max_len: int = 80) -> list[str]:
     return out
 
 
-def top_terms(docs: list[str], stopwords: set[str], limit: int = 30) -> list[str]:
-    """Частые термины канала: леммы и биграммы, встречающиеся хотя бы в двух постах."""
+def top_terms(docs: list[str], stopwords: set[str], limit: int = 30,
+              surface: bool = False) -> list[str]:
+    """Частые термины канала: леммы и биграммы, встречающиеся хотя бы в двух постах.
+
+    surface=True возвращает термины в том виде, как их пишут люди. Леммы годятся для
+    сопоставления текстов, но не для поиска: Telegram ищет по подстроке, и «ищу оформ
+    заказ» не найдёт ничего. Хуже того, без pymorphy3 включается запасной стеммер, и
+    термины превращаются в обрубки «оформ», «доставк», «предоплат» — из них строятся
+    фразы покупателя, и глобальный поиск стабильно возвращает ноль.
+    """
     df: Counter = Counter()
     tf: Counter = Counter()
+    forms: dict = {}                       # лемма → как это слово пишут в текстах
     for d in docs:
-        lem = [t for t in tp.lemmas(d) if len(t) > 2 and t not in stopwords and not t.isdigit()]
+        pairs = [(lm, w) for lm, w in zip(tp.lemmas(d), tp.words(d))
+                 if len(lm) > 2 and lm not in stopwords and not lm.isdigit()]
+        lem = [lm for lm, _ in pairs]
         terms = lem + [a + " " + b for a, b in zip(lem, lem[1:])]
         tf.update(terms)
         df.update(set(terms))
+        for lm, w in pairs:
+            forms.setdefault(lm, Counter())[w] = forms.setdefault(lm, Counter())[w] + 1
+        for (a, wa), (b, wb) in zip(pairs, pairs[1:]):
+            key = a + " " + b
+            forms.setdefault(key, Counter())[wa + " " + wb] = \
+                forms.setdefault(key, Counter())[wa + " " + wb] + 1
     min_df = 2 if len(docs) >= 5 else 1
     scored = [(df[t] * math.log(1 + tf[t]) * (1.3 if " " in t else 1.0), t)
               for t in df if df[t] >= min_df]
     scored.sort(reverse=True)
     out: list[str] = []
+    picked: list[str] = []                 # те же термины леммами — по ним идёт дедупликация
     for _, t in scored:
         # биграмма вытесняет одиночные слова, которые в ней уже есть
-        if " " not in t and any(t in o.split() for o in out if " " in o):
+        if " " not in t and any(t in o.split() for o in picked if " " in o):
             continue
+        picked.append(t)
+        if surface and forms.get(t):
+            t = forms[t].most_common(1)[0][0]     # самая частая живая форма
         out.append(t)
         if len(out) >= limit:
             break
@@ -166,12 +187,16 @@ async def build_profile(client, params, lex: tp.Lexicon, log, use_llm: bool) -> 
         log.info("профиль", f"канал «{title}»: описание {len(about)} симв., постов с текстом {len(posts)}")
 
     brief = params.brief_text()
-    terms = top_terms(posts + [about, brief], lex.stopwords)
+    docs = posts + [about, brief]
+    terms = top_terms(docs, lex.stopwords)
+    # для поиска нужны живые формы слов: Telegram ищет по подстроке, а «ищу оформ заказ»
+    # не найдёт ничего. Леммы остаются в topic_terms — там они и нужны, для сопоставления
+    live = top_terms(docs, lex.stopwords, surface=True)
     prof = Profile(
         channel=params.channel, title=title, about=about, brief=brief,
         topic_terms=terms,
-        search_queries=default_queries(terms),
-        buyer_phrases=default_buyer_phrases(terms),
+        search_queries=default_queries(live),
+        buyer_phrases=default_buyer_phrases(live),
         posts_sample=[p[:600] for p in posts[:30]],
     )
 
@@ -274,10 +299,17 @@ def _fallback_queries(prof: Profile, used: set, n: int) -> list:
 
 
 def _fallback_phrases(prof: Profile, used: set, n: int) -> list:
+    """Запасные фразы покупателя, когда LLM недоступен.
+
+    Берём живые формы слов из постов канала, а не topic_terms: там леммы, и фраза
+    «ищу оформ заказ» в поиске Telegram не найдёт ничего (он ищет по подстроке).
+    """
     out: list = []
     seen = set(used)
+    live = top_terms(prof.posts_sample + [prof.about, prof.brief],
+                     set(tp.read_lexicon("stopwords")), 14, surface=True) or prof.topic_terms[:14]
     for tpl in ("ищу {t}", "где купить {t}", "нужен {t}", "кто продаёт {t}", "посоветуйте {t}", "куплю {t}"):
-        for t in prof.topic_terms[:14]:
+        for t in live:
             q = tpl.format(t=t)
             if q.lower() not in seen and len(q) <= 50:
                 seen.add(q.lower())

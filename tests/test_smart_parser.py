@@ -1033,6 +1033,34 @@ class LinkedChatsTests(unittest.TestCase):
         self.assertEqual(reject(linked, p), "", "чат канала на 40 человек должен проходить")
         self.assertIn("закрытый", reject(plain, p), "чужой чат без username по-прежнему мимо")
 
+    def test_search_phrases_use_live_word_forms(self):
+        """Фразы для поиска строятся из живых слов, а не из лемм.
+
+        Telegram ищет по подстроке, поэтому «ищу оформ заказ» не найдёт ничего. Без
+        pymorphy3 включается запасной стеммер, термины превращаются в обрубки
+        («оформление» → «оформ»), и на живом сервере это дало ноль находок за прогон:
+        50 фраз покупателя вида «ищу цен доставк» и 0 найденных сообщений.
+        """
+        from parsing.smart.profile import default_buyer_phrases, top_terms
+
+        posts = ["Оформление заказа за день, доставка по Москве",
+                 "Оформление заказа и доставка в регионы",
+                 "Быстрое оформление заказа, доставка бесплатно",
+                 "Доставка по Москве, оформление заказа онлайн",
+                 "Оформление заказа — доставка на следующий день"]
+
+        lemma_terms = top_terms(posts, set(), 6)
+        live_terms = top_terms(posts, set(), 6, surface=True)
+
+        self.assertTrue(live_terms, "живые формы должны находиться")
+        # главное: во фразах нет обрубков, слова пишутся как в постах
+        phrases = " ".join(default_buyer_phrases(live_terms)).lower()
+        self.assertIn("оформление", phrases, f"ожидали живое слово, получили: {live_terms}")
+        for stub in ("оформ ", "доставк ", "цен "):
+            self.assertNotIn(stub, phrases + " ", f"обрубок {stub!r} попал во фразы поиска")
+        # леммы при этом остаются доступны — они нужны для сопоставления текстов
+        self.assertEqual(len(lemma_terms), len(live_terms), "наборы терминов совпадают по составу")
+
     def test_dead_name_resolved_once(self):
         """Мёртвое имя резолвим один раз: лимит Telegram тратится и на несуществующие.
 
