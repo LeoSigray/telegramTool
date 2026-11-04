@@ -97,6 +97,28 @@ def _keep(terms: list, hits: dict, min_keep: int) -> tuple[list, list]:
     return found, dropped
 
 
+async def search_alive(client, params, log) -> bool:
+    """Работает ли на этом аккаунте глобальный поиск по сообщениям.
+
+    Telegram отдаёт сообщения только из чатов, где аккаунт состоит, поэтому у аккаунта
+    без групп поиск пуст ВСЕГДА. Узнать это стоит одного запроса по заведомо частому
+    слову: если «спасибо» не находится нигде, не найдётся ничего. Без такой проверки
+    мы сначала тратили 43 запроса на валидацию слов (68 с) и ещё 37 с на поиск фраз,
+    чтобы в конце признать поиск сломанным — больше минуты впустую на каждый запуск.
+    """
+    for probe in ("спасибо", "привет"):
+        try:
+            found = [m async for m in client.iter_messages(None, search=probe, limit=1)]
+        except Exception as e:  # noqa: BLE001 — сеть, лимит: судить о поиске не можем
+            log.warn("ключевые слова", f"проба поиска «{probe}» не удалась: {str(e)[:70]}")
+            return True
+        if found:
+            return True
+    log.info("ключевые слова", "глобальный поиск по сообщениям на этом аккаунте пуст "
+                               "(он не состоит в группах) — пропускаю проверку слов и поиск фраз")
+    return False
+
+
 async def ground_profile(client, profile, params, log) -> bool:
     """Проверка слов товара и фраз покупателя в Telegram. True — профиль изменился."""
     if profile.keywords_checked or client is None:
@@ -105,6 +127,9 @@ async def ground_profile(client, profile, params, log) -> bool:
     phrases = list(profile.buyer_phrases[:params.validate_phrases])
     if not kws and not phrases:
         return False
+    if not await search_alive(client, params, log):
+        profile.keywords_checked = True     # проверять нечем, слова оставляем как есть
+        return True
     log.info("ключевые слова", f"проверяю в Telegram {len(kws)} слов товара и {len(phrases)} фраз "
                                "покупателя (один раз на профиль, ~1–2 мин)")
     hits = await _check(client, kws, params, log, "слов товара")

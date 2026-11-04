@@ -413,6 +413,13 @@ class FakeClient:
                       reply_to=None, **_):
         async def gen():
             if entity is None:
+                # проба живости глобального поиска: аккаунт этого клиента состоит в
+                # группах, значит поиск у него рабочий
+                if (search or "").lower() in ("спасибо", "привет"):
+                    yield self.NS(id=1, date=ago(1), message="спасибо большое", sender=None,
+                                  from_id=None, fwd_from=None, chat=self.g1, reply_to=None,
+                                  forward=None, replies=None)
+                    return
                 key = (search or "").split()[-1][:6].lower() if search else ""
                 by_id = {c.id: c for c in self.channels}
                 items = []
@@ -1041,6 +1048,61 @@ class LinkedChatsTests(unittest.TestCase):
 
         self.assertEqual(reject(linked, p), "", "чат канала на 40 человек должен проходить")
         self.assertIn("закрытый", reject(plain, p), "чужой чат без username по-прежнему мимо")
+
+    def test_search_alive_probe_saves_a_minute(self):
+        """Жив ли глобальный поиск, выясняем одним запросом, а не сорока тремя.
+
+        Telegram отдаёт сообщения только из чатов, где аккаунт состоит, поэтому у
+        аккаунта без групп поиск пуст всегда. На живом прогоне это выяснялось ценой 43
+        запросов валидации (68 с) плюс 12 запросов фраз (37 с) — больше минуты впустую
+        на каждый запуск, при заранее известном ответе.
+        """
+        import asyncio
+
+        from types import SimpleNamespace
+
+        from parsing.smart.keywords import ground_profile, search_alive
+        from parsing.smart.profile import Profile
+        from parsing.smart.runlog import RunLog
+
+        calls = []
+
+        class Dead:
+            def iter_messages(self, peer, search=None, limit=None):
+                calls.append(search)
+
+                async def gen():
+                    return
+                    yield                      # поиск пуст: аккаунт не состоит в группах
+                return gen()
+
+        class Alive(Dead):
+            def iter_messages(self, peer, search=None, limit=None):
+                calls.append(search)
+
+                async def gen():
+                    yield SimpleNamespace(id=1, message="спасибо большое")
+                return gen()
+
+        params, log = P(channel="x", days=30), RunLog(echo=False)
+
+        calls.clear()
+        self.assertFalse(asyncio.run(search_alive(Dead(), params, log)), "пустой поиск — не живой")
+        self.assertLessEqual(len(calls), 2, f"хватает пары проб, а не {len(calls)}")
+
+        calls.clear()
+        self.assertTrue(asyncio.run(search_alive(Alive(), params, log)), "нашлось — поиск живой")
+        self.assertEqual(len(calls), 1, "живой поиск определяется первой же пробой")
+
+        # главное: на мёртвом поиске валидация слов не делает НИ ОДНОГО лишнего запроса
+        prof = Profile(channel="x", product_keywords=["айфон", "iphone", "макбук"],
+                       buyer_phrases=["ищу поставщика", "нужен оптовик"])
+        calls.clear()
+        changed = asyncio.run(ground_profile(Dead(), prof, params, log))
+        self.assertTrue(changed, "профиль помечен проверенным")
+        self.assertLessEqual(len(calls), 2, f"валидация должна была пропуститься, а было {len(calls)} запросов")
+        self.assertEqual(prof.product_keywords, ["айфон", "iphone", "макбук"],
+                         "слова не выброшены: проверять их было нечем")
 
     def test_silent_members_reachable_when_lists_hidden(self):
         """Молчун должен быть достижим: планка не выше числа чатов с открытыми списками.

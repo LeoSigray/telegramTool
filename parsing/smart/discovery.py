@@ -164,6 +164,7 @@ class DiscoveryState:
         self.linked_seen: set = set()     # привязанные чаты каналов, уже добавленные в пул
         self.msg_search_off = False       # глобальный поиск по сообщениям бесполезен на этом аккаунте
         self.msg_search_empty = 0         # сколько раундов подряд он не дал ничего
+        self.msg_search_ok: bool | None = None   # жив ли глобальный поиск (None — ещё не проверяли)
         self.direct_people: set = set()   # авторы, взятые прямо из находок поиска (без пробы чата)
         self.names_resolved = 0           # сколько @имён резолвили за запуск
         self.names_skipped = 0            # сколько пропустили по кешу (мёртвые)
@@ -758,6 +759,16 @@ async def discover_round(client, profile, params, store, lex, log, state: Discov
             except ImportError:
                 log.info("источники", "похожие каналы недоступны в этой версии Telethon")
 
+        if params.search_messages and not state.msg_search_off:
+            # Один раз проверяем, жив ли глобальный поиск на этом аккаунте: он отдаёт
+            # сообщения только из чатов, где аккаунт состоит, и у аккаунта без групп
+            # пуст всегда. Раньше это выяснялось ценой 12 запросов с паузами (~37 с)
+            # в каждом раунде, причём ответ был известен заранее.
+            if state.msg_search_ok is None:
+                from .keywords import search_alive
+                state.msg_search_ok = await search_alive(client, params, log)
+                if not state.msg_search_ok:
+                    state.msg_search_off = True
         if params.search_messages and not state.msg_search_off:
             # глобальный поиск по сообщениям публичных чатов. В результат берём только
             # публичные группы и каналы, где аккаунт НЕ состоит: личные диалоги и чаты
