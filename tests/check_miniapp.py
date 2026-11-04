@@ -331,4 +331,62 @@ assert paid and store.get_user(1)["balance"] == bal + 500
 assert store.mark_paid("pay1", charge_id="ch") is None, "повтор вебхука не начисляет второй раз"
 assert store.has_paid(1) is True and len(store.list_payments(1)) == 1
 print("payments: ok")
+
+# ── ослепший аккаунт: @имена не находятся ───────────────────────────────────
+# Ограниченный аккаунт получает «No user has … as username» на живые имена. Раньше
+# это считалось «человека нет», и лиды списывались один за другим: на сервере так
+# сгорели все найденные люди подряд, а в мини-аппе показывалось «не нашлось».
+blind_calls, good_calls = [], []
+
+
+class BlindClient:
+    """Ничего не находит — как аккаунт под тихим ограничением Telegram."""
+
+    def __init__(self):
+        self.sent = []
+
+    async def get_entity(self, x):
+        blind_calls.append(x)
+        raise ValueError('No user has "someone" as username')
+
+    async def send_message(self, ent, text):
+        raise AssertionError("ослепший аккаунт не должен дойти до отправки")
+
+
+class SeeingClient(FakeClient):
+    async def get_entity(self, x):
+        good_calls.append(x)
+        return Ent()
+
+
+blind, seeing = BlindClient(), SeeingClient()
+send.pool.clients.clear()
+send.pool.clients["blind_acc"] = blind
+send.pool.clients["good_acc"] = seeing
+rested = []
+send.health.on_error = lambda a, kind, detail=None: rested.append((a, kind))
+send._resolve_fails.clear()
+
+store.upsert_user(77, username="z", first_name="Z", last_name=None)
+store.set_channel_building(77, "shoes", "channel")
+store.set_channel_ready(77, "Привет")
+store.claim_gift(77, 5)
+store.add_leads(77, [{"username": "live_person", "tier": "A", "interest": 9}])
+t = store.enqueue_tap(77)
+store.claim_next_tap()
+
+assert run(send._process({"id": t, "tg_id": 77})) is False
+# лид не потерян: его подобрал второй аккаунт и сообщение ушло
+assert seeing.sent == [(100, "Привет")], f"зрячий аккаунт должен был отправить: {seeing.sent}"
+assert blind_calls, "ослепший аккаунт обязан был попробовать первым"
+assert lead_status(77) == {"live_person": "sent"}, lead_status(77)
+print("blind account fallback: ok")
+
+# три промаха подряд — и аккаунт уходит отдыхать, а не продолжает жечь лиды
+send._resolve_fails.clear(); rested.clear()
+for _ in range(3):
+    await_res = run(send._send_one("blind_acc", blind, {"id": 0, "username": "x"}, "t", "j"))
+assert ("blind_acc", "resolve_blocked") in rested, f"аккаунт должен уйти отдыхать: {rested}"
+print("blind account rested: ok")
+
 print("ALL OK")

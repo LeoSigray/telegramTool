@@ -43,7 +43,10 @@ log = logging.getLogger(__name__)
 TAP_GAP_SEC = float(os.getenv("MINIAPP_TAP_GAP", "25") or 25)   # пауза между сообщениями с одного аккаунта
 TAP_MAX_WAIT_SEC = 3 * 3600                                     # дольше ждать поиск и свободный аккаунт не будем
 MAX_TARGET_TRIES = 5                                            # сколько людей пробуем ради одного нажатия
+MAX_ACCOUNT_TRIES = 3                   # сколько аккаунтов пробуем, пока лид не найден по @имени
+RESOLVE_FAILS_TO_REST = 3               # столько подряд ненайденных имён — и аккаунт ослеп, а не лиды плохи
 _last_used: dict[str, float] = {}       # аккаунт → когда последний раз писал (monotonic)
+_resolve_fails: dict[str, int] = {}     # аккаунт → ненайденных @имён подряд
 
 
 # ── получатели ──────────────────────────────────────────────────────────────
@@ -62,12 +65,17 @@ def _next_lead(tg_id: int) -> dict | None:
 
 # ── аккаунты ────────────────────────────────────────────────────────────────
 
-def _pick_account() -> str | None:
-    """Свободный аккаунт: в строю, не отдыхает, в пределах суток и выдержал паузу после прошлой отправки."""
+def _pick_account(skip: set | None = None) -> str | None:
+    """Свободный аккаунт: в строю, не отдыхает, в пределах суток и выдержал паузу после прошлой отправки.
+
+    skip — аккаунты, которые уже не нашли этого человека: предлагать им его снова
+    бессмысленно, пусть попробует следующий.
+    """
     now = time.monotonic()
+    skip = skip or set()
     ready = []
     for name in pool.list_active():
-        if not health.is_available(name):
+        if name in skip or not health.is_available(name):
             continue
         used = an.sends_last_hours(name, 24)
         if used >= cfg.DM_DAILY_LIMIT_PER_ACCOUNT:
@@ -84,7 +92,7 @@ def _display(entity) -> str | None:
 
 
 async def _send_one(account: str, client, lead: dict, text: str, job_id: str) -> str:
-    """'sent' | 'bad_target' (пробуем другого клиента) | 'retry_account' (сбой аккаунта, нажатие остаётся)."""
+    """'sent' | 'not_found' (имя не нашлось) | 'bad_target' | 'retry_account' (сбой аккаунта)."""
     target = "@" + lead["username"]
     try:
         entity = await client.get_entity(_resolve(target))
@@ -94,10 +102,21 @@ async def _send_one(account: str, client, lead: dict, text: str, job_id: str) ->
     except (AuthKeyUnregisteredError, UserDeactivatedBanError):
         health.on_error(account, "banned", "miniapp resolve")
         return "retry_account"
-    except Exception as e:  # noqa: BLE001 — человека нет, закрыл профиль и т. п.
+    except Exception as e:  # noqa: BLE001 — человека нет ИЛИ этот аккаунт его не видит
+        # Ограниченный аккаунт получает «No user has … as username» на живые имена и
+        # молча списывает лида за лидом. Отличить можно только по серии: один промах
+        # — скорее человек удалился, три подряд — ослеп аккаунт.
+        _resolve_fails[account] = _resolve_fails.get(account, 0) + 1
         an.record_send(job_id=job_id, account=account, target=target, peer_id=None, niche=None,
                        template_id=None, status="failed", error=f"resolve: {str(e)[:120]}")
-        return "bad_target"
+        if _resolve_fails[account] >= RESOLVE_FAILS_TO_REST:
+            log.warning("[miniapp] %s: %d @имени подряд не найдено — отправляю аккаунт отдыхать",
+                        account, _resolve_fails[account])
+            health.on_error(account, "resolve_blocked", "miniapp resolve")
+            _resolve_fails[account] = 0
+            return "retry_account"
+        return "not_found"
+    _resolve_fails[account] = 0             # нашёл человека — значит видит людей
     try:
         sent = await client.send_message(entity, text)
     except FloodWaitError as e:
@@ -139,21 +158,31 @@ async def _process(tap: dict) -> bool:
     if not user or user.get("channel_status") != "ready" or not text:
         store.finish_tap(tid, status="failed", error="не подключён канал")
         return False
-    account = _pick_account()
-    if account is None:
-        store.release_tap(tid)
-        return True
-    client = pool.get(account)
-    if client is None:
-        store.release_tap(tid)
-        return True
     job_id = store.ensure_stream(tg)
+    tried: set = set()
     for _ in range(MAX_TARGET_TRIES):
         lead = await asyncio.to_thread(_next_lead, tg)
         if lead is None:
             store.finish_tap(tid, status="failed", error="некому отправить")
             return False
-        res = await _send_one(account, client, lead, text, job_id)
+        # Одного и того же человека предлагаем нескольким аккаунтам: имя может не
+        # находиться не потому, что человека нет, а потому что этот аккаунт ослеп.
+        # Менять аккаунт можно только здесь, до первого сообщения: дальше переписка
+        # привязана к нему, и отвечать с другого — рвать контекст для собеседника.
+        res, account = "retry_account", None
+        for _ in range(MAX_ACCOUNT_TRIES):
+            account = _pick_account(skip=tried)
+            if account is None:
+                store.release_tap(tid)
+                return True
+            client = pool.get(account)
+            if client is None:
+                tried.add(account)
+                continue
+            res = await _send_one(account, client, lead, text, job_id)
+            if res != "not_found":
+                break
+            tried.add(account)          # этот не нашёл — пусть попробует следующий
         if res == "retry_account":
             store.release_tap(tid)
             return True

@@ -36,7 +36,10 @@ ERROR_RATE_THRESHOLD = 0.10
 ERROR_WINDOW_DAYS = 3
 
 # На сколько отправлять аккаунт «отдыхать» после жёсткой ошибки.
-REST_HOURS = {"peer_flood": 48, "flood_wait": 12, "banned": 24 * 365}
+# resolve_blocked — аккаунт перестал находить людей по @имени: Telegram отвечает
+# «No user has … as username» даже на существующие имена. Это тихое ограничение,
+# исключений оно не бросает, поэтому аккаунт выглядит рабочим и продолжает жечь лиды.
+REST_HOURS = {"peer_flood": 48, "flood_wait": 12, "banned": 24 * 365, "resolve_blocked": 24}
 
 # Штраф/восстановление множителя
 PENALTY = 0.5
