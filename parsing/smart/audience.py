@@ -106,6 +106,7 @@ async def exclude_audience(client, people: list, audience: set, group, params, s
 
     kept, dropped, checked, unknown = [], [], 0, 0
     stop_checks = client is None or group is None
+    in_row = 0                      # неудачных проверок подряд
     for n, c in enumerate(people):
         uid = c.msg.sender_id
         member = uid in audience
@@ -120,11 +121,22 @@ async def exclude_audience(client, people: list, audience: set, group, params, s
             checked += 1
             if res is None:
                 unknown += 1
+                in_row += 1
+                # Если участники канала скрыты админами, не удастся ни одна проверка:
+                # на живом прогоне это 53 неудачи подряд и 62 с впустую уже после
+                # того, как люди найдены. Пяти попыток достаточно, чтобы это понять.
+                if in_row >= 5:
+                    stop_checks = True
+                    log.info("аудитория", "участники канала клиента недоступны — "
+                                          "точечную проверку пропускаю")
             elif res:
+                in_row = 0
                 member = True
                 store.add_audience(params.channel, uid)
-            elif not_members is not None:
-                not_members.add(uid)
+            else:
+                in_row = 0
+                if not_members is not None:
+                    not_members.add(uid)
             await asyncio.sleep(random.uniform(0.5, 1.5))
         if member:
             c.drop = REASON

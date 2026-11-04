@@ -423,8 +423,13 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
         #    меньше нужного, а в очереди есть чаты — дочитываем ещё волну и повторяем
         judge = LLMJudge(store, profile, params, log) if use_llm else None
         not_members: set = set()
-        params.audience_check_top = max(params.audience_check_top, params.people * 2)
-        params.enrich_top = max(params.enrich_top, params.people * 2)
+        # Обогащаем с запасом, но соразмерно заказу. Раньше здесь стоял max() с
+        # умолчанием 150: при двух нужных людях проверялось 53 кандидата (62 с на
+        # аудиторию, 89 с на био с паузами) — три четверти прогона уже ПОСЛЕ того,
+        # как люди найдены. Запас втрое покрывает отсев, но не стоит минут ожидания.
+        cap = max(params.people * 3, 10)
+        params.audience_check_top = min(params.audience_check_top, cap)
+        params.enrich_top = min(params.enrich_top, cap)
 
         async def final_pass() -> dict:
             await ready_audience()      # без неё нельзя отсеять своих же подписчиков
@@ -486,7 +491,11 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
             prep.dropped.extend(in_audience)
             if client is not None and cands and params.enrich_top > 0:
                 await refresh_access(client, [c for c in cands if c.msg.msg_id], params, store, log)
-                top_authors = [c.author for c in cands if c.author and c.author.username]
+                # Внутри лимита должны оказаться сильнейшие, а не первые попавшиеся:
+                # ранжирование идёт ниже, поэтому сортируем по предварительной оценке
+                # запроса — у «тёплых» её нет, они и так уходят в хвост.
+                best = sorted(cands, key=lambda c: -(getattr(c, "pqi", 0) or 0))
+                top_authors = [c.author for c in best if c.author and c.author.username]
                 await enrich_authors(client, top_authors, params, store, log)
             scoring.finalize([c for c in cands if c.kind == "hot"], lex, params, now)
             ranked, sellers = interest.score_all(cands, stats, weights, sources, lex, params, now)
