@@ -804,7 +804,9 @@ class ProductionDefaultsTests(unittest.TestCase):
 
     def test_defaults(self):
         p = Params(channel="x")
-        self.assertEqual((p.min_pqi, p.min_interest, p.warm, p.reserve), (0.0, 20.0, True, 0))
+        # порог «Интереса» снижен до 10: на живых прогонах 20 отсекал не слабых
+        # кандидатов, а всех подряд, и отчёт выходил пустым
+        self.assertEqual((p.min_pqi, p.min_interest, p.warm, p.reserve), (0.0, 10.0, True, 0))
 
     def test_no_pqi_cutoff_sorted_by_interest_with_optional_threshold(self):
         from unittest import mock
