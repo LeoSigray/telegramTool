@@ -273,8 +273,26 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
         if profile.seller_phrases:
             lex = Lexicon(extra_seller=profile.seller_phrases)
 
-        # 2. аудитория клиента (нужна и для подсчёта по ходу, и для финальной проверки)
-        audience, client_group = await load_audience(client, params, store, log)
+        # 2. аудитория клиента (нужна и для подсчёта по ходу, и для финальной проверки).
+        #    Собирается она долго — на живом канале это 29 с на 546 авторов комментариев, —
+        #    но до первых прочитанных чатов не нужна никому. Поэтому пусть считается
+        #    параллельно с поиском источников, а дождёмся её перед первым подсчётом людей.
+        audience_task = asyncio.ensure_future(load_audience(client, params, store, log))
+        audience: set = set()
+        client_group = None
+
+        async def ready_audience():
+            """Дождаться аудитории клиента. Повторный вызов бесплатен."""
+            nonlocal audience, client_group
+            try:
+                audience, client_group = await audience_task
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 — без аудитории прогон возможен, просто строже
+                log.warn("аудитория", f"не удалось собрать аудиторию клиента: {str(e)[:80]}")
+                audience, client_group = set(), None
+            return audience, client_group
+
         exclusion = make_exclusion_check(params, log)
         embedder = try_embedder(params.embeddings_model, log) if params.embeddings else None
         goal = max(params.people, math.ceil(params.people * params.overshoot))
@@ -409,6 +427,7 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
         params.enrich_top = max(params.enrich_top, params.people * 2)
 
         async def final_pass() -> dict:
+            await ready_audience()      # без неё нельзя отсеять своих же подписчиков
             sources = {s.chat_id: s for s in read}
             since = now - timedelta(days=params.days)
             messages = store.load_messages(list(sources), since)
@@ -513,6 +532,7 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
             on_found(fresh)
 
         while await read_next_wave():
+            await ready_audience()      # к этому моменту она уже собралась фоном
             have = count_now(read)
             log.info("сбор", f"прочитано источников: {len(read)}, подходящих людей: {have} "
                              f"(нужно {params.people}, с запасом {goal}), раундов поиска: "
