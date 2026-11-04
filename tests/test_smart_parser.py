@@ -791,7 +791,13 @@ class IntersectionsIntegrationTests(unittest.TestCase):
             self.assertIn("@warm_writer", by_name, "пишет по теме в 2 чатах ниши — тёплый")
             self.assertEqual(by_name["@warm_writer"]["Тип"], "тёплый")
             self.assertEqual(by_name["@warm_writer"]["Чатов ниши: пишет"], 2)
-            self.assertNotIn("@silent_fan", by_name, "молчит и всего в 3 чатах — не берём")
+            # молчун из 3 чатов ниши идёт в отчёт отдельным типом: запроса он не писал,
+            # поэтому попадает ниже горячих, но терять его — значит терять большую
+            # часть аудитории, которая чаты только читает
+            self.assertIn("@silent_fan", by_name, "молчун из 3 чатов ниши должен быть в отчёте")
+            self.assertEqual(by_name["@silent_fan"]["Тип"], "тёплый")
+            self.assertEqual(by_name["@silent_fan"]["Чатов ниши: состоит"], 3)
+            self.assertEqual(by_name["@silent_fan"]["Чатов ниши: пишет"], 0)
             hot = [r for r in rows if r["Тип"] == "горячий"]
             self.assertTrue(hot)
             self.assertGreater(hot[0]["Интерес"], by_name["@warm_writer"]["Интерес"])
@@ -804,9 +810,10 @@ class ProductionDefaultsTests(unittest.TestCase):
 
     def test_defaults(self):
         p = Params(channel="x")
-        # порог «Интереса» снижен до 10: на живых прогонах 20 отсекал не слабых
-        # кандидатов, а всех подряд, и отчёт выходил пустым
-        self.assertEqual((p.min_pqi, p.min_interest, p.warm, p.reserve), (0.0, 10.0, True, 0))
+        # порога «Интереса» нет: на живых прогонах любой отсекал всех подряд
+        # (максимум у найденных был 5.5), и отчёт выходил пустым. Пока отлаживаем
+        # источники, пусть доходят все — качество видно по колонке «Интерес»
+        self.assertEqual((p.min_pqi, p.min_interest, p.warm, p.reserve), (0.0, 0.0, True, 0))
 
     def test_no_pqi_cutoff_sorted_by_interest_with_optional_threshold(self):
         from unittest import mock
@@ -1035,6 +1042,42 @@ class LinkedChatsTests(unittest.TestCase):
         self.assertEqual(reject(linked, p), "", "чат канала на 40 человек должен проходить")
         self.assertIn("закрытый", reject(plain, p), "чужой чат без username по-прежнему мимо")
 
+    def test_silent_members_reachable_when_lists_hidden(self):
+        """Молчун должен быть достижим: планка не выше числа чатов с открытыми списками.
+
+        Читателей в чате кратно больше, чем пишущих, и человек, состоящий в нескольких
+        чатах ниши, попал туда не случайно. Но списки участников админы часто скрывают:
+        на живом прогоне списки отдали 3 чата из 5, а планка требовала 5 — молчунов не
+        могло найтись ни одного, и отчёт выходил пустым («тёплых 0»).
+        """
+        from parsing.smart.interest import PersonStats, build_warm
+
+        def stats_for(chats_with_lists: int):
+            # один человек состоит во ВСЕХ чатах, чьи списки доступны, и нигде не пишет
+            st = PersonStats()
+            st.member = set(range(chats_with_lists))
+            st.active = set()
+            return {42: st}
+
+        author = Author(user_id=42, username="silent_guy", first_name="Тихий")
+        params = P(channel="x", days=30, silent_min_chats=5, min_affinity=0.0)
+        now = datetime.now(timezone.utc)
+        weights = {i: 1.0 for i in range(5)}
+        sources = {i: Source(chat_id=i, title=f"чат {i}", username=f"c{i}") for i in range(5)}
+
+        # списки доступны лишь у 3 чатов — планка 5 недостижима, но молчун найтись обязан
+        warm = build_warm(stats_for(3), set(), set(), {42: author}, sources,
+                          weights, params, now, set())
+        self.assertEqual([c.msg.sender_id for c in warm], [42],
+                         "молчун из 3 чатов потерян, хотя больше списков и не было")
+
+        # а вот состоящий всего в одном чате — не молчун ниши, его брать не за что
+        one = PersonStats()
+        one.member, one.active = {0}, set()
+        self.assertEqual(build_warm({42: one}, set(), set(), {42: author}, sources,
+                                    weights, params, now, set()), [],
+                         "один чат — это не охват ниши")
+
     def test_search_phrases_use_live_word_forms(self):
         """Фразы для поиска строятся из живых слов, а не из лемм.
 
@@ -1245,7 +1288,9 @@ class InterestModelTests(unittest.TestCase):
         warm_ids = {c.msg.sender_id for c in warm}
         self.assertIn(3, warm_ids, "пишет по теме в 3 чатах ниши — тёплый")
         self.assertNotIn(6, warm_ids, "только состоит в 2 чатах — слишком слабо")
-        self.assertNotIn(4, warm_ids, "только состоит в 4 чатах — без сообщений не дотягивает")
+        # молчуна в 4 чатах ниши теперь берём: читателей в чате кратно больше, чем
+        # пишущих, и попал он туда не случайно — это тоже аудитория
+        self.assertIn(4, warm_ids, "состоит в 4 чатах ниши — молчун, но свой")
 
         ranked, sellers = interest.score_all(hot + warm, stats, weights, sources, lex, params, NOW)
         order = [c.msg.sender_id for c in ranked]

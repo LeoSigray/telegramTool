@@ -136,7 +136,18 @@ def _is_seller(st: PersonStats, params) -> str:
 
 def build_warm(stats: dict, hot_uids: set, excluded: set, authors: dict, sources: dict,
                weights: dict, params, now, own_ids: set) -> list:
-    """«Тёплые»: запроса не писали, но живут в нише — несколько её чатов, сообщения по теме."""
+    """«Тёплые»: запроса не писали, но живут в нише — несколько её чатов, сообщения по теме.
+
+    Молчуны берутся отдельно: человек, который состоит в нескольких чатах ниши и не
+    пишет, попал туда не случайно — читателей в любом чате кратно больше, чем пишущих,
+    и отбрасывать их значит терять большую часть аудитории.
+
+    Планку по числу чатов опускаем до того, что реально достижимо: списки участников
+    часто скрыты админами, и требовать пять чатов, когда списки отдали всего два,
+    значит гарантированно не найти ни одного молчуна.
+    """
+    with_lists = {cid for st in stats.values() for cid in st.member}
+    need_silent = max(2, min(params.silent_min_chats, len(with_lists)))
     pool = []
     for uid, st in stats.items():
         if uid in hot_uids or uid in excluded or uid in own_ids:
@@ -144,7 +155,7 @@ def build_warm(stats: dict, hot_uids: set, excluded: set, authors: dict, sources
         chats = st.active | st.member
         if len(chats) < 2:
             continue
-        if not st.active and len(chats) < params.silent_min_chats:
+        if not st.active and len(chats) < need_silent:
             continue        # молчит: без сообщений нужен широкий охват ниши
         a = authors.get(uid)
         if a is None or a.is_bot or a.is_deleted or _is_seller(st, params):

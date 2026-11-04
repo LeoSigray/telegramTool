@@ -456,7 +456,10 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
                         c.drop = ex[c.msg.sender_id]
                         prep.dropped.append(c)
                 warm = [c for c in warm if not c.drop]
+            silent = sum(1 for c in warm if not getattr(c, "msg", None) or not c.msg.msg_id)
             log.step("Тёплых (без запроса, но в нескольких чатах ниши)", len(warm))
+            if warm:
+                log.info("тёплые", f"из них молчунов (состоят в чатах ниши, но не пишут): {silent}")
 
             cands = people + warm
             cands, in_audience = await exclude_audience(client, cands, audience, client_group,
