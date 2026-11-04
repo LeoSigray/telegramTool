@@ -662,12 +662,21 @@ async def _web_candidates(client, queries: list, pool: _Pool, params, store, log
             # на канал, который всё равно выбросит pool.exclude
             and n not in state.own_names][:params.web_resolves]
     added = 0
-    for name in todo:
+    # Резолвим именами параллельно: по одному с паузой 0.8–1.6 с это 25 имён ≈ 30 с,
+    # и покупатель всё это время смотрит на спиннер. Лимит Telegram считает запросы,
+    # а не темп, поэтому небольшая параллельность его не приближает.
+    sem = asyncio.Semaphore(params.resolve_concurrency)
+
+    async def one(name):
         if state.stop:
-            break
-        state.web_resolved.add(name)
-        ent = await _resolve(client, name, params, log, store, state)
-        await _pause(0.8, 1.6)
+            return None
+        async with sem:
+            state.web_resolved.add(name)
+            ent = await _resolve(client, name, params, log, store, state)
+            await _pause(0.3, 0.7)
+            return name, ent
+
+    for name, ent in [r for r in await asyncio.gather(*(one(n) for n in todo)) if r]:
         if ent is None:
             continue
         s = pool.add(ent, web.via(name))
@@ -832,7 +841,9 @@ async def discover_round(client, profile, params, store, lex, log, state: Discov
                 # даже когда новых чатов он не приносит.
                 if new_chats == 0 and fresh_total == 0 and direct_total == 0:
                     state.msg_search_empty += 1
-                    if state.msg_search_empty >= 2:
+                    # второго шанса не даём: раунд поиска стоит ~40 с, а пустой первый
+                    # раунд на этих аккаунтах всегда означает пустой и следующий
+                    if state.msg_search_empty >= 1:
                         state.msg_search_off = True
                         log.info("источники", "поиск по сообщениям ничего не даёт на этом "
                                               "аккаунте (он не состоит в группах) — отключаю "

@@ -1049,58 +1049,54 @@ class LinkedChatsTests(unittest.TestCase):
         self.assertEqual(reject(linked, p), "", "чат канала на 40 человек должен проходить")
         self.assertIn("закрытый", reject(plain, p), "чужой чат без username по-прежнему мимо")
 
-    def test_search_alive_probe_saves_a_minute(self):
-        """Жив ли глобальный поиск, выясняем одним запросом, а не сорока тремя.
+    def test_search_skipped_when_account_has_few_chats(self):
+        """Поиск по сообщениям не запускаем, если аккаунту негде искать.
 
-        Telegram отдаёт сообщения только из чатов, где аккаунт состоит, поэтому у
-        аккаунта без групп поиск пуст всегда. На живом прогоне это выяснялось ценой 43
-        запросов валидации (68 с) плюс 12 запросов фраз (37 с) — больше минуты впустую
-        на каждый запуск, при заранее известном ответе.
+        Глобальный поиск Telegram отдаёт сообщения ТОЛЬКО из чатов, где аккаунт состоит.
+        У аккаунта с парой чатов он технически работает (там найдётся «спасибо»), но
+        фразы покупателя не встретятся никогда — на живом прогоне это 78 с впустую за
+        два раунда при нуле находок.
         """
         import asyncio
-
         from types import SimpleNamespace
 
         from parsing.smart.keywords import ground_profile, search_alive
         from parsing.smart.profile import Profile
         from parsing.smart.runlog import RunLog
 
-        calls = []
+        searches = []
 
-        class Dead:
+        class Acc:
+            def __init__(self, groups):
+                self.groups = groups
+
+            def iter_dialogs(self, limit=None):
+                async def gen():
+                    for i in range(self.groups):
+                        yield SimpleNamespace(is_group=True, is_channel=False, id=i)
+                return gen()
+
             def iter_messages(self, peer, search=None, limit=None):
-                calls.append(search)
+                searches.append(search)
 
                 async def gen():
                     return
-                    yield                      # поиск пуст: аккаунт не состоит в группах
+                    yield
                 return gen()
 
-        class Alive(Dead):
-            def iter_messages(self, peer, search=None, limit=None):
-                calls.append(search)
+        params, log = P(channel="x", days=30, search_min_groups=15), RunLog(echo=False)
 
-                async def gen():
-                    yield SimpleNamespace(id=1, message="спасибо большое")
-                return gen()
+        self.assertFalse(asyncio.run(search_alive(Acc(2), params, log)),
+                         "в двух чатах искать нечего")
+        self.assertTrue(asyncio.run(search_alive(Acc(40), params, log)),
+                        "аккаунт живёт в сорока чатах — поиск имеет смысл")
 
-        params, log = P(channel="x", days=30), RunLog(echo=False)
-
-        calls.clear()
-        self.assertFalse(asyncio.run(search_alive(Dead(), params, log)), "пустой поиск — не живой")
-        self.assertLessEqual(len(calls), 2, f"хватает пары проб, а не {len(calls)}")
-
-        calls.clear()
-        self.assertTrue(asyncio.run(search_alive(Alive(), params, log)), "нашлось — поиск живой")
-        self.assertEqual(len(calls), 1, "живой поиск определяется первой же пробой")
-
-        # главное: на мёртвом поиске валидация слов не делает НИ ОДНОГО лишнего запроса
+        # главное: на бедном аккаунте валидация слов не делает НИ ОДНОГО запроса поиска
         prof = Profile(channel="x", product_keywords=["айфон", "iphone", "макбук"],
                        buyer_phrases=["ищу поставщика", "нужен оптовик"])
-        calls.clear()
-        changed = asyncio.run(ground_profile(Dead(), prof, params, log))
-        self.assertTrue(changed, "профиль помечен проверенным")
-        self.assertLessEqual(len(calls), 2, f"валидация должна была пропуститься, а было {len(calls)} запросов")
+        searches.clear()
+        self.assertTrue(asyncio.run(ground_profile(Acc(2), prof, params, log)))
+        self.assertEqual(searches, [], f"валидация должна пропуститься, а было {len(searches)} запросов")
         self.assertEqual(prof.product_keywords, ["айфон", "iphone", "макбук"],
                          "слова не выброшены: проверять их было нечем")
 
