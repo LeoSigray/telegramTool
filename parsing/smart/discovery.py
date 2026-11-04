@@ -363,6 +363,20 @@ async def _qualify(client, ids: list, pool: _Pool, profile, params, store, lex, 
                 s.status, s.reason = "rejected", "не проверен (FloodWait)"
                 report.append(s)
 
+    # Проба стоит запросов к Telegram, а нужно нам 2–3 человека, не 32 чата. Берём
+    # лучших по предварительной оценке: кандидаты уже отранжированы тем, как их нашли
+    # (сколько авторов YouTube сослалось, сколько связей в графе), поэтому отсекается
+    # хвост, а не сильные. На живом прогоне 32 чата стоили 98 с.
+    if len(checked) > params.probe_cap:
+        checked.sort(key=lambda se: -(se[0].meta_score or 0))
+        skipped = checked[params.probe_cap:]
+        checked = checked[:params.probe_cap]
+        for s, _ent in skipped:
+            s.status, s.reason = "rejected", f"не пробован: хватило {params.probe_cap} лучших за раунд"
+            report.append(s)
+        log.info("источники", f"проба: берём {params.probe_cap} лучших из "
+                              f"{params.probe_cap + len(skipped)} кандидатов")
+
     # проба: смотрим содержимое. Чаты независимы, поэтому идём пачками —
     # последовательный обход с паузами занимал больше минуты на раунд.
     probes: dict = {}

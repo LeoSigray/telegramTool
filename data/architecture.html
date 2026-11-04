@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body { color: var(--foreground); font-size: 14px; line-height: 1.5; }
+  h2 { font-size: 17px; margin: 22px 0 10px; font-weight: 600; }
+  h2:first-child { margin-top: 0; }
+  .sub { color: var(--muted-foreground); font-size: 13px; margin-bottom: 14px; }
+
+  .flow { display: flex; flex-direction: column; gap: 7px; max-width: 760px; }
+  .step { display: flex; align-items: stretch; border: 1px solid var(--border);
+          border-radius: 8px; overflow: hidden; background: var(--card); }
+  .num { flex: 0 0 34px; display: flex; align-items: center; justify-content: center;
+         font-weight: 600; font-size: 13px; background: var(--accent); }
+  .body { flex: 1; padding: 9px 12px; min-width: 0; }
+  .title { font-weight: 600; margin-bottom: 2px; }
+  .desc { color: var(--muted-foreground); font-size: 12.5px; }
+  .time { flex: 0 0 88px; display: flex; flex-direction: column; align-items: center;
+          justify-content: center; border-left: 1px solid var(--border); font-size: 12px;
+          padding: 4px; text-align: center; }
+  .t-num { font-weight: 600; font-size: 14px; }
+  .hot .t-num { color: #e06c4f; }
+  .ok .t-num { color: #4f9e6a; }
+  .arrow { text-align: center; color: var(--muted-foreground); font-size: 15px; line-height: 1; }
+
+  table { border-collapse: collapse; width: 100%; max-width: 760px; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  th { font-weight: 600; color: var(--muted-foreground); font-size: 12px; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bad { color: #e06c4f; font-weight: 600; }
+  .good { color: #4f9e6a; font-weight: 600; }
+  .note { border-left: 3px solid var(--border); padding: 7px 0 7px 12px; margin: 12px 0;
+          color: var(--muted-foreground); font-size: 13px; max-width: 760px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+         background: var(--accent); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<h2>Как работает поиск людей</h2>
+<div class="sub">Путь от нажатия кнопки до отправленного сообщения. Время — из прогона
+  <code>Getitrussia</code> 18:17, 281 секунда, найден 1 человек.</div>
+
+<div class="flow">
+
+  <div class="step">
+    <div class="num">1</div>
+    <div class="body">
+      <div class="title">Профиль канала клиента</div>
+      <div class="desc">Читаем описание и 80 постов, нейросеть формулирует: что продаёт,
+        какими словами пишут покупатели, какие запросы искать на YouTube</div>
+    </div>
+    <div class="time ok"><span class="t-num">4 c</span><span>один раз</span></div>
+  </div>
+  <div class="arrow">↓</div>
+
+  <div class="step">
+    <div class="num">2</div>
+    <div class="body">
+      <div class="title">YouTube → каналы Telegram</div>
+      <div class="desc">По запросам профиля ищем видео, из описаний и страниц авторов
+        достаём ссылки на Telegram. Один автор — один голос</div>
+    </div>
+    <div class="time ok"><span class="t-num">5 c</span><span>было 60 c</span></div>
+  </div>
+  <div class="arrow">↓</div>
+
+  <div class="step">
+    <div class="num">3</div>
+    <div class="body">
+      <div class="title">Резолв имён + граф связей</div>
+      <div class="desc">Превращаем <code>@имя</code> в чат. Из найденных каналов идём по
+        ссылкам и пересылкам — так находятся соседние чаты ниши</div>
+    </div>
+    <div class="time"><span class="t-num">34 c</span><span>5 зёрен → 33</span></div>
+  </div>
+  <div class="arrow">↓</div>
+
+  <div class="step">
+    <div class="num">4</div>
+    <div class="body">
+      <div class="title">Проба чатов <span class="bad">— узкое место</span></div>
+      <div class="desc">В каждый чат заглядываем: язык, живость, о чём пишут. Канал стоит
+        3 запроса (посты + комментарии к двум веткам). 32 чата = ~96 запросов</div>
+    </div>
+    <div class="time hot"><span class="t-num">98 c</span><span>32 чата</span></div>
+  </div>
+  <div class="arrow">↓</div>
+
+  <div class="step">
+    <div class="num">5</div>
+    <div class="body">
+      <div class="title">Привязанные чаты каналов</div>
+      <div class="desc">У канала есть чат обсуждения — там сидит аудитория, а не вещатель.
+        Добавляем их и пробуем тоже</div>
+    </div>
+    <div class="time hot"><span class="t-num">67 c</span><span>+25 чатов</span></div>
+  </div>
+  <div class="arrow">↓</div>
+
+  <div class="step">
+    <div class="num">6</div>
+    <div class="body">
+      <div class="title">Чтение отобранных чатов</div>
+      <div class="desc">Ищем внутри чата по маркерам намерения («ищу», «нужен»,
+        «посоветуйте») плюс последние сообщения подряд</div>
+    </div>
+    <div class="time hot"><span class="t-num">60 c</span><span>2 чата</span></div>
+  </div>
+  <div class="arrow">↓</div>
+
+  <div class="step">
+    <div class="num">7</div>
+    <div class="body">
+      <div class="title">Оценка людей</div>
+      <div class="desc">Правила считают «Интерес» = 0.65 × горячесть запроса + 0.35 ×
+        близость к нише. Нейросеть проверяет верхушку. Отсев: продавцы, боты,
+        свои же подписчики</div>
+    </div>
+    <div class="time"><span class="t-num">20 c</span><span>+ LLM</span></div>
+  </div>
+  <div class="arrow">↓</div>
+
+  <div class="step">
+    <div class="num">8</div>
+    <div class="body">
+      <div class="title">Отдача и отправка</div>
+      <div class="desc">Человек уходит в очередь мини-аппа, воркер берёт свободный аккаунт
+        и пишет. Если аккаунт не нашёл адресата — пробует следующий</div>
+    </div>
+    <div class="time ok"><span class="t-num">2 c</span><span>мгновенно</span></div>
+  </div>
+
+</div>
+
+<h2>Почему восемь минут, а не одна</h2>
+<div class="sub">Разбор того же прогона: половина времени уходит на пробу чатов</div>
+
+<table>
+  <tr><th>этап</th><th class="n">время</th><th>почему столько</th></tr>
+  <tr><td>проба чатов</td><td class="n bad">141 c</td>
+      <td>32 + 20 чатов, каждый — 3 запроса к Telegram</td></tr>
+  <tr><td>чтение чатов</td><td class="n bad">60 c</td>
+      <td>в одном было 54 комментария, читаются порциями</td></tr>
+  <tr><td>граф связей</td><td class="n">34 c</td><td>обход ссылок от 5 зёрен</td></tr>
+  <tr><td>оценка + нейросеть</td><td class="n">20 c</td><td>разметка пачками по 20</td></tr>
+  <tr><td>профиль, YouTube, резолв</td><td class="n good">26 c</td>
+      <td>уже оптимизировано сегодня</td></tr>
+</table>
+
+<div class="note">
+  <b>Главный парадокс:</b> чем лучше работает поиск, тем дольше прогон. Граф нашёл 33 новых
+  кандидата — и все 32 чата пошли в пробу. Нам при этом нужно 2 человека.
+  Ограничение <code>check_cap</code> стоит на 60 — то есть почти не ограничивает.
+</div>
+
+<h2>Что уже ускорено сегодня</h2>
+<table>
+  <tr><th>что</th><th class="n">было</th><th class="n">стало</th></tr>
+  <tr><td>YouTube-раунд</td><td class="n">60 c</td><td class="n good">5 c</td></tr>
+  <tr><td>резолв 25 имён</td><td class="n">31 c</td><td class="n good">14 c</td></tr>
+  <tr><td>поиск по сообщениям (бесполезный)</td><td class="n">78 c</td><td class="n good">0 c</td></tr>
+  <tr><td>проба 16 чатов</td><td class="n">93 c</td><td class="n good">52 c</td></tr>
+  <tr><td>обогащение кандидатов</td><td class="n">151 c</td><td class="n good">~20 c</td></tr>
+  <tr><td>аудитория клиента</td><td class="n">29 c</td><td class="n good">фоном</td></tr>
+</table>
+
+<h2>Где ещё можно выиграть</h2>
+<table>
+  <tr><th>идея</th><th class="n">выигрыш</th><th>риск</th></tr>
+  <tr><td>Пробовать 15 лучших чатов вместо 32</td><td class="n good">~70 c</td>
+      <td>можно пропустить хороший чат</td></tr>
+  <tr><td>Не пробовать привязанные чаты повторно</td><td class="n good">~40 c</td>
+      <td>почти нет: они уже отобраны по каналу</td></tr>
+  <tr><td>Запас людей заранее (<code>PREWARM</code>)</td><td class="n good">вся задержка</td>
+      <td>фоновая нагрузка на аккаунты</td></tr>
+  <tr><td>Кеш ниши между клиентами</td><td class="n good">вся задержка</td>
+      <td>чужие чаты могут не подойти</td></tr>
+</table>
+
+<div class="note">
+  Для <b>новой</b> ниши минуты неизбежны: YouTube, обход графа, проба и чтение — это реальные
+  запросы к Telegram с паузами. Мгновенной выдача становится на <b>повторных</b> нажатиях,
+  когда люди уже найдены заранее. Именно так ушли <code>@inko_on</code> (интерес 82.5) и
+  <code>@altair_1673</code> — они лежали готовыми.
+</div>
+
+</body>
+</html>

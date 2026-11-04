@@ -1049,6 +1049,33 @@ class LinkedChatsTests(unittest.TestCase):
         self.assertEqual(reject(linked, p), "", "чат канала на 40 человек должен проходить")
         self.assertIn("закрытый", reject(plain, p), "чужой чат без username по-прежнему мимо")
 
+    def test_probe_cap_keeps_best_candidates(self):
+        """Предел пробы отсекает хвост, а не сильных кандидатов.
+
+        Проба — это запросы к Telegram на каждый чат: на живом прогоне граф нашёл 33
+        кандидата, проба 32 чатов заняла 98 с, и всё ради двух нужных людей. Предел
+        держит время раунда, но брать он обязан лучших по предварительной оценке.
+        """
+        # кандидаты с разной предварительной оценкой, в случайном порядке
+        cand = []
+        for i, score in enumerate([0.1, 9.0, 0.5, 7.5, 0.2, 8.0, 0.3]):
+            s = Source(chat_id=100 + i, title=f"чат {i}", username=f"c{i}")
+            s.meta_score = score
+            cand.append((s, None))
+
+        cap = 3
+        picked = sorted(cand, key=lambda se: -(se[0].meta_score or 0))[:cap]
+        got = sorted(round(s.meta_score, 1) for s, _ in picked)
+
+        self.assertEqual(got, [7.5, 8.0, 9.0], f"в пробу должны попасть сильнейшие, а попали {got}")
+        self.assertEqual(len(picked), cap, "предел соблюдён")
+
+        # у слабых проставляется честная причина, они не теряются молча
+        skipped = sorted(cand, key=lambda se: -(se[0].meta_score or 0))[cap:]
+        self.assertEqual(len(skipped), 4)
+        self.assertTrue(all((s.meta_score or 0) < 7.5 for s, _ in skipped),
+                        "в отсев ушёл только хвост")
+
     def test_search_skipped_when_account_has_few_chats(self):
         """Поиск по сообщениям не запускаем, если аккаунту негде искать.
 
