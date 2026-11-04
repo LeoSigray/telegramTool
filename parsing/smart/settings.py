@@ -140,7 +140,7 @@ class Params:
     posts_per_channel: int = 30
     comments_per_post: int = 200
     profile_posts: int = 80
-    wait_time: float = 1.0            # пауза между пачками сообщений Telethon, сек
+    wait_time: float = 0.5            # пауза между пачками сообщений Telethon, сек
     max_flood_wait: int = 300         # дольше этого FloodWait не ждём, пропускаем шаг
     # LLM (только бесплатный облачный, через api/llm.py)
     no_llm: bool = False

@@ -141,8 +141,11 @@ async def probe_source(client, src, ent, params, store) -> Probe:
         for x in posts:
             if x.message:
                 p.posts[(src.chat_id, x.id)] = x.message
+        # Комментарии берём к двум самым обсуждаемым постам, а не к трём: каждый пост —
+        # отдельный запрос к Telegram, и на 19 чатах разница составила треть времени
+        # пробы. Чтобы понять, живёт ли в чате аудитория, двух веток достаточно.
         hot = sorted([x for x in posts if (getattr(getattr(x, "replies", None), "replies", 0) or 0) > 0],
-                     key=lambda x: -(x.replies.replies or 0))[:3]
+                     key=lambda x: -(x.replies.replies or 0))[:2]
         for post in hot:
             try:
                 async for c in client.iter_messages(ent, reply_to=post.id, limit=40,

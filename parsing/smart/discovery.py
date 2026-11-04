@@ -386,7 +386,8 @@ async def _qualify(client, ids: list, pool: _Pool, profile, params, store, lex, 
                 report.append(s)
                 return
             if not probes[s.chat_id].from_cache:
-                await _pause(0.4, 0.9)
+                # пауза короткая: она внутри семафора и держит слот, а чаты независимы
+                await _pause(0.15, 0.35)
 
     await asyncio.gather(*(probe_one(s, ent) for s, ent in checked))
     for s, _ent in checked:
