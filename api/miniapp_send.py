@@ -175,7 +175,9 @@ async def _process(tap: dict) -> bool:
         for _ in range(MAX_ACCOUNT_TRIES):
             account = _pick_account(skip=tried)
             if account is None:
-                store.release_tap(tid)
+                # Человек найден, а отправить им некем: весь пул отдыхает или выбрал лимит.
+                # Помечаем застрявшим — только такому нажатию покупатель увидит «Отменить».
+                store.release_tap(tid, stalled=True)
                 return True
             client = pool.get(account)
             if client is None:
@@ -186,6 +188,7 @@ async def _process(tap: dict) -> bool:
                 break
             tried.add(account)          # этот не нашёл — пусть попробует следующий
         if res == "retry_account":
+            # Аккаунты сбоили, но пул не пуст: пробуем снова, человека не тревожим.
             store.release_tap(tid)
             return True
         store.mark_lead(lead["id"], "sent" if res == "sent" else "failed")

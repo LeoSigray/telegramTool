@@ -400,9 +400,18 @@ store.reserve(91, 1)
 tap_id = store.enqueue_tap(91)
 assert store.get_user(91)["balance"] == bal0 - 1, "нажатие списывает сообщение"
 
+# пока идёт обычный поиск человека — кнопки отмены нет, это штатная работа
 tr = store.transit(91)
-assert len(tr) == 1 and tr[0]["can_cancel"] is True, f"ожидающее нажатие можно отменить: {tr}"
-assert "waiting_s" in tr[0], "фронту нужно время ожидания, чтобы решить, показывать ли кнопку"
+assert len(tr) == 1 and tr[0]["can_cancel"] is False, f"во время поиска отмену не предлагаем: {tr}"
+
+# а вот когда человек найден и воркер уткнулся в пустой пул — отмена появляется.
+# Повторяем путь воркера: лид есть, нажатие взято в работу, аккаунта не нашлось.
+store.add_leads(91, [{"username": "waiting_person", "tier": "A", "interest": 9}])
+assert store.claim_next_tap()["id"] == tap_id
+store.release_tap(tap_id, stalled=True)
+tr = store.transit(91)
+assert tr[0]["can_cancel"] is True, f"застрявшее нажатие можно забрать назад: {tr}"
+assert "waiting_s" in tr[0], "фронту полезно показать, сколько ждём"
 
 assert store.cancel_tap(tap_id, 91) is True, "своё ожидающее нажатие отменяется"
 assert store.get_user(91)["balance"] == bal0, "попытка вернулась на баланс"
@@ -411,9 +420,12 @@ assert store.cancel_tap(tap_id, 91) is False, "повторная отмена �
 assert store.get_user(91)["balance"] == bal0, "баланс не раздувается от повторов"
 print("cancel pending tap: ok")
 
-# чужое нажатие отменить нельзя
+# чужое нажатие отменить нельзя — даже застрявшее
 store.reserve(91, 1)
 mine = store.enqueue_tap(91)
+store.add_leads(91, [{"username": "p2", "tier": "A", "interest": 9}])
+assert store.claim_next_tap()["id"] == mine
+store.release_tap(mine, stalled=True)
 assert store.cancel_tap(mine, 777) is False, "чужое нажатие недоступно"
 assert store.cancel_tap(mine, 91) is True
 
@@ -426,6 +438,14 @@ got = store.claim_next_tap()
 assert got and got["id"] == busy, f"воркер должен был взять именно это нажатие: {got}"
 assert store.cancel_tap(busy, 91) is False, "отправляющееся нажатие не отменяется"
 assert store.transit(91)[0]["can_cancel"] is False, "фронт не должен предлагать отмену"
+# соседнее нажатие в том же списке: оно ещё ищет человека — кнопки у него быть не должно
+store.reserve(91, 1)
+fresh_tap = store.enqueue_tap(91)
+rows = {x["id"]: x for x in store.transit(91)}
+assert rows[fresh_tap]["can_cancel"] is False, "ищущее нажатие отменять не предлагаем"
+assert store.cancel_tap(fresh_tap, 91) is False, "сервер тоже не даст отменить ищущее"
+print("cancel only when stalled: ok")
+
 print("cancel guards: ok")
 
 print("ALL OK")

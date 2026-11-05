@@ -148,6 +148,11 @@ def init_store() -> None:
         if "op_read" not in {r["name"] for r in c.execute("PRAGMA table_info(mini_support)")}:
             c.execute("ALTER TABLE mini_support ADD COLUMN op_read INTEGER NOT NULL DEFAULT 0")
             c.execute("UPDATE mini_support SET op_read=1")        # всё, что было до появления панели, уже прочитано
+        # Человек найден, но отправить некем: отмечаем момент, когда воркер уткнулся в пустой пул.
+        # Только в этом случае покупателю предлагается забрать попытку — обычный поиск человека
+        # идёт как шёл, без кнопок, иначе мы бы дёргали его на каждом нажатии.
+        if "stalled_at" not in {r["name"] for r in c.execute("PRAGMA table_info(mini_taps)")}:
+            c.execute("ALTER TABLE mini_taps ADD COLUMN stalled_at TEXT")
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -389,15 +394,16 @@ def transit(tg_id: int) -> list[dict]:
     """Сообщения «в пути»: нажатия, которые ещё не ушли. stage: search — ищем человека, send — человек найден,
     сообщение отправляется. Людей находят в порядке нажатий, поэтому «отправляются» самые старые.
 
-    waiting_s — сколько нажатие уже ждёт. Фронт по нему решает, пора ли предложить отмену:
-    пока идёт обычный поиск, кнопка только мешает, а вот через несколько минут человек
-    имеет право забрать сообщение назад сам. Автоматически мы его не возвращаем — покупатель
-    должен видеть, что происходит, и решать сам.
+    waiting_s — сколько нажатие уже ждёт.
+
+    can_cancel — предлагать ли забрать попытку назад. Только когда человек найден, а
+    отправить им некем (пул пуст): ждать нечего, и решать должен покупатель. Пока идёт
+    обычный поиск, кнопки нет — это штатная работа, и дёргать человека незачем.
     """
     now = datetime.now(timezone.utc)
     with _conn() as c:
-        taps = c.execute("SELECT id, created_at, status FROM mini_taps WHERE tg_id=? AND status IN ('queued','sending')"
-                         " ORDER BY id", (tg_id,)).fetchall()
+        taps = c.execute("SELECT id, created_at, status, stalled_at FROM mini_taps"
+                         " WHERE tg_id=? AND status IN ('queued','sending') ORDER BY id", (tg_id,)).fetchall()
         ready = c.execute("SELECT COUNT(*) n FROM mini_leads WHERE tg_id=? AND status='new'", (tg_id,)).fetchone()["n"]
     out = []
     for i, t in enumerate(taps):
@@ -407,21 +413,22 @@ def transit(tg_id: int) -> list[dict]:
             waited = 0.0
         out.append({"id": t["id"], "at": t["created_at"], "stage": "send" if i < ready else "search",
                     "waiting_s": int(waited),
-                    # отменять можно только то, что ещё не пошло в Telegram
-                    "can_cancel": t["status"] == "queued"})
+                    # отменять можно только застрявшее и только пока оно не пошло в Telegram
+                    "can_cancel": t["status"] == "queued" and bool(t["stalled_at"])})
     return out
 
 
 def cancel_tap(tap_id: int, tg_id: int) -> bool:
-    """Покупатель сам отменил ожидающее сообщение: возвращаем попытку на баланс.
+    """Покупатель сам отменил застрявшее сообщение: возвращаем попытку на баланс.
 
-    Отменить можно только своё и только пока оно в очереди: если отправка уже началась,
-    сообщение может уйти в Telegram, и возвращать попытку нельзя. Идемпотентно —
-    повторный вызов ничего не начислит.
+    Отменить можно только своё, только пока отправка не началась и только если воркер
+    уже уткнулся в пустой пул (stalled_at). Правило держится здесь, а не на фронте:
+    иначе любой запрос к API забирал бы попытку у нажатия, которое спокойно ищет человека.
+    Идемпотентно — повторный вызов ничего не начислит.
     """
     with _conn() as c:
         cur = c.execute("UPDATE mini_taps SET status='canceled', error=?, done_at=?"
-                        " WHERE id=? AND tg_id=? AND status='queued'",
+                        " WHERE id=? AND tg_id=? AND status='queued' AND stalled_at IS NOT NULL",
                         ("отменено покупателем", _now(), tap_id, tg_id))
         if not cur.rowcount:
             return False
@@ -448,10 +455,16 @@ def claim_next_tap() -> dict | None:
         return dict(row) if cur.rowcount else None
 
 
-def release_tap(tap_id: int) -> None:
-    """Вернуть нажатие в очередь (нет свободного аккаунта, сбой аккаунта)."""
+def release_tap(tap_id: int, *, stalled: bool = False) -> None:
+    """Вернуть нажатие в очередь (нет свободного аккаунта, сбой аккаунта).
+
+    stalled — человек уже найден, но отправить им некем. Это единственный случай, когда
+    покупателю показывают «Отменить»: ждать тут нечего, пул пуст, и решать должен он.
+    Обычный поиск человека такой отметки не получает — он идёт своим чередом.
+    """
     with _conn() as c:
-        c.execute("UPDATE mini_taps SET status='queued' WHERE id=? AND status='sending'", (tap_id,))
+        c.execute("UPDATE mini_taps SET status='queued', stalled_at=? WHERE id=? AND status='sending'",
+                  (_now() if stalled else None, tap_id))
 
 
 def recover_taps() -> int:

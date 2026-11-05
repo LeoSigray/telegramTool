@@ -638,7 +638,6 @@ function applyLang() {
   document.querySelectorAll("[data-tp]").forEach((el) => { el.placeholder = t(el.dataset.tp); });
   document.querySelectorAll("[data-ta]").forEach((el) => { el.setAttribute("aria-label", t(el.dataset.ta)); });
 }
-const TRANSIT_CANCEL_AFTER = 180;    // сек ожидания, после которых показываем «Отменить»
 const S = {me: null, tab: "home", chats: [], chFilter: "all", chatId: null, packs: null, layer: null, chan: null, topup: null, inflight: 0};
 
 const ICON = {
@@ -1218,12 +1217,12 @@ function renderTransit() {
     el.querySelector(".pv").textContent = text;
     el.querySelector(".ago").textContent = agoLabel(x.at);
     el.querySelector(".st").textContent = x.stage === "send" ? t("Отправляем") : t("Ищем человека");
-    // Кнопку отмены показываем не сразу: первые минуты это обычный поиск, и предлагать
-    // забрать сообщение рано. Дальше человек должен видеть, что ожидание в его руках.
-    const x9 = el.querySelector(".tr-x"), late = x.can_cancel && (x.waiting_s || 0) >= TRANSIT_CANCEL_AFTER;
-    x9.hidden = !late;
+    // Кнопка отмены — только когда человек найден, а отправить им некем: решает сервер,
+    // фронт не гадает по времени. Обычный поиск идёт без кнопок, это штатная работа.
+    const x9 = el.querySelector(".tr-x");
+    x9.hidden = !x.can_cancel;
     x9.textContent = t("Отменить");
-    el.querySelector(".st").classList.toggle("muted", late);
+    el.querySelector(".st").classList.toggle("muted", !!x.can_cancel);
   });
   syncTransitBox();
 }
