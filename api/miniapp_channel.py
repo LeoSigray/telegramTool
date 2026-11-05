@@ -81,7 +81,7 @@ def _one_line(x) -> str:
     return re.sub(r"\s+", " ", str(x)).strip()
 
 
-def _candidate_clients(limit: int = 3) -> list:
+def _candidate_clients(limit: int = 4) -> list:
     """Несколько клиентов на попытку: один может быть ослепшим или с оборванным коннектом.
 
     Раньше брался строго первый, и его личная поломка превращалась в «канала не существует» —
@@ -104,31 +104,41 @@ def _candidate_clients(limit: int = 3) -> list:
     return out
 
 
-# Эти ошибки Telegram означают, что имени действительно нет. Всё остальное — наша сторона:
-# оборванный коннект, ограничение аккаунта, прокси. Путать их нельзя: в первом случае
-# покупатель должен исправить имя, во втором — просто подождать, канал у него нормальный.
-_NO_SUCH_CHANNEL = (UsernameNotOccupiedError, UsernameInvalidError)
+# Признак «имени точно нет» ровно один — UsernameInvalidError: такое имя не бывает в природе.
+# А вот «No user has X as username» и UsernameNotOccupied говорит и ослепший аккаунт: на живой
+# проверке один сказал так про @linktek, а соседний в ту же минуту прочитал «LINKTECH».
+# Поэтому такой ответ — лишь подозрение: верим ему, только если ВСЕ аккаунты сказали то же.
+_MAYBE_GONE = (UsernameNotOccupiedError,)
+
+
+def _looks_missing(e: Exception) -> bool:
+    return isinstance(e, _MAYBE_GONE) or (
+        isinstance(e, ValueError) and ("No user has" in str(e) or "Cannot find any entity" in str(e)))
 
 
 async def fetch_profile(handle: str) -> dict:
     ent, client, last = None, None, None
+    tried = missing = 0
     for cand in _candidate_clients():
+        tried += 1
         try:
             ent, client = await cand.get_entity(handle), cand
             break
         except FloodWaitError:
             raise ChannelError("Telegram просит подождать. Попробуйте через минуту") from None
-        except _NO_SUCH_CHANNEL:
-            raise ChannelError("Не нашли такой канал. Проверьте имя: канал должен быть открытым") from None
-        except ValueError as e:                   # Telethon так сообщает «не нашёл такую сущность»
+        except UsernameInvalidError:
+            raise ChannelError("Такое имя канала невозможно. Проверьте ссылку") from None
+        except Exception as e:  # noqa: BLE001 — любая другая причина: пробуем следующий аккаунт
             last = e
-            if "No user has" in str(e) or "Cannot find any entity" in str(e):
-                raise ChannelError("Не нашли такой канал. Проверьте имя: канал должен быть открытым") from None
-            log.warning("[miniapp] канал %s: аккаунт не справился: %s", handle, e)
-        except Exception as e:  # noqa: BLE001 — поломка аккаунта, пробуем следующий
-            last = e
-            log.warning("[miniapp] канал %s: аккаунт не справился: %s: %s", handle, type(e).__name__, e)
+            if _looks_missing(e):
+                missing += 1
+                log.info("[miniapp] канал %s: аккаунт не видит имени (%s попытка)", handle, tried)
+            else:
+                log.warning("[miniapp] канал %s: аккаунт не справился: %s: %s", handle, type(e).__name__, e)
     if ent is None:
+        # Все до единого сказали «такого имени нет» — значит канала действительно нет.
+        if tried and missing == tried:
+            raise ChannelError("Не нашли такой канал. Проверьте имя: канал должен быть открытым")
         log.warning("[miniapp] канал %s: ни один аккаунт не прочитал, последняя ошибка: %s", handle, last)
         raise ChannelError("Сейчас не получается прочитать канал. Попробуйте через несколько минут")
     if not isinstance(ent, Channel):

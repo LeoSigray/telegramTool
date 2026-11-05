@@ -183,6 +183,15 @@ prof = _aio.run(_chan.fetch_profile("linktek"))
 assert prof["title"] == "LINKTECH", prof
 print("channel: сломанный аккаунт не мешает соседнему: ok")
 
+# 1б. ослепший аккаунт говорит «No user has X as username» про существующий канал.
+# Живая проверка: 18325147520 так ответил про @linktek, а 243980246 в ту же минуту
+# прочитал «LINKTECH». Верить первому нельзя — иначе покупатель слышит «канала нет».
+_chan._candidate_clients = lambda limit=3: [_Boom(ValueError('No user has "linktek" as username')),
+                                            _Fine(_ok_channel)]
+prof = _aio.run(_chan.fetch_profile("linktek"))
+assert prof["title"] == "LINKTECH", prof
+print("channel: слепому «нет такого имени» не верим, если сосед прочитал: ok")
+
 # 2. все аккаунты сломаны — честно просим подождать, канал не обвиняем
 _chan._candidate_clients = lambda limit=3: [_Boom(ConnectionError("disconnected")),
                                             _Boom(OSError("proxy refused"))]
@@ -193,8 +202,9 @@ except _chan.ChannelError as e:
     assert "не получается прочитать" in str(e), f"нельзя винить канал: {e}"
 print("channel: поломка пула не выдаётся за отсутствие канала: ok")
 
-# 3. а вот когда имени правда нет — говорим прямо
-_chan._candidate_clients = lambda limit=3: [_Boom(UsernameNotOccupiedError(request=None))]
+# 3. а вот когда ВСЕ аккаунты в один голос — имени правда нет, говорим прямо
+_chan._candidate_clients = lambda limit=3: [_Boom(UsernameNotOccupiedError(request=None)),
+                                            _Boom(ValueError('No user has "x" as username'))]
 try:
     _aio.run(_chan.fetch_profile("нет_такого_канала_12345"))
     raise AssertionError("должна была быть ошибка")
