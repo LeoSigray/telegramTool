@@ -247,10 +247,16 @@ def set_offer_text(tg_id: int, text: str) -> None:
 
 
 def building_channels() -> list[dict]:
-    """Покупатели, у которых канал читался в момент остановки сервиса: их надо запустить заново."""
+    """Покупатели, у которых канал читался в момент остановки сервиса: их надо запустить заново.
+
+    Пустой статус считаем тем же «читаем»: именно так его показывает мини-апп
+    (channel_status or "building"), и если сервер думает иначе, покупатель смотрит
+    на вечный спиннер, за которым никто не работает.
+    """
     with _conn() as c:
         return [dict(r) for r in c.execute(
-            "SELECT tg_id, channel, channel_kind FROM mini_users WHERE channel_status='building'")]
+            "SELECT tg_id, channel, channel_kind FROM mini_users"
+            " WHERE channel IS NOT NULL AND (channel_status='building' OR channel_status IS NULL)")]
 
 
 # ──────────────────────────────────────────────────────────────────────────

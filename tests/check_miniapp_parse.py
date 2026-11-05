@@ -203,4 +203,15 @@ except _chan.ChannelError as e:
 print("channel: несуществующее имя называем прямо: ok")
 
 _chan._candidate_clients = _real_candidates
+
+# ── Пустой статус канала = «читаем»: иначе покупатель смотрит в вечный спиннер ──
+# Мини-апп показывает channel_status or "building", поэтому сервер обязан считать
+# так же, иначе сборку никто не возобновит, а спиннер будет крутиться.
+store.upsert_user(931, username="q", first_name="Q", last_name=None)
+store.set_channel_building(931, "linktek", "channel")
+with store._conn() as _c:
+    _c.execute("UPDATE mini_users SET channel_status=NULL WHERE tg_id=931")
+assert any(u["tg_id"] == 931 for u in store.building_channels()), \
+    "канал с пустым статусом обязан попасть в возобновление"
+print("channel: пустой статус подхватывается как «читаем»: ok")
 print("ALL OK")
