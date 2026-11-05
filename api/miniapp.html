@@ -809,8 +809,12 @@ function orbHoldEnd() {
   $("orb").classList.remove("charging");
 }
 
+const BLAST_MAX = 200;               // столько сообщений сервер принимает за один жест
+
 async function startBlast() {
-  const left = shownBalance();
+  // Баланс бывает огромным (безлимит у своих), а сервер принимает не больше BLAST_MAX
+  // за раз — без этой отсечки запрос улетал с количеством вроде 999993 и падал с 422.
+  const left = Math.min(shownBalance(), BLAST_MAX);
   if (left <= 0) return;
   const word = plural(left, MSG);
   if (!(await confirmBox(t("Отправить все {n} {w}? Можно закрыть приложение — отправим сами.",

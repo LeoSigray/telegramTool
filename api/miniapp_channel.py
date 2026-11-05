@@ -15,7 +15,7 @@ import asyncio
 import logging
 import re
 
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, UsernameInvalidError, UsernameNotOccupiedError
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.types import Channel
 
@@ -81,25 +81,59 @@ def _one_line(x) -> str:
     return re.sub(r"\s+", " ", str(x)).strip()
 
 
-def _pick_client():
+def _candidate_clients(limit: int = 3) -> list:
+    """Несколько клиентов на попытку: один может быть ослепшим или с оборванным коннектом.
+
+    Раньше брался строго первый, и его личная поломка превращалась в «канала не существует» —
+    покупатель видел, что виноват он, хотя виноват наш аккаунт.
+    """
+    out, seen = [], set()
     for name in pool.list_active():
-        if health.is_available(name):
-            return pool.clients[name]
-    for client in pool.clients.values():
-        return client
-    raise ChannelError("Сейчас не получается прочитать канал. Попробуйте через несколько минут")
+        if health.is_available(name) and name in pool.clients:
+            out.append(pool.clients[name])
+            seen.add(name)
+        if len(out) >= limit:
+            return out
+    for name, client in pool.clients.items():     # пул на отдыхе: читать канал всё же можно
+        if name not in seen:
+            out.append(client)
+        if len(out) >= limit:
+            break
+    if not out:
+        raise ChannelError("Сейчас не получается прочитать канал. Попробуйте через несколько минут")
+    return out
+
+
+# Эти ошибки Telegram означают, что имени действительно нет. Всё остальное — наша сторона:
+# оборванный коннект, ограничение аккаунта, прокси. Путать их нельзя: в первом случае
+# покупатель должен исправить имя, во втором — просто подождать, канал у него нормальный.
+_NO_SUCH_CHANNEL = (UsernameNotOccupiedError, UsernameInvalidError)
 
 
 async def fetch_profile(handle: str) -> dict:
-    client = _pick_client()
-    try:
-        ent = await client.get_entity(handle)
-    except FloodWaitError:
-        raise ChannelError("Telegram просит подождать. Попробуйте через минуту") from None
-    except Exception:  # noqa: BLE001 — нет такого имени, закрытый или удалённый канал
-        raise ChannelError("Не нашли такой канал. Проверьте имя: канал должен быть открытым") from None
+    ent, client, last = None, None, None
+    for cand in _candidate_clients():
+        try:
+            ent, client = await cand.get_entity(handle), cand
+            break
+        except FloodWaitError:
+            raise ChannelError("Telegram просит подождать. Попробуйте через минуту") from None
+        except _NO_SUCH_CHANNEL:
+            raise ChannelError("Не нашли такой канал. Проверьте имя: канал должен быть открытым") from None
+        except ValueError as e:                   # Telethon так сообщает «не нашёл такую сущность»
+            last = e
+            if "No user has" in str(e) or "Cannot find any entity" in str(e):
+                raise ChannelError("Не нашли такой канал. Проверьте имя: канал должен быть открытым") from None
+            log.warning("[miniapp] канал %s: аккаунт не справился: %s", handle, e)
+        except Exception as e:  # noqa: BLE001 — поломка аккаунта, пробуем следующий
+            last = e
+            log.warning("[miniapp] канал %s: аккаунт не справился: %s: %s", handle, type(e).__name__, e)
+    if ent is None:
+        log.warning("[miniapp] канал %s: ни один аккаунт не прочитал, последняя ошибка: %s", handle, last)
+        raise ChannelError("Сейчас не получается прочитать канал. Попробуйте через несколько минут")
     if not isinstance(ent, Channel):
         raise ChannelError("Это не канал. Пришлите ссылку на ваш канал или группу")
+    assert client is not None                     # ent получен — значит и клиент, который его прочитал
     about = ""
     try:
         full = await client(GetFullChannelRequest(ent))

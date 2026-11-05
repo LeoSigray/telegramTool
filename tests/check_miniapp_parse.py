@@ -146,4 +146,61 @@ store.add_leads(8, [{"username": f"stub8_{i}"} for i in range(5)])
 assert store.next_search() == 21, "нажатие без человека — обычный поиск"
 assert store.next_prewarm(2) is None, "у кого есть нажатия, того греть не надо"
 
+
+
+
+# ── Поломка аккаунта не должна выглядеть как «канала не существует» ──────────
+# Покупатель подключал существующий канал и получал «Не нашли такой канал»: любая
+# ошибка get_entity трактовалась одинаково, а пул в это время весь отдыхал.
+import asyncio as _aio                                      # noqa: E402
+from api import miniapp_channel as _chan                    # noqa: E402
+from telethon.errors import UsernameNotOccupiedError        # noqa: E402
+
+
+class _Boom:
+    """Аккаунт с оборванным коннектом: именно так ведёт себя ослепший клиент."""
+    def __init__(self, exc): self.exc = exc
+    async def get_entity(self, handle): raise self.exc
+
+
+class _Fine:
+    def __init__(self, ent): self.ent = ent
+    async def get_entity(self, handle): return self.ent
+    async def get_messages(self, ent, limit=0): return []
+    async def __call__(self, req): raise RuntimeError("описание не нужно")
+
+
+from telethon.tl.types import Channel as _Channel           # noqa: E402
+
+_real_candidates = _chan._candidate_clients
+_ok_channel = _Channel(id=1, title="LINKTECH", photo=None, date=None,
+                       creator=True, left=False, broadcast=True, megagroup=False)
+
+# 1. первый аккаунт сломан, второй читает — покупатель не должен увидеть ошибку
+_chan._candidate_clients = lambda limit=3: [_Boom(ConnectionError("Cannot send requests while disconnected")),
+                                            _Fine(_ok_channel)]
+prof = _aio.run(_chan.fetch_profile("linktek"))
+assert prof["title"] == "LINKTECH", prof
+print("channel: сломанный аккаунт не мешает соседнему: ok")
+
+# 2. все аккаунты сломаны — честно просим подождать, канал не обвиняем
+_chan._candidate_clients = lambda limit=3: [_Boom(ConnectionError("disconnected")),
+                                            _Boom(OSError("proxy refused"))]
+try:
+    _aio.run(_chan.fetch_profile("linktek"))
+    raise AssertionError("должна была быть ошибка")
+except _chan.ChannelError as e:
+    assert "не получается прочитать" in str(e), f"нельзя винить канал: {e}"
+print("channel: поломка пула не выдаётся за отсутствие канала: ok")
+
+# 3. а вот когда имени правда нет — говорим прямо
+_chan._candidate_clients = lambda limit=3: [_Boom(UsernameNotOccupiedError(request=None))]
+try:
+    _aio.run(_chan.fetch_profile("нет_такого_канала_12345"))
+    raise AssertionError("должна была быть ошибка")
+except _chan.ChannelError as e:
+    assert "Не нашли такой канал" in str(e), e
+print("channel: несуществующее имя называем прямо: ok")
+
+_chan._candidate_clients = _real_candidates
 print("ALL OK")
