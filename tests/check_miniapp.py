@@ -389,4 +389,43 @@ for _ in range(3):
 assert ("blind_acc", "resolve_blocked") in rested, f"аккаунт должен уйти отдыхать: {rested}"
 print("blind account rested: ok")
 
+# ── отмена ожидающего нажатия: попытку возвращает покупатель, а не таймер ──
+store.upsert_user(91, username="c", first_name="C", last_name=None)
+store.set_channel_building(91, "shoes", "channel")
+store.set_channel_ready(91, "Привет")
+store.claim_gift(91, 5)
+bal0 = store.get_user(91)["balance"]
+
+store.reserve(91, 1)
+tap_id = store.enqueue_tap(91)
+assert store.get_user(91)["balance"] == bal0 - 1, "нажатие списывает сообщение"
+
+tr = store.transit(91)
+assert len(tr) == 1 and tr[0]["can_cancel"] is True, f"ожидающее нажатие можно отменить: {tr}"
+assert "waiting_s" in tr[0], "фронту нужно время ожидания, чтобы решить, показывать ли кнопку"
+
+assert store.cancel_tap(tap_id, 91) is True, "своё ожидающее нажатие отменяется"
+assert store.get_user(91)["balance"] == bal0, "попытка вернулась на баланс"
+assert store.transit(91) == [], "отменённое нажатие исчезло из «в пути»"
+assert store.cancel_tap(tap_id, 91) is False, "повторная отмена ничего не начисляет"
+assert store.get_user(91)["balance"] == bal0, "баланс не раздувается от повторов"
+print("cancel pending tap: ok")
+
+# чужое нажатие отменить нельзя
+store.reserve(91, 1)
+mine = store.enqueue_tap(91)
+assert store.cancel_tap(mine, 777) is False, "чужое нажатие недоступно"
+assert store.cancel_tap(mine, 91) is True
+
+# начатую отправку отменять поздно: сообщение могло уйти в Telegram.
+# Воркер берёт нажатие только когда человек уже найден — поэтому заводим лида.
+store.add_leads(91, [{"username": "ready_person", "tier": "A", "interest": 9}])
+store.reserve(91, 1)
+busy = store.enqueue_tap(91)
+got = store.claim_next_tap()
+assert got and got["id"] == busy, f"воркер должен был взять именно это нажатие: {got}"
+assert store.cancel_tap(busy, 91) is False, "отправляющееся нажатие не отменяется"
+assert store.transit(91)[0]["can_cancel"] is False, "фронт не должен предлагать отмену"
+print("cancel guards: ok")
+
 print("ALL OK")

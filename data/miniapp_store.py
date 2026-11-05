@@ -387,13 +387,46 @@ def pending_taps(tg_id: int) -> int:
 
 def transit(tg_id: int) -> list[dict]:
     """Сообщения «в пути»: нажатия, которые ещё не ушли. stage: search — ищем человека, send — человек найден,
-    сообщение отправляется. Людей находят в порядке нажатий, поэтому «отправляются» самые старые."""
+    сообщение отправляется. Людей находят в порядке нажатий, поэтому «отправляются» самые старые.
+
+    waiting_s — сколько нажатие уже ждёт. Фронт по нему решает, пора ли предложить отмену:
+    пока идёт обычный поиск, кнопка только мешает, а вот через несколько минут человек
+    имеет право забрать сообщение назад сам. Автоматически мы его не возвращаем — покупатель
+    должен видеть, что происходит, и решать сам.
+    """
+    now = datetime.now(timezone.utc)
     with _conn() as c:
-        taps = c.execute("SELECT id, created_at FROM mini_taps WHERE tg_id=? AND status IN ('queued','sending')"
+        taps = c.execute("SELECT id, created_at, status FROM mini_taps WHERE tg_id=? AND status IN ('queued','sending')"
                          " ORDER BY id", (tg_id,)).fetchall()
         ready = c.execute("SELECT COUNT(*) n FROM mini_leads WHERE tg_id=? AND status='new'", (tg_id,)).fetchone()["n"]
-    return [{"id": t["id"], "at": t["created_at"], "stage": "send" if i < ready else "search"}
-            for i, t in enumerate(taps)]
+    out = []
+    for i, t in enumerate(taps):
+        try:
+            waited = (now - datetime.fromisoformat(t["created_at"])).total_seconds()
+        except Exception:  # noqa: BLE001 — кривая дата не должна прятать карточку
+            waited = 0.0
+        out.append({"id": t["id"], "at": t["created_at"], "stage": "send" if i < ready else "search",
+                    "waiting_s": int(waited),
+                    # отменять можно только то, что ещё не пошло в Telegram
+                    "can_cancel": t["status"] == "queued"})
+    return out
+
+
+def cancel_tap(tap_id: int, tg_id: int) -> bool:
+    """Покупатель сам отменил ожидающее сообщение: возвращаем попытку на баланс.
+
+    Отменить можно только своё и только пока оно в очереди: если отправка уже началась,
+    сообщение может уйти в Telegram, и возвращать попытку нельзя. Идемпотентно —
+    повторный вызов ничего не начислит.
+    """
+    with _conn() as c:
+        cur = c.execute("UPDATE mini_taps SET status='canceled', error=?, done_at=?"
+                        " WHERE id=? AND tg_id=? AND status='queued'",
+                        ("отменено покупателем", _now(), tap_id, tg_id))
+        if not cur.rowcount:
+            return False
+        c.execute("UPDATE mini_users SET balance=balance+1 WHERE tg_id=?", (tg_id,))
+        return True
 
 
 def sent_total(tg_id: int) -> int:

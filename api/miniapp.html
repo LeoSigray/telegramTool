@@ -113,6 +113,13 @@ h1.title{margin:4px 4px 16px;font-size:34px;line-height:41px;font-weight:700;let
 .tr-row .meta{gap:4px;max-width:42%;text-align:right}
 .tr-row .tm{display:flex;align-items:center;gap:4px}
 .tr-row .tm svg{width:14px;height:14px}
+.tr-x{margin-top:4px;padding:3px 10px;border:0;border-radius:8px;background:var(--line);
+      color:var(--hint);font:inherit;font-size:12px;cursor:pointer}
+.tr-x:active{transform:scale(.96)}
+.tr-row .st.muted{opacity:.6}
+/* Удержание кнопки «заряжает» её: человек видит, что жест распознан, и успевает передумать */
+.orb-wrap.charging{animation:orbCharge .7s ease-out forwards}
+@keyframes orbCharge{from{transform:scale(1)}to{transform:scale(1.07)}}
 .tr-row .st{font-size:12px;font-weight:600;color:var(--blue)}
 .badge.tr{margin-left:-25px;background:var(--card);color:var(--blue);box-shadow:inset 0 0 0 1.5px var(--blue);animation:trpulse 1.6s ease-in-out infinite}
 .badge.tr.bump{animation:trbump .5s ease-out}
@@ -447,6 +454,10 @@ const $ = (id) => document.getElementById(id);
 /* ── Язык интерфейса ─────────────────────────────────────────────── */
 const EN = {
 "Клиент в один клик": "Client in One Click",
+"Отменить": "Cancel",
+"Вернуть это сообщение на баланс?": "Return this message to your balance?",
+"Отправить все {n} {w}? Можно закрыть приложение — отправим сами.": "Send all {n} {w}? You can close the app \u2014 we\u2019ll handle it.",
+"Рассылка запущена: {n} {w} в очереди": "Outreach started: {n} {w} queued",
 "Чаты": "Chats",
 "Профиль": "Profile",
 "Рассылка": "Outreach",
@@ -627,6 +638,7 @@ function applyLang() {
   document.querySelectorAll("[data-tp]").forEach((el) => { el.placeholder = t(el.dataset.tp); });
   document.querySelectorAll("[data-ta]").forEach((el) => { el.setAttribute("aria-label", t(el.dataset.ta)); });
 }
+const TRANSIT_CANCEL_AFTER = 180;    // сек ожидания, после которых показываем «Отменить»
 const S = {me: null, tab: "home", chats: [], chFilter: "all", chatId: null, packs: null, layer: null, chan: null, topup: null, inflight: 0};
 
 const ICON = {
@@ -774,8 +786,62 @@ function waitHint(pend, leads) {
   return leads.searching ? t("Ищем человека под вашу тему… в очереди {n}", {n: pend}) : t("Отправляем… в очереди {n}", {n: pend});
 }
 
+/* ── Удержание кнопки: рассылка одним жестом ──────────────────────
+   Нажатие отправляет одно сообщение, удержание — всё, что есть на балансе.
+   Очередь живёт на сервере, поэтому приложение можно закрыть: человек вернётся
+   на следующий день и увидит отправленные сообщения. */
+const HOLD_MS = 700;                 // столько держать, чтобы запустить рассылку
+let holdTimer = null, holdFired = false;
+
+function orbHoldStart() {
+  if (!S.me || S.orbMode !== "send" || shownBalance() <= 0) return;
+  holdFired = false;
+  $("orb").classList.add("charging");
+  clearTimeout(holdTimer);
+  holdTimer = setTimeout(() => {
+    holdFired = true;                // гасим click, который прилетит следом
+    $("orb").classList.remove("charging");
+    hap("heavy");
+    startBlast();
+  }, HOLD_MS);
+}
+
+function orbHoldEnd() {
+  clearTimeout(holdTimer);
+  $("orb").classList.remove("charging");
+}
+
+async function startBlast() {
+  const left = shownBalance();
+  if (left <= 0) return;
+  const word = plural(left, MSG);
+  if (!(await confirmBox(t("Отправить все {n} {w}? Можно закрыть приложение — отправим сами.",
+                           {n: left, w: word})))) return;
+  try {
+    const r = await api("tap/batch", "POST", {count: left});
+    S.me.balance = r.balance;
+    S.me.pending = r.pending;
+    S.me.sent = r.sent;
+    hap("success");
+    toast(t("Рассылка запущена: {n} {w} в очереди", {n: r.queued, w: plural(r.queued, MSG)}));
+    flyToChats();
+    refreshMe();
+  } catch (e) {
+    hap("error");
+    toast(e.message);
+    if (e.status === 402) refreshMe();
+  }
+  renderHome();
+}
+
+$("orb").addEventListener("pointerdown", orbHoldStart);
+$("orb").addEventListener("pointerup", orbHoldEnd);
+$("orb").addEventListener("pointercancel", orbHoldEnd);
+$("orb").addEventListener("pointerleave", orbHoldEnd);
+
 $("orb").addEventListener("click", (ev) => {
   if (!S.me) return;
+  if (holdFired) { holdFired = false; return; }   // это было удержание, не нажатие
   if (S.orbMode === "channel") { hap("medium"); openChannel(); }
   else if (S.orbMode === "topup") { hap("medium"); openTopup(); }
   else if (S.orbMode === "send") tapSend();
@@ -1145,14 +1211,35 @@ function renderTransit() {
       el.className = "tr-row";
       el.dataset.id = x.id;
       el.innerHTML = `<span class="tr-ava ghost"></span><span class="grow" style="min-width:0"><span class="tr-bar ghost"></span><span class="sub pv"></span></span>
-        <span class="meta"><span class="tm">${CLOCK}<span class="ago"></span></span><span class="st"></span></span>`;
+        <span class="meta"><span class="tm">${CLOCK}<span class="ago"></span></span><span class="st"></span><button class="tr-x" type="button" hidden></button></span>`;
+      el.querySelector(".tr-x").addEventListener("click", () => cancelTransit(x.id));
       card.prepend(el);                     // новое сверху, как «сейчас» в списке
     }
     el.querySelector(".pv").textContent = text;
     el.querySelector(".ago").textContent = agoLabel(x.at);
     el.querySelector(".st").textContent = x.stage === "send" ? t("Отправляем") : t("Ищем человека");
+    // Кнопку отмены показываем не сразу: первые минуты это обычный поиск, и предлагать
+    // забрать сообщение рано. Дальше человек должен видеть, что ожидание в его руках.
+    const x9 = el.querySelector(".tr-x"), late = x.can_cancel && (x.waiting_s || 0) >= TRANSIT_CANCEL_AFTER;
+    x9.hidden = !late;
+    x9.textContent = t("Отменить");
+    el.querySelector(".st").classList.toggle("muted", late);
   });
   syncTransitBox();
+}
+
+async function cancelTransit(id) {
+  if (!(await confirmBox(t("Вернуть это сообщение на баланс?")))) return;
+  try {
+    const r = await api(`taps/${id}/cancel`, "POST");
+    S.me.balance = r.balance;
+    S.me.pending = r.pending;
+    S.me.transit = r.transit;
+    hap("success");
+  } catch (e) { toast(e.message); refreshMe(); return; }
+  renderTransit();
+  syncTransitBadge();
+  renderHome();
 }
 function syncTransitBox() {
   const show = !!$("trCard") && $("trCard").children.length > 0;

@@ -243,6 +243,48 @@ async def tap(user: dict = Depends(current_user)) -> dict:
             "sent": store.sent_total(tg)}
 
 
+@router.post("/api/taps/{tap_id}/cancel")
+def cancel_tap(tap_id: int, user: dict = Depends(current_user)) -> dict:
+    """Покупатель забирает ожидающее сообщение назад: попытка возвращается на баланс."""
+    tg = user["tg_id"]
+    if not store.cancel_tap(tap_id, tg):
+        raise HTTPException(status_code=409, detail="Это сообщение уже отправляется — отменить нельзя")
+    fresh = store.get_user(tg) or {}
+    return {"balance": fresh.get("balance", 0), "pending": store.pending_taps(tg),
+            "transit": store.transit(tg)}
+
+
+class BatchIn(BaseModel):
+    count: int = Field(ge=1, le=200)
+
+
+@router.post("/api/tap/batch")
+async def tap_batch(body: BatchIn, user: dict = Depends(current_user)):
+    """Рассылка одним жестом: ставим в очередь сразу несколько сообщений.
+
+    Приложение можно закрыть — очередь живёт на сервере, воркер отправляет по мере того,
+    как находятся люди и освобождаются аккаунты. Покупатель вернётся и увидит результат.
+    """
+    tg = user["tg_id"]
+    fresh = store.get_user(tg) or {}
+    if fresh.get("channel_status") != "ready" or not (fresh.get("offer_text") or "").strip():
+        raise HTTPException(status_code=409, detail="Сначала подключите канал")
+    # Берём сколько есть: просить «ровно 50», когда на балансе 7, незачем —
+    # покупатель жестом сказал «отправляй всё», а не «отправь ровно столько».
+    want = min(body.count, int(fresh.get("balance") or 0))
+    if want <= 0:
+        return JSONResponse(status_code=402, content={
+            "detail": "Сообщения закончились. Пополните баланс.", "balance": 0})
+    if not store.reserve(tg, want):
+        raise HTTPException(status_code=409, detail="Баланс изменился, попробуйте ещё раз")
+    store.ensure_stream(tg)
+    for _ in range(want):
+        store.enqueue_tap(tg)
+    after = store.get_user(tg) or {}
+    return {"queued": want, "balance": after.get("balance", 0),
+            "pending": store.pending_taps(tg), "sent": store.sent_total(tg)}
+
+
 @router.get("/api/chats")
 def chats(user: dict = Depends(current_user)) -> dict:
     return {"chats": store.user_conversations(user["tg_id"])}
