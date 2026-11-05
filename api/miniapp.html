@@ -113,10 +113,9 @@ h1.title{margin:4px 4px 16px;font-size:34px;line-height:41px;font-weight:700;let
 .tr-row .meta{gap:4px;max-width:42%;text-align:right}
 .tr-row .tm{display:flex;align-items:center;gap:4px}
 .tr-row .tm svg{width:14px;height:14px}
-.tr-x{margin-top:4px;padding:3px 10px;border:0;border-radius:8px;background:var(--line);
-      color:var(--hint);font:inherit;font-size:12px;cursor:pointer}
+.tr-x{padding:2px 9px;border:0;border-radius:7px;background:var(--line);color:var(--hint);
+      font:inherit;font-size:12px;line-height:17px;white-space:nowrap;cursor:pointer}
 .tr-x:active{transform:scale(.96)}
-.tr-row .st.muted{opacity:.6}
 /* Удержание кнопки «заряжает» её: человек видит, что жест распознан, и успевает передумать */
 .orb-wrap.charging{animation:orbCharge .7s ease-out forwards}
 @keyframes orbCharge{from{transform:scale(1)}to{transform:scale(1.07)}}
@@ -1222,7 +1221,7 @@ function renderTransit() {
     const x9 = el.querySelector(".tr-x");
     x9.hidden = !x.can_cancel;
     x9.textContent = t("Отменить");
-    el.querySelector(".st").classList.toggle("muted", !!x.can_cancel);
+    el.querySelector(".st").hidden = !!x.can_cancel;
   });
   syncTransitBox();
 }
