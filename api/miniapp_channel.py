@@ -81,6 +81,9 @@ def _one_line(x) -> str:
     return re.sub(r"\s+", " ", str(x)).strip()
 
 
+TECH_WORKS = "Сейчас ведутся технические работы. Попробуйте подключить канал через несколько минут"
+
+
 def _candidate_clients(limit: int = 4) -> list:
     """Несколько клиентов на попытку: один может быть ослепшим или с оборванным коннектом.
 
@@ -100,14 +103,14 @@ def _candidate_clients(limit: int = 4) -> list:
         if len(out) >= limit:
             break
     if not out:
-        raise ChannelError("Сейчас не получается прочитать канал. Попробуйте через несколько минут")
+        raise ChannelError(TECH_WORKS)
     return out
 
 
-# Признак «имени точно нет» ровно один — UsernameInvalidError: такое имя не бывает в природе.
-# А вот «No user has X as username» и UsernameNotOccupied говорит и ослепший аккаунт: на живой
-# проверке один сказал так про @linktek, а соседний в ту же минуту прочитал «LINKTECH».
-# Поэтому такой ответ — лишь подозрение: верим ему, только если ВСЕ аккаунты сказали то же.
+# «Канала нет» мы сказать не можем — нечем проверить. Ослепший аккаунт отвечает «No user has
+# X as username» про живой канал: на @linktek один аккаунт ответил так, а соседний в ту же
+# минуту прочитал «LINKTECH». Пока нет отдельного аккаунта под проверки, любая неудача — наша
+# техническая проблема, и говорить надо о ней, а не отправлять покупателя искать опечатку.
 _MAYBE_GONE = (UsernameNotOccupiedError,)
 
 
@@ -127,7 +130,7 @@ async def fetch_profile(handle: str) -> dict:
         except FloodWaitError:
             raise ChannelError("Telegram просит подождать. Попробуйте через минуту") from None
         except UsernameInvalidError:
-            raise ChannelError("Такое имя канала невозможно. Проверьте ссылку") from None
+            raise ChannelError("Проверьте ссылку на канал: такое имя не подходит") from None
         except Exception as e:  # noqa: BLE001 — любая другая причина: пробуем следующий аккаунт
             last = e
             if _looks_missing(e):
@@ -136,11 +139,9 @@ async def fetch_profile(handle: str) -> dict:
             else:
                 log.warning("[miniapp] канал %s: аккаунт не справился: %s: %s", handle, type(e).__name__, e)
     if ent is None:
-        # Все до единого сказали «такого имени нет» — значит канала действительно нет.
-        if tried and missing == tried:
-            raise ChannelError("Не нашли такой канал. Проверьте имя: канал должен быть открытым")
-        log.warning("[miniapp] канал %s: ни один аккаунт не прочитал, последняя ошибка: %s", handle, last)
-        raise ChannelError("Сейчас не получается прочитать канал. Попробуйте через несколько минут")
+        log.warning("[miniapp] канал %s: не прочитал ни один из %d аккаунтов "
+                    "(из них «нет имени»: %d), последняя ошибка: %s", handle, tried, missing, last)
+        raise ChannelError(TECH_WORKS)
     if not isinstance(ent, Channel):
         raise ChannelError("Это не канал. Пришлите ссылку на ваш канал или группу")
     assert client is not None                     # ent получен — значит и клиент, который его прочитал

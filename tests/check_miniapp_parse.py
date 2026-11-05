@@ -199,18 +199,19 @@ try:
     _aio.run(_chan.fetch_profile("linktek"))
     raise AssertionError("должна была быть ошибка")
 except _chan.ChannelError as e:
-    assert "не получается прочитать" in str(e), f"нельзя винить канал: {e}"
+    assert "технические работы" in str(e), f"нельзя винить канал: {e}"
 print("channel: поломка пула не выдаётся за отсутствие канала: ok")
 
-# 3. а вот когда ВСЕ аккаунты в один голос — имени правда нет, говорим прямо
+# 3. даже если все аккаунты в один голос говорят «нет имени» — проверить это нечем,
+# поэтому честно сообщаем о техработах, а не отправляем покупателя искать опечатку
 _chan._candidate_clients = lambda limit=3: [_Boom(UsernameNotOccupiedError(request=None)),
                                             _Boom(ValueError('No user has "x" as username'))]
 try:
     _aio.run(_chan.fetch_profile("нет_такого_канала_12345"))
     raise AssertionError("должна была быть ошибка")
 except _chan.ChannelError as e:
-    assert "Не нашли такой канал" in str(e), e
-print("channel: несуществующее имя называем прямо: ok")
+    assert "технические работы" in str(e), e
+print("channel: канал не обвиняем, говорим о техработах: ok")
 
 _chan._candidate_clients = _real_candidates
 
