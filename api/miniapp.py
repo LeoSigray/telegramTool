@@ -285,6 +285,72 @@ async def tap_batch(body: BatchIn, user: dict = Depends(current_user)):
             "pending": store.pending_taps(tg), "sent": store.sent_total(tg)}
 
 
+@router.post("/api/session/{event}")
+async def session_event(event: str, request: Request) -> dict:
+    """Жизненный цикл мини-аппа: open при запуске, ping пока открыт, close при выходе.
+
+    Подпись берём из заголовка, а при его отсутствии — из тела: на выходе страница шлёт
+    событие через sendBeacon, а он заголовки ставить не умеет. Без этого самое важное
+    событие — закрытие — терялось бы чаще всего.
+
+    Пинг нужен потому, что мобильный вебвью часто закрывают молча. По последнему пингу
+    сессию закроет уборщик, и в среднее не попадут часы висящей вкладки.
+    """
+    raw = request.headers.get("x-telegram-init-data") or ""
+    if not raw:
+        try:
+            raw = ((await request.json()) or {}).get("initData") or ""
+        except Exception:  # noqa: BLE001 — тела может не быть вовсе
+            raw = ""
+    try:
+        data = bot.validate_init_data(raw)
+    except bot.InitDataError as e:
+        raise HTTPException(status_code=401, detail=str(e)) from None
+    tg = int(data["user"]["id"])
+    if event == "open":
+        store.session_open(tg)
+    elif event == "ping":
+        store.session_ping(tg)
+    elif event == "close":
+        store.session_close(tg)
+    else:
+        raise HTTPException(status_code=404, detail="Неизвестное событие сессии")
+    return {"ok": True}
+
+
+@router.get("/api/stats")
+def my_stats(user: dict = Depends(current_user)) -> dict:
+    """Воронка покупателя: нажатия, бесплатная проба, покупки, время до отправки, сессии."""
+    ids = [p["id"] for p in packs()]
+    return store.funnel(user["tg_id"], pack_ids=ids)
+
+
+@router.get("/api/ops/stats")
+def ops_stats(user: dict = Depends(current_user)) -> dict:
+    """То же по всем покупателям — для оператора."""
+    if not _is_operator(user):
+        raise HTTPException(status_code=403, detail="Недоступно")
+    ids = [p["id"] for p in packs()]
+    rows = [store.funnel(u["tg_id"], pack_ids=ids) for u in store.all_users()]
+    rows = [r for r in rows if r]
+    paid = [r for r in rows if r["first_purchase"]]
+    avg = lambda xs: round(sum(xs) / len(xs), 1) if xs else None  # noqa: E731
+    return {
+        "packs_order": ids,
+        "users": sorted(rows, key=lambda r: -(r["taps_total"] or 0)),
+        "totals": {
+            "users": len(rows),
+            "with_purchase": len(paid),
+            "conversion": round(len(paid) / len(rows), 3) if rows else 0.0,
+            "taps": sum(r["taps_total"] or 0 for r in rows),
+            "purchases": sum(r["purchases_count"] or 0 for r in rows),
+            "packs": [sum(r["packs"][i] if i < len(r["packs"]) else 0 for r in rows) for i in range(len(ids))],
+            "avg_send_s": avg([r["avg_send_s"] for r in rows if r["avg_send_s"] is not None]),
+            "avg_session_s": avg([r["avg_session_s"] for r in rows if r["avg_session_s"] is not None]),
+        },
+    }
+
+
 @router.get("/api/chats")
 def chats(user: dict = Depends(current_user)) -> dict:
     return {"chats": store.user_conversations(user["tg_id"])}

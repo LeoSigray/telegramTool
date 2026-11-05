@@ -204,8 +204,16 @@ async def worker_loop() -> None:
     recovered = store.recover_taps()
     if recovered:
         log.info("[miniapp] вернули в очередь нажатия после перезапуска: %d", recovered)
+    last_sweep = 0.0
     while True:
         try:
+            # Сессии мини-аппа, от которых давно нет пинга: приложение закрыли молча.
+            # Закрываем раз в минуту, иначе в среднее время сессии попадут часы простоя.
+            if time.monotonic() - last_sweep > 60:
+                last_sweep = time.monotonic()
+                closed = store.close_stale_sessions()
+                if closed:
+                    log.info("[miniapp] закрыли молча брошенных сессий: %d", closed)
             # Раньше нажатие, провисевшее дольше TAP_MAX_WAIT_SEC, закрывалось само с текстом
             # «нет свободного аккаунта»: покупатель видел непонятную ошибку и возврат, которого
             # не просил. Теперь ожидание не истекает — сообщение честно висит «в пути», а забрать

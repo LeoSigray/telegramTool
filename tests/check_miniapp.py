@@ -448,4 +448,88 @@ print("cancel only when stalled: ok")
 
 print("cancel guards: ok")
 
+
+
+
+# ── Воронка покупателя: нажатия, проба, покупки, время, сессии ──────────────
+import json as _json                                        # noqa: E402
+import time as _time                                        # noqa: E402
+
+PACK_IDS = ["p200", "p500", "p1000"]
+store.upsert_user(55, username="f", first_name="F", last_name=None)
+store.set_channel_building(55, "shop", "channel")
+store.set_channel_ready(55, "Привет")
+store.claim_gift(55, 10)
+
+# три нажатия до любой покупки — всё это бесплатная проба
+for _ in range(3):
+    store.reserve(55, 1)
+    store.enqueue_tap(55)
+f = store.funnel(55, PACK_IDS)
+assert f["taps_total"] == 3, f
+assert f["free_spent"] == 3, f"до покупки всё бесплатное: {f}"
+assert f["first_purchase"] == 0 and f["purchases_count"] == 0, f
+assert f["packs"] == [0, 0, 0], f
+print("funnel: бесплатная проба считается: ok")
+
+# покупка пакета p500 дважды и p200 один раз
+for i, (pack, msgs) in enumerate((("p500", 500), ("p500", 500), ("p200", 200))):
+    pl = f"test-pay-{i}"
+    store.create_payment(55, pack_id=pack, messages=msgs, amount=1, currency="XTR",
+                         method="stars", payload=pl)
+    store.mark_paid(pl, charge_id="ch")
+f = store.funnel(55, PACK_IDS)
+assert f["first_purchase"] == 1, "после оплаты отметка первой покупки обязана встать"
+assert f["purchases_count"] == 3, f
+assert f["packs"] == [1, 2, 0], f"счётчики по пакетам в порядке p200,p500,p1000: {f['packs']}"
+assert f["first_purchase_at"], "время первой покупки должно быть записано"
+print("funnel: покупки и массив пакетов: ok")
+
+# нажатия после покупки бесплатными уже не считаются
+store.reserve(55, 1)
+store.enqueue_tap(55)
+f = store.funnel(55, PACK_IDS)
+assert f["taps_total"] == 4 and f["free_spent"] == 3, f"после оплаты проба не растёт: {f}"
+print("funnel: после покупки проба заморожена: ok")
+
+# время от нажатия до отправки и отметка первого сообщения
+store.add_leads(55, [{"username": "p_x", "tier": "A", "interest": 9}])
+store.reserve(55, 1)
+t_id = store.enqueue_tap(55)
+store.claim_next_tap()
+store.finish_tap(t_id, status="sent", target="@p_x", account="acc")
+f = store.funnel(55, PACK_IDS)
+assert f["first_sent_at"], "первое дошедшее сообщение должно быть отмечено"
+assert f["avg_send_s"] is not None and f["avg_send_s"] >= 0, f
+print("funnel: время до отправки пишется: ok")
+
+# сессия: открыли, пожили, закрыли
+store.session_open(55)
+_time.sleep(0.2)
+store.session_ping(55)
+store.session_close(55)
+f = store.funnel(55, PACK_IDS)
+assert f["sessions_count"] == 1, f
+assert f["avg_session_s"] is not None and f["avg_session_s"] >= 0, f
+print("funnel: сессия закрывается и усредняется: ok")
+
+# брошенная сессия закрывается уборщиком по последнему пингу, а не «до сейчас»
+store.session_open(55)
+with store._conn() as _c:
+    _c.execute("UPDATE mini_users SET session_open_at=?, session_ping_at=? WHERE tg_id=55",
+               ("2020-01-01T00:00:00+00:00", "2020-01-01T00:00:30+00:00"))
+assert store.close_stale_sessions() >= 1, "молча брошенная сессия обязана закрыться"
+f = store.funnel(55, PACK_IDS)
+assert f["sessions_count"] == 2, f
+assert f["avg_session_s"] < 60, f"длительность берётся до последнего пинга, а не до сейчас: {f}"
+print("funnel: брошенная сессия не раздувает среднее: ok")
+
+# пересчёт из первоисточников даёт те же цифры
+before = store.funnel(55, PACK_IDS)
+store.recompute_funnel(55)
+after = store.funnel(55, PACK_IDS)
+for k in ("taps_total", "purchases_count", "packs", "first_purchase"):
+    assert before[k] == after[k], f"пересчёт разошёлся по {k}: {before[k]} -> {after[k]}"
+print("funnel: пересчёт из таблиц сходится: ok")
+
 print("ALL OK")

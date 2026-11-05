@@ -9,6 +9,7 @@ data/miniapp_store.py — хранилище Mini App «Клиент в один
 Баланс меняется только атомарными UPDATE … WHERE balance >= n, чтобы два
 одновременных запуска не ушли в минус.
 """
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -142,7 +143,25 @@ def init_store() -> None:
                           ("channel_error", "TEXT"), ("channel_kind", "TEXT"),
                           ("parse_status", "TEXT"), ("parse_queued_at", "TEXT"),
                           ("parse_finished_at", "TEXT"), ("parse_runs", "INTEGER NOT NULL DEFAULT 0"),
-                          ("lang", "TEXT")):
+                          ("lang", "TEXT"),
+                          # ── воронка покупателя ──────────────────────────────────
+                          # Считаем по событиям, а не запросом на лету: нажатий и платежей
+                          # со временем станет много, а смотреть эти цифры нужно часто.
+                          ("taps_total", "INTEGER NOT NULL DEFAULT 0"),       # всего нажатий
+                          ("free_spent", "INTEGER NOT NULL DEFAULT 0"),       # из них подарочными
+                          ("first_purchase", "INTEGER NOT NULL DEFAULT 0"),   # 0/1 — дошёл ли до оплаты
+                          ("first_purchase_at", "TEXT"),
+                          ("purchases_count", "INTEGER NOT NULL DEFAULT 0"),
+                          ("packs_bought", "TEXT"),                           # JSON: сколько раз взят каждый пакет
+                          ("first_sent_at", "TEXT"),                          # первое дошедшее сообщение
+                          # Среднее держим как сумму и счётчик: так его можно обновлять
+                          # по одному событию, не перечитывая всю историю.
+                          ("send_time_total_s", "REAL NOT NULL DEFAULT 0"),
+                          ("send_time_n", "INTEGER NOT NULL DEFAULT 0"),
+                          ("sessions_count", "INTEGER NOT NULL DEFAULT 0"),
+                          ("session_total_s", "REAL NOT NULL DEFAULT 0"),
+                          ("session_open_at", "TEXT"),                        # текущая незакрытая сессия
+                          ("session_ping_at", "TEXT")):                       # последний признак жизни
             if col not in have:
                 c.execute(f"ALTER TABLE mini_users ADD COLUMN {col} {kind}")
         if "op_read" not in {r["name"] for r in c.execute("PRAGMA table_info(mini_support)")}:
@@ -386,6 +405,7 @@ def ensure_stream(tg_id: int) -> str:
 def enqueue_tap(tg_id: int) -> int:
     with _conn() as c:
         cur = c.execute("INSERT INTO mini_taps (tg_id, created_at) VALUES (?,?)", (tg_id, _now()))
+        _bump_tap_counters(c, tg_id)
         return int(cur.lastrowid)
 
 
@@ -448,6 +468,190 @@ def sent_total(tg_id: int) -> int:
         return int(row["n"])
 
 
+# ──────────────────────────────────────────────────────────────────────────
+#  Воронка покупателя: нажатия, покупки, время до отправки, сессии
+# ──────────────────────────────────────────────────────────────────────────
+
+SESSION_IDLE_S = 90.0          # столько тишины — и считаем, что мини-апп закрыли
+
+
+def _bump_tap_counters(c, tg_id: int) -> None:
+    """Нажатие: +1 к общему счётчику и, пока покупок не было, к бесплатным.
+
+    Бесплатным считаем всё, что потрачено до первой оплаты: подарочные сообщения и есть
+    та проба, по которой человек решает, покупать ли. После оплаты счётчик замирает.
+    """
+    c.execute("UPDATE mini_users SET taps_total=taps_total+1,"
+              " free_spent=free_spent+(CASE WHEN first_purchase=0 THEN 1 ELSE 0 END)"
+              " WHERE tg_id=?", (tg_id,))
+
+
+def note_sent(tg_id: int, tap_created_at: str | None) -> None:
+    """Сообщение дошло: запоминаем первое и копим время от нажатия до отправки.
+
+    Меряем именно весь путь, вместе с поиском человека и ожиданием аккаунта: покупателя
+    интересует, когда его сообщение уйдёт, а не сколько заняла наша последняя операция.
+    """
+    secs = None
+    if tap_created_at:
+        try:
+            secs = (datetime.now(timezone.utc) - datetime.fromisoformat(tap_created_at)).total_seconds()
+        except Exception:  # noqa: BLE001 — кривая дата не повод терять сам факт отправки
+            secs = None
+    with _conn() as c:
+        if secs is not None and secs >= 0:
+            c.execute("UPDATE mini_users SET send_time_total_s=send_time_total_s+?, send_time_n=send_time_n+1"
+                      " WHERE tg_id=?", (secs, tg_id))
+        c.execute("UPDATE mini_users SET first_sent_at=? WHERE tg_id=? AND first_sent_at IS NULL",
+                  (_now(), tg_id))
+
+
+def note_purchase(tg_id: int, pack_id: str) -> None:
+    """Оплата прошла: +1 к покупкам, отметка первой и счётчик по конкретному пакету."""
+    with _conn() as c:
+        row = c.execute("SELECT packs_bought FROM mini_users WHERE tg_id=?", (tg_id,)).fetchone()
+        try:
+            packs = json.loads((row["packs_bought"] if row else None) or "{}")
+            if not isinstance(packs, dict):
+                packs = {}
+        except (json.JSONDecodeError, TypeError):
+            packs = {}
+        packs[pack_id] = int(packs.get(pack_id, 0)) + 1
+        c.execute("UPDATE mini_users SET purchases_count=purchases_count+1, packs_bought=?,"
+                  " first_purchase=1,"
+                  " first_purchase_at=COALESCE(first_purchase_at, ?)"
+                  " WHERE tg_id=?", (json.dumps(packs, ensure_ascii=False), _now(), tg_id))
+
+
+def session_open(tg_id: int) -> None:
+    """Мини-апп открыли. Незакрытую прошлую сессию сперва закрываем по последнему пингу."""
+    with _conn() as c:
+        row = c.execute("SELECT session_open_at, session_ping_at FROM mini_users WHERE tg_id=?",
+                        (tg_id,)).fetchone()
+        if row and row["session_open_at"]:
+            _close_session(c, tg_id, row["session_open_at"], row["session_ping_at"])
+        c.execute("UPDATE mini_users SET session_open_at=?, session_ping_at=? WHERE tg_id=?",
+                  (_now(), _now(), tg_id))
+
+
+def session_ping(tg_id: int) -> None:
+    """Признак жизни: по нему закроем сессию, если приложение исчезнет без прощания."""
+    with _conn() as c:
+        c.execute("UPDATE mini_users SET session_ping_at=? WHERE tg_id=? AND session_open_at IS NOT NULL",
+                  (_now(), tg_id))
+
+
+def session_close(tg_id: int) -> None:
+    with _conn() as c:
+        row = c.execute("SELECT session_open_at, session_ping_at FROM mini_users WHERE tg_id=?",
+                        (tg_id,)).fetchone()
+        if row and row["session_open_at"]:
+            _close_session(c, tg_id, row["session_open_at"], row["session_ping_at"])
+
+
+def _close_session(c, tg_id: int, opened: str, last_ping: str | None) -> None:
+    """Длительность считаем до последнего пинга, а не до «сейчас».
+
+    Мобильный вебвью часто уходит молча: событие закрытия не доходит. Если брать текущее
+    время, в среднее попадут часы висящей вкладки — поэтому верим последнему признаку жизни.
+    """
+    try:
+        start = datetime.fromisoformat(opened)
+        end = datetime.fromisoformat(last_ping) if last_ping else start
+        secs = max((end - start).total_seconds(), 0.0)
+    except Exception:  # noqa: BLE001 — битые даты не должны ронять закрытие сессии
+        secs = 0.0
+    c.execute("UPDATE mini_users SET sessions_count=sessions_count+1, session_total_s=session_total_s+?,"
+              " session_open_at=NULL, session_ping_at=NULL WHERE tg_id=?", (secs, tg_id))
+
+
+def close_stale_sessions() -> int:
+    """Сессии, от которых давно нет признаков жизни: приложение закрыли, не сказав нам."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=SESSION_IDLE_S)).isoformat()
+    with _conn() as c:
+        rows = c.execute("SELECT tg_id, session_open_at, session_ping_at FROM mini_users"
+                         " WHERE session_open_at IS NOT NULL"
+                         "   AND COALESCE(session_ping_at, session_open_at) < ?", (cutoff,)).fetchall()
+        for r in rows:
+            _close_session(c, r["tg_id"], r["session_open_at"], r["session_ping_at"])
+        return len(rows)
+
+
+def all_users() -> list[dict]:
+    """Все покупатели — для сводной аналитики оператора."""
+    with _conn() as c:
+        return [dict(r) for r in c.execute("SELECT tg_id, username, first_name FROM mini_users"
+                                           " ORDER BY tg_id")]
+
+
+def funnel(tg_id: int, pack_ids: list[str] | None = None) -> dict:
+    """Воронка одного покупателя. packs — счётчики в порядке pack_ids, как просили: [1, 4, 2]."""
+    with _conn() as c:
+        row = c.execute("SELECT * FROM mini_users WHERE tg_id=?", (tg_id,)).fetchone()
+    if row is None:
+        return {}
+    d = dict(row)
+    try:
+        bought = json.loads(d.get("packs_bought") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        bought = {}
+    ids = pack_ids or sorted(bought)
+    return {
+        "tg_id": tg_id,
+        "taps_total": d.get("taps_total") or 0,
+        "free_spent": d.get("free_spent") or 0,
+        "first_purchase": int(d.get("first_purchase") or 0),
+        "first_purchase_at": d.get("first_purchase_at"),
+        "purchases_count": d.get("purchases_count") or 0,
+        "packs": [int(bought.get(p, 0)) for p in ids],
+        "packs_by_id": {p: int(bought.get(p, 0)) for p in ids},
+        "first_sent_at": d.get("first_sent_at"),
+        "avg_send_s": round((d["send_time_total_s"] / d["send_time_n"]), 1) if d.get("send_time_n") else None,
+        "sessions_count": d.get("sessions_count") or 0,
+        "avg_session_s": round((d["session_total_s"] / d["sessions_count"]), 1) if d.get("sessions_count") else None,
+    }
+
+
+def recompute_funnel(tg_id: int | None = None) -> int:
+    """Пересчёт счётчиков из первоисточников: нажатий и платежей.
+
+    Нужен для тех, кто пользовался сервисом до появления этих полей, и как страховка от
+    рассинхрона: событийные счётчики быстры, но историей правды остаются сами таблицы.
+    Сессии не трогаем — их до сих пор никто не записывал, восстановить неоткуда.
+    """
+    with _conn() as c:
+        ids = [tg_id] if tg_id else [r["tg_id"] for r in c.execute("SELECT tg_id FROM mini_users")]
+        for uid in ids:
+            taps = c.execute("SELECT COUNT(*) n FROM mini_taps WHERE tg_id=?", (uid,)).fetchone()["n"]
+            pays = c.execute("SELECT pack_id, paid_at FROM mini_payments WHERE tg_id=? AND status='paid'"
+                             " ORDER BY paid_at", (uid,)).fetchall()
+            packs: dict[str, int] = {}
+            for p in pays:
+                packs[p["pack_id"]] = packs.get(p["pack_id"], 0) + 1
+            first_pay = pays[0]["paid_at"] if pays else None
+            # до первой оплаты человек тратил подарочные — именно это и есть бесплатная проба
+            free = c.execute("SELECT COUNT(*) n FROM mini_taps WHERE tg_id=?"
+                             " AND (? IS NULL OR created_at < ?)", (uid, first_pay, first_pay)).fetchone()["n"]
+            sent = c.execute("SELECT created_at, done_at FROM mini_taps WHERE tg_id=? AND status='sent'"
+                             " AND done_at IS NOT NULL ORDER BY done_at", (uid,)).fetchall()
+            total_s, n = 0.0, 0
+            for s in sent:
+                try:
+                    dt = (datetime.fromisoformat(s["done_at"]) - datetime.fromisoformat(s["created_at"])).total_seconds()
+                except Exception:  # noqa: BLE001
+                    continue
+                if dt >= 0:
+                    total_s += dt
+                    n += 1
+            c.execute("UPDATE mini_users SET taps_total=?, free_spent=?, purchases_count=?, packs_bought=?,"
+                      " first_purchase=?, first_purchase_at=?, first_sent_at=?,"
+                      " send_time_total_s=?, send_time_n=? WHERE tg_id=?",
+                      (taps, free, len(pays), json.dumps(packs, ensure_ascii=False),
+                       1 if pays else 0, first_pay,
+                       sent[0]["done_at"] if sent else None, total_s, n, uid))
+        return len(ids)
+
+
 def claim_next_tap() -> dict | None:
     """Берёт самое старое нажатие, для которого человек уже найден, и помечает его «отправляется»."""
     with _conn() as c:
@@ -490,7 +694,10 @@ def finish_tap(tap_id: int, *, status: str, target: str | None = None,
                   (status, target, account, (error or "")[:300] or None, _now(), tap_id))
         if status == "failed":
             c.execute("UPDATE mini_users SET balance=balance+1 WHERE tg_id=?", (row["tg_id"],))
-        return dict(row)
+        out = dict(row)
+    if status == "sent":
+        note_sent(out["tg_id"], out.get("created_at"))
+    return out
 
 
 def expired_taps(max_age_s: float) -> list[dict]:
@@ -765,7 +972,10 @@ def mark_paid(payload: str, *, charge_id: str | None) -> dict | None:
                   (row["messages"], row["tg_id"]))
         out = dict(row)
         out["status"] = "paid"
-        return out
+    # Счётчики покупок — после закрытия транзакции: mark_paid идемпотентна, сюда мы
+    # попадаем только на первом подтверждении платежа, повтор вебхука уходит выше.
+    note_purchase(out["tg_id"], out["pack_id"])
+    return out
 
 
 def crypto_orders(statuses: tuple, tg_id: int | None = None, hours: float | None = None) -> list[dict]:

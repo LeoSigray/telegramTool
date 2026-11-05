@@ -1842,6 +1842,7 @@ async function start() {
   applyLang();
   await refreshMe();
   if (!S.me) return;
+  startSessionTracking();
   if (S.me.lang) useLang(S.me.lang); else await pickLang();
   renderHome();
   maybeGift();
@@ -2027,6 +2028,39 @@ if (window.DEMO_OPS) {
     if (v.open) openOpsThread(v.open);
   }, 1200));
 }
+/* ── Учёт сессии: от открытия до закрытия мини-аппа ───────────────
+   Событие закрытия в мобильном вебвью часто не доходит, поэтому пока приложение
+   открыто, шлём короткий пинг. Если он пропал — сессию закроет сервер по
+   последнему пингу, и в среднее не попадут часы висящей вкладки. */
+const SESSION_PING_MS = 30000;
+let sessionTimer = null;
+
+function sessionEvent(name, beacon) {
+  if (DEMO) return;
+  const url = "api/session/" + name;
+  // На выходе обычный fetch успевает не всегда — beacon переживает закрытие страницы
+  if (beacon && navigator.sendBeacon) {
+    navigator.sendBeacon(url, new Blob([JSON.stringify({initData: tg.initData})],
+                                       {type: "application/json"}));
+    return;
+  }
+  api("session/" + name, "POST").catch(() => {});
+}
+
+function startSessionTracking() {
+  sessionEvent("open");
+  clearInterval(sessionTimer);
+  sessionTimer = setInterval(() => {
+    if (document.visibilityState === "visible") sessionEvent("ping");
+  }, SESSION_PING_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") sessionEvent("close", true);
+    else sessionEvent("open");
+  });
+  window.addEventListener("pagehide", () => sessionEvent("close", true));
+  if (tg && tg.onEvent) tg.onEvent("webAppClose", () => sessionEvent("close", true));
+}
+
 function demoPay() {
   const D = DEMO_DB, map = {p200: [200, 350], p500: [500, 800], p1000: [1000, 1400]}, v = map[D.pending] || [500, 800];
   D.balance += v[0];
