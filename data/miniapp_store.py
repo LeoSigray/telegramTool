@@ -545,10 +545,18 @@ def session_open(tg_id: int) -> None:
 
 
 def session_ping(tg_id: int) -> None:
-    """Признак жизни: по нему закроем сессию, если приложение исчезнет без прощания."""
+    """Признак жизни. Если открытой сессии нет — начинаем новую.
+
+    Пинг означает «человек здесь», и сервер сам решает, продолжение это или новое
+    посещение: сессию мог закрыть уборщик, пока приложение было свёрнуто. Так фронту
+    не нужно угадывать, и свёрнутое на минуту окно не превращается в две сессии.
+    """
     with _conn() as c:
-        c.execute("UPDATE mini_users SET session_ping_at=? WHERE tg_id=? AND session_open_at IS NOT NULL",
-                  (_now(), tg_id))
+        cur = c.execute("UPDATE mini_users SET session_ping_at=? WHERE tg_id=? AND session_open_at IS NOT NULL",
+                        (_now(), tg_id))
+        if not cur.rowcount:
+            c.execute("UPDATE mini_users SET session_open_at=?, session_ping_at=? WHERE tg_id=?",
+                      (_now(), _now(), tg_id))
 
 
 def session_close(tg_id: int) -> None:

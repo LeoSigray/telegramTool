@@ -513,14 +513,32 @@ assert f["sessions_count"] == 1, f
 assert f["avg_session_s"] is not None and f["avg_session_s"] >= 0, f
 print("funnel: сессия закрывается и усредняется: ok")
 
+# пинг при свёрнутом окне не должен плодить сессии: это продолжение, а не новое посещение
+was = store.funnel(55, PACK_IDS)["sessions_count"]
+store.session_open(55)
+for _ in range(5):
+    store.session_ping(55)          # как будто человек переключался между чатами
+store.session_close(55)
+assert store.funnel(55, PACK_IDS)["sessions_count"] == was + 1, \
+    "пять пингов внутри одного посещения — это одна сессия"
+print("funnel: пинги не плодят сессии: ok")
+
+# а вот пинг без открытой сессии начинает новую: уборщик мог закрыть её, пока сворачивали
+was = store.funnel(55, PACK_IDS)["sessions_count"]
+store.session_ping(55)
+store.session_close(55)
+assert store.funnel(55, PACK_IDS)["sessions_count"] == was + 1, "вернулся после уборщика — новая сессия"
+print("funnel: возврат после уборщика открывает новую: ok")
+
 # брошенная сессия закрывается уборщиком по последнему пингу, а не «до сейчас»
+was = store.funnel(55, PACK_IDS)["sessions_count"]
 store.session_open(55)
 with store._conn() as _c:
     _c.execute("UPDATE mini_users SET session_open_at=?, session_ping_at=? WHERE tg_id=55",
                ("2020-01-01T00:00:00+00:00", "2020-01-01T00:00:30+00:00"))
 assert store.close_stale_sessions() >= 1, "молча брошенная сессия обязана закрыться"
 f = store.funnel(55, PACK_IDS)
-assert f["sessions_count"] == 2, f
+assert f["sessions_count"] == was + 1, f
 assert f["avg_session_s"] < 60, f"длительность берётся до последнего пинга, а не до сейчас: {f}"
 print("funnel: брошенная сессия не раздувает среднее: ok")
 

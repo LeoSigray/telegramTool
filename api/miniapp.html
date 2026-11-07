@@ -2054,8 +2054,10 @@ function startSessionTracking() {
     if (document.visibilityState === "visible") sessionEvent("ping");
   }, SESSION_PING_MS);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") sessionEvent("close", true);
-    else sessionEvent("open");
+    // Сворачивание — ещё не закрытие: человек часто возвращается через секунды, а
+    // close/open на каждое переключение накручивал по сессии на каждый взгляд в чат.
+    // Пинг продолжит ту же сессию, а если он пропадёт надолго, её закроет уборщик.
+    if (document.visibilityState === "visible") sessionEvent("ping");
   });
   window.addEventListener("pagehide", () => sessionEvent("close", true));
   if (tg && tg.onEvent) tg.onEvent("webAppClose", () => sessionEvent("close", true));
