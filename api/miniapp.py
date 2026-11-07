@@ -318,6 +318,27 @@ async def session_event(event: str, request: Request) -> dict:
     return {"ok": True}
 
 
+@router.get("/api/service")
+def service_state() -> dict:
+    """Жив ли сервис и не идут ли техработы. Фронт опрашивает это раз в 15 секунд.
+
+    Без авторизации намеренно: это проверка доступности, секретов она не отдаёт, а
+    401 из-за просроченной подписи фронт принял бы за аварию и показал бы баннер
+    техработ там, где всё в порядке.
+
+    Режим включается без перезапуска — ключом maintenance в mini_state, либо
+    переменной MINIAPP_MAINTENANCE на время плановых работ.
+    """
+    flag = (os.getenv("MINIAPP_MAINTENANCE", "") or "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return {"maintenance": True, "reason": "env"}
+    try:
+        state = (store.state_get("maintenance") or "").strip().lower()
+    except Exception:  # noqa: BLE001 — если база недоступна, это и есть авария
+        return {"maintenance": True, "reason": "db"}
+    return {"maintenance": state in ("1", "true", "yes", "on")}
+
+
 @router.get("/api/stats")
 def my_stats(user: dict = Depends(current_user)) -> dict:
     """Воронка покупателя: нажатия, бесплатная проба, покупки, время до отправки, сессии."""

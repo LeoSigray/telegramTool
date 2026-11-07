@@ -573,4 +573,28 @@ f = store.funnel(66, PACK_IDS)
 assert f["replied_leads"] == 1 and f["replies_total"] == 3, f"чужой ответ не наш: {f}"
 print("replies: чужие и пустые имена игнорируются: ok")
 
+
+
+
+# ── Проверка доступности сервиса: фронт показывает баннер техработ по ней ────
+# Маршрута /api/service не было, фронт получал 404 и бессрочно показывал
+# «Ведутся технические работы» при полностью живом сервисе.
+import os as _os                                            # noqa: E402
+from api import miniapp as _mapp                            # noqa: E402
+
+_os.environ.pop("MINIAPP_MAINTENANCE", None)
+store.state_set("maintenance", "0")
+assert _mapp.service_state() == {"maintenance": False}, _mapp.service_state()
+
+store.state_set("maintenance", "1")
+assert _mapp.service_state()["maintenance"] is True, "флаг в базе включает режим"
+
+store.state_set("maintenance", "0")
+_os.environ["MINIAPP_MAINTENANCE"] = "1"
+r = _mapp.service_state()
+assert r["maintenance"] is True and r["reason"] == "env", f"переменная перекрывает базу: {r}"
+_os.environ.pop("MINIAPP_MAINTENANCE", None)
+assert _mapp.service_state()["maintenance"] is False
+print("service: режим техработ управляется базой и переменной: ok")
+
 print("ALL OK")
