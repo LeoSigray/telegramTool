@@ -18,6 +18,7 @@ data/inbox.py — хранилище «платформы диалогов».
   • inbox_messages      — лента сообщений диалога
 """
 
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -209,6 +210,9 @@ def _insert_message(c: sqlite3.Connection, *, conv_id: int, tg_id: int | None,
 #  Приём и отправка
 # ──────────────────────────────────────────────────────────────────────────
 
+log = logging.getLogger("telegramTool.inbox")
+
+
 def record_inbound(peer_id: str, account: str, *, tg_id: int | None,
                    text: str | None, sent_at: str | None,
                    username: str | None = None, first_name: str | None = None,
@@ -235,7 +239,16 @@ def record_inbound(peer_id: str, account: str, *, tg_id: int | None,
                                    error=None, via="telegram", sent_at=stamp)
         if inserted is not None:
             _touch_last(c, cid, text=text, sent_at=stamp, from_me=False, bump_unread=True)
-        return cid, (not existed)
+    if inserted is not None:
+        # Ответ — главный признак, что лид был живой: по нему видно, работает ли текст и
+        # стоит ли покупателю платить дальше. Считаем вне транзакции inbox: статистика
+        # покупателя живёт в своей таблице, и её срыв не должен терять само сообщение.
+        try:
+            from data import miniapp_store as _mini
+            _mini.note_reply(username=username, peer_id=peer_id)
+        except Exception as e:  # noqa: BLE001 — счётчик не важнее доставки ответа
+            log.warning("[inbox] не удалось учесть ответ в статистике: %s", e)
+    return cid, (not existed)
 
 
 def record_outbound(conv_id: int, *, account: str, text: str | None,

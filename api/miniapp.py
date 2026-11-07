@@ -345,6 +345,8 @@ def ops_stats(user: dict = Depends(current_user)) -> dict:
             "taps": sum(r["taps_total"] or 0 for r in rows),
             "purchases": sum(r["purchases_count"] or 0 for r in rows),
             "packs": [sum(r["packs"][i] if i < len(r["packs"]) else 0 for r in rows) for i in range(len(ids))],
+            "replied_leads": sum(r["replied_leads"] or 0 for r in rows),
+            "replies_total": sum(r["replies_total"] or 0 for r in rows),
             "avg_send_s": avg([r["avg_send_s"] for r in rows if r["avg_send_s"] is not None]),
             "avg_session_s": avg([r["avg_session_s"] for r in rows if r["avg_session_s"] is not None]),
         },

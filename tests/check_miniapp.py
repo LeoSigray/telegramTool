@@ -532,4 +532,45 @@ for k in ("taps_total", "purchases_count", "packs", "first_purchase"):
     assert before[k] == after[k], f"пересчёт разошёлся по {k}: {before[k]} -> {after[k]}"
 print("funnel: пересчёт из таблиц сходится: ok")
 
+
+
+
+# ── Ответы лидов: отклик — главный признак, что лид был живой ───────────────
+from data import inbox as _inbox                            # noqa: E402
+
+store.upsert_user(66, username="r", first_name="R", last_name=None)
+store.set_channel_building(66, "shop", "channel")
+store.set_channel_ready(66, "Привет")
+store.claim_gift(66, 10)
+store.add_leads(66, [{"username": "talker", "tier": "A", "interest": 9},
+                     {"username": "silent", "tier": "B", "interest": 5}])
+store.mark_lead(store.next_lead(66)["id"], "sent")
+store.mark_lead(store.next_lead(66)["id"], "sent")
+
+f = store.funnel(66, PACK_IDS)
+assert f["replied_leads"] == 0 and f["replies_total"] == 0, f
+assert f["reply_rate"] == 0.0, f"два отправленных, ответов нет: {f['reply_rate']}"
+
+# первый ответ от болтливого лида
+store.note_reply(username="talker", peer_id=1)
+f = store.funnel(66, PACK_IDS)
+assert f["replied_leads"] == 1 and f["replies_total"] == 1, f
+assert f["reply_rate"] == 0.5, f"один из двух ответил: {f['reply_rate']}"
+
+# он написал ещё дважды — реплик больше, а ответивших людей столько же
+store.note_reply(username="talker", peer_id=1)
+store.note_reply(username="@TALKER", peer_id=1)
+f = store.funnel(66, PACK_IDS)
+assert f["replied_leads"] == 1, f"один разговорчивый не должен выглядеть как трое: {f}"
+assert f["replies_total"] == 3, f
+assert f["reply_rate"] == 0.5, f
+print("replies: откликнувшиеся и реплики считаются раздельно: ok")
+
+# ответ от чужого или неизвестного имени ничего не ломает
+store.note_reply(username="nobody_here", peer_id=2)
+store.note_reply(username=None, peer_id=3)
+f = store.funnel(66, PACK_IDS)
+assert f["replied_leads"] == 1 and f["replies_total"] == 3, f"чужой ответ не наш: {f}"
+print("replies: чужие и пустые имена игнорируются: ok")
+
 print("ALL OK")

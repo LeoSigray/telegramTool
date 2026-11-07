@@ -161,7 +161,11 @@ def init_store() -> None:
                           ("sessions_count", "INTEGER NOT NULL DEFAULT 0"),
                           ("session_total_s", "REAL NOT NULL DEFAULT 0"),
                           ("session_open_at", "TEXT"),                        # текущая незакрытая сессия
-                          ("session_ping_at", "TEXT")):                       # последний признак жизни
+                          ("session_ping_at", "TEXT"),                        # последний признак жизни
+                          # Ответы: сколько людей откликнулось и сколько реплик всего.
+                          # Первое — мера качества лидов и текста, второе — глубины диалогов.
+                          ("replied_leads", "INTEGER NOT NULL DEFAULT 0"),
+                          ("replies_total", "INTEGER NOT NULL DEFAULT 0")):
             if col not in have:
                 c.execute(f"ALTER TABLE mini_users ADD COLUMN {col} {kind}")
         if "op_read" not in {r["name"] for r in c.execute("PRAGMA table_info(mini_support)")}:
@@ -172,6 +176,12 @@ def init_store() -> None:
         # идёт как шёл, без кнопок, иначе мы бы дёргали его на каждом нажатии.
         if "stalled_at" not in {r["name"] for r in c.execute("PRAGMA table_info(mini_taps)")}:
             c.execute("ALTER TABLE mini_taps ADD COLUMN stalled_at TEXT")
+        # Отметка на лиде нужна, чтобы второй и третий ответ того же человека не считались
+        # новым откликом: иначе один разговорчивый лид выглядел бы как трое заинтересованных.
+        have_l = {r["name"] for r in c.execute("PRAGMA table_info(mini_leads)")}
+        for col, kind in (("replied", "INTEGER NOT NULL DEFAULT 0"), ("replied_at", "TEXT")):
+            if col not in have_l:
+                c.execute(f"ALTER TABLE mini_leads ADD COLUMN {col} {kind}")
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -577,6 +587,26 @@ def close_stale_sessions() -> int:
         return len(rows)
 
 
+def note_reply(*, username: str | None, peer_id: int | str | None) -> None:
+    """Лид ответил: +1 к входящим его покупателю, и если это первый ответ от него — +1 к ответившим.
+
+    Ищем владельца по имени лида: именно по нему мы и писали. Второй счётчик важнее
+    первого — он показывает, сколько людей вообще откликнулось, а не сколько реплик
+    написал один разговорчивый.
+    """
+    uname = (username or "").lstrip("@").lower()
+    if not uname:
+        return
+    with _conn() as c:
+        rows = c.execute("SELECT tg_id, id, replied FROM mini_leads WHERE lower(username)=?",
+                         (uname,)).fetchall()
+        for r in rows:
+            c.execute("UPDATE mini_users SET replies_total=replies_total+1 WHERE tg_id=?", (r["tg_id"],))
+            if not r["replied"]:
+                c.execute("UPDATE mini_leads SET replied=1, replied_at=? WHERE id=?", (_now(), r["id"]))
+                c.execute("UPDATE mini_users SET replied_leads=replied_leads+1 WHERE tg_id=?", (r["tg_id"],))
+
+
 def all_users() -> list[dict]:
     """Все покупатели — для сводной аналитики оператора."""
     with _conn() as c:
@@ -606,10 +636,26 @@ def funnel(tg_id: int, pack_ids: list[str] | None = None) -> dict:
         "packs": [int(bought.get(p, 0)) for p in ids],
         "packs_by_id": {p: int(bought.get(p, 0)) for p in ids},
         "first_sent_at": d.get("first_sent_at"),
+        "replied_leads": d.get("replied_leads") or 0,
+        "replies_total": d.get("replies_total") or 0,
         "avg_send_s": round((d["send_time_total_s"] / d["send_time_n"]), 1) if d.get("send_time_n") else None,
         "sessions_count": d.get("sessions_count") or 0,
         "avg_session_s": round((d["session_total_s"] / d["sessions_count"]), 1) if d.get("sessions_count") else None,
+        "reply_rate": _reply_rate(tg_id, d.get("replied_leads") or 0),
     }
+
+
+def _reply_rate(tg_id: int, replied: int) -> float | None:
+    """Доля ответивших считается от ДОСТАВЛЕННЫХ сообщений, а не от нажатий.
+
+    Нажатие могло вообще не дойти до человека — сгореть на ослепшем аккаунте или
+    висеть в очереди. Делить на нажатия значило бы занижать качество лидов нашими
+    собственными сбоями.
+    """
+    with _conn() as c:
+        sent = c.execute("SELECT COUNT(*) n FROM mini_leads WHERE tg_id=? AND status='sent'",
+                         (tg_id,)).fetchone()["n"]
+    return round(replied / sent, 3) if sent else None
 
 
 def recompute_funnel(tg_id: int | None = None) -> int:
@@ -643,12 +689,27 @@ def recompute_funnel(tg_id: int | None = None) -> int:
                 if dt >= 0:
                     total_s += dt
                     n += 1
+            # ответы восстанавливаем из переписки: входящие в диалогах с его лидами
+            rep = c.execute(
+                "SELECT COUNT(*) people, COALESCE(SUM(nin),0) msgs FROM ("
+                "  SELECT (SELECT COUNT(*) FROM inbox_messages im"
+                "          WHERE im.conversation_id=ic.id AND im.direction='in'"
+                "            AND im.status!='deleted') nin"
+                "  FROM inbox_conversations ic"
+                "  JOIN mini_leads ml ON lower(ltrim(ic.username,'@'))=lower(ml.username)"
+                "  WHERE ml.tg_id=?) WHERE nin > 0", (uid,)).fetchone()
             c.execute("UPDATE mini_users SET taps_total=?, free_spent=?, purchases_count=?, packs_bought=?,"
                       " first_purchase=?, first_purchase_at=?, first_sent_at=?,"
-                      " send_time_total_s=?, send_time_n=? WHERE tg_id=?",
+                      " send_time_total_s=?, send_time_n=?, replied_leads=?, replies_total=? WHERE tg_id=?",
                       (taps, free, len(pays), json.dumps(packs, ensure_ascii=False),
                        1 if pays else 0, first_pay,
-                       sent[0]["done_at"] if sent else None, total_s, n, uid))
+                       sent[0]["done_at"] if sent else None, total_s, n,
+                       rep["people"] or 0, rep["msgs"] or 0, uid))
+            # и отмечаем сами лиды, чтобы повторная реплика не считалась новым откликом
+            c.execute("UPDATE mini_leads SET replied=1 WHERE tg_id=? AND lower(username) IN ("
+                      "  SELECT lower(ltrim(ic.username,'@')) FROM inbox_conversations ic"
+                      "  WHERE EXISTS (SELECT 1 FROM inbox_messages im WHERE im.conversation_id=ic.id"
+                      "                AND im.direction='in' AND im.status!='deleted'))", (uid,))
         return len(ids)
 
 
