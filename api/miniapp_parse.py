@@ -151,14 +151,25 @@ async def find_people(user: dict, need: int) -> int:
         name, client = picked
         tried.add(name)
         store.state_set(f"parse_used:{name}", str(time.time()))
-        # дешёвая проверка: если аккаунт уже упёрся в лимит на @имена, весь поиск на нём пустой
+        # Дешёвая проверка аккаунта перед поиском. Эталон — официальный @telegram: он
+        # существует всегда, поэтому «нет такого имени» означает не мёртвое имя, а
+        # ослепший аккаунт. Такой отдаёт «No user has X as username» про любое имя, и
+        # поиск завершается «успешно» с нулём людей: на прогоне по окнам так отпали все
+        # 42 найденных канала, включая живые @itokna и @satels_okna. Проверять канал
+        # покупателя для этого нельзя — его может не существовать по-настоящему.
         try:
-            await client(ResolveUsernameRequest(user["channel"] if user.get("channel_kind") == "channel" else "telegram"))
+            await client(ResolveUsernameRequest("telegram"))
         except FloodWaitError as e:
             _mark_flood(name, e.seconds)
             continue
-        except Exception:  # noqa: BLE001 — канал не нашёлся и т. п.: это не про лимит, ищем дальше
-            pass
+        except Exception as e:  # noqa: BLE001
+            log.warning("[miniapp-parse] %s не видит даже @telegram (%s) — аккаунт ослеп, "
+                        "отправляем отдыхать и берём другой", name, type(e).__name__)
+            try:
+                health.on_error(name, "resolve_blocked")
+            except Exception:  # noqa: BLE001 — не смогли записать, но искать на нём всё равно нельзя
+                pass
+            continue                      # name уже в tried: следующий заход возьмёт другой аккаунт
 
         params = _params(user, need - got)
 

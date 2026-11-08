@@ -98,6 +98,11 @@ async def _safe(coro_factory, params, log, what: str):
         return None
 
 
+# Столько «нет такого имени» подряд — и аккаунт считается ослепшим. Пять: у живого
+# аккаунта столько мёртвых имён подряд почти не бывает, а слепой отдаёт их все.
+BLIND_AFTER = 5
+
+
 def _size_score(members: int) -> float:
     return 0.0 if members <= 0 else min(1.0, math.log10(max(members, 1)) / 5.0)
 
@@ -169,6 +174,13 @@ class DiscoveryState:
         self.names_resolved = 0           # сколько @имён резолвили за запуск
         self.names_skipped = 0            # сколько пропустили по кешу (мёртвые)
         self.own_names: set = set()       # имена каналов/чатов самого клиента (узнаём до резолва)
+        # Ослепший аккаунт отвечает «No user has X as username» про живые каналы: на прогоне
+        # по окнам так отпали все 42 имени, включая @itokna и @satels_okna, которые видят
+        # восемь других аккаунтов. Поиск отработал «успешно» и нашёл ноль людей, а покупатель
+        # увидел «не нашли подходящего человека» и ушёл. Считаем такие ответы, чтобы отличить
+        # мёртвые имена от ослепшего аккаунта.
+        self.name_misses = 0              # подряд имён, которых аккаунт «не видит»
+        self.blind = False                # аккаунт ослеп: имена отпадают все до единого
 
     def add_seed(self, src, ent, probe, score: float, depth: int) -> None:
         cur = self.seeds.get(src.chat_id)
@@ -605,7 +617,21 @@ async def _resolve(client, name: str, params, log, store, state) -> object | Non
         return None                       # уже проверяли: такого имени нет
     ent = await _safe(lambda: client.get_entity(known or u), params, log, f"@{u}")
     state.names_resolved += 1
-    store.remember_name(u, getattr(ent, "id", 0) if ent is not None else 0)
+    if ent is None:
+        # Не запоминаем имя мёртвым, пока аккаунт под подозрением: иначе ослепший
+        # аккаунт отравит кеш, и живые каналы будут считаться несуществующими во всех
+        # будущих запусках, уже с нормальных аккаунтов.
+        state.name_misses += 1
+        if state.name_misses >= BLIND_AFTER and not state.blind:
+            state.blind = True
+            log.error("источники", f"аккаунт не видит ни одного имени ({state.name_misses} подряд) — "
+                                   f"похоже, ослеп: ограничение на резолв. Имена в кеш не пишем")
+        if not state.blind:
+            store.remember_name(u, 0)
+        return None
+    state.name_misses = 0                 # увидел хоть одно имя — значит зрячий
+    state.blind = False
+    store.remember_name(u, getattr(ent, "id", 0))
     return ent
 
 

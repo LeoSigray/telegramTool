@@ -2307,3 +2307,43 @@ class YouTubeSearchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BlindResolveTests(unittest.TestCase):
+    """Ослепший аккаунт не должен отравлять кеш имён и обнулять поиск.
+
+    Живой прогон по нише «остекление, ремонт окон»: YouTube нашёл 8 оконных каналов,
+    аккаунт 18325147520 ответил «No user has X as username» про все 42 имени подряд,
+    поиск закончился «успешно» с нулём людей. Те же имена восемь других аккаунтов
+    читают без проблем — значит дело не в именах.
+    """
+
+    def test_blind_account_does_not_poison_name_cache(self):
+        from parsing.smart.discovery import BLIND_AFTER, DiscoveryState
+
+        state = DiscoveryState(exclude=set())
+        remembered = []
+
+        # имитируем ответы ослепшего аккаунта: ни одного имени не видит
+        for i in range(BLIND_AFTER + 3):
+            state.name_misses += 1
+            if state.name_misses >= BLIND_AFTER:
+                state.blind = True
+            if not state.blind:
+                remembered.append(f"name{i}")
+
+        self.assertTrue(state.blind, "после серии промахов аккаунт обязан считаться ослепшим")
+        self.assertEqual(len(remembered), BLIND_AFTER - 1,
+                         f"в кеш попало {len(remembered)} имён — после распознания слепоты писать нельзя")
+
+    def test_one_success_clears_suspicion(self):
+        """Зрячий аккаунт с парой мёртвых имён не должен попасть под подозрение."""
+        from parsing.smart.discovery import BLIND_AFTER, DiscoveryState
+
+        state = DiscoveryState(exclude=set())
+        state.name_misses = BLIND_AFTER - 1       # почти порог
+        # имя нашлось — счётчик обнуляется
+        state.name_misses = 0
+        state.blind = False
+        self.assertFalse(state.blind)
+        self.assertEqual(state.name_misses, 0, "успешный резолв снимает подозрение")
