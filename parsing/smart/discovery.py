@@ -150,8 +150,8 @@ def build_queries(profile, params) -> list:
 class DiscoveryState:
     """Состояние поиска между раундами: кандидаты, использованные запросы, счётчики."""
 
-    def __init__(self, exclude: set, own_ent=None) -> None:
-        self.pool = _Pool(exclude)
+    def __init__(self, exclude: set, own_ent=None, geo_terms: list | None = None) -> None:
+        self.pool = _Pool(exclude, geo_terms)
         self.own_ent = own_ent
         self.used: set = set()            # использованные запросы (в нижнем регистре)
         self.used_phrases: set = set()    # использованные фразы покупателя
@@ -199,7 +199,7 @@ class DiscoveryState:
                       key=lambda z: -z["score"])
 
 
-async def start_discovery(client, params, own_ids: set, log) -> DiscoveryState:
+async def start_discovery(client, params, own_ids: set, log, geo_terms: list | None = None) -> DiscoveryState:
     from telethon.tl.functions.channels import GetFullChannelRequest
 
     exclude: set = set(own_ids)
@@ -220,18 +220,44 @@ async def start_discovery(client, params, own_ids: set, log) -> DiscoveryState:
                     own_names.add(ch.username.lower())
     except Exception as e:  # noqa: BLE001
         log.warn("источники", f"не удалось прочитать канал клиента: {str(e)[:120]}")
-    state = DiscoveryState(exclude, own_ent)
+    state = DiscoveryState(exclude, own_ent, geo_terms)
     state.own_names = own_names
+    if geo_terms:
+        log.info("источники", f"локальная ниша: берём только чаты с упоминанием места "
+                              f"({', '.join(geo_terms[:4])})")
     return state
 
 
 class _Pool:
     """Все кандидаты запуска: chat_id → (Source, entity)."""
 
-    def __init__(self, exclude: set) -> None:
+    def __init__(self, exclude: set, geo_terms: list | None = None) -> None:
         self.items: dict = {}
         self.exclude = exclude
         self.seen_usernames: set = set()
+        # Локальная ниша: берём только чаты, где место названо прямо в имени или описании.
+        # Иначе в пул попадает профильный чат ремесла (@pro_shinomontazha), и клиент из
+        # Москвы получает коллегу-мастера вместо соседа-автовладельца.
+        self.geo_terms = [t.lower() for t in (geo_terms or []) if t and t.strip()]
+        self.geo_rejected = 0
+
+    def _geo_ok(self, s, ent) -> bool:
+        if not self.geo_terms:
+            return True
+        hay = " ".join(str(x or "") for x in
+                       (s.title, s.username, getattr(ent, "about", ""), getattr(s, "about", "")))
+        # «Автомобилисты Москвы» и «чат Москва» — одно и то же место, поэтому сравниваем
+        # по леммам, а не по подстроке: иначе падежи в названиях чатов рубят годные чаты.
+        from .textproc import lemmas
+
+        words = set(lemmas(hay))
+        low = hay.lower()
+        for term in self.geo_terms:
+            if term in low:                                   # латиница и имена: moskva, spb
+                return True
+            if set(lemmas(term)) <= words and set(lemmas(term)):
+                return True
+        return False
 
     def add(self, ent, via: str):
         s = source_from_entity(ent)
@@ -239,6 +265,9 @@ class _Pool:
             return None
         if s.chat_id in self.items:
             self.items[s.chat_id][0].add_via(via)
+            return None
+        if not self._geo_ok(s, ent):
+            self.geo_rejected += 1
             return None
         s.add_via(via)
         self.items[s.chat_id] = (s, ent)
@@ -773,11 +802,15 @@ async def discover_round(client, profile, params, store, lex, log, state: Discov
 
         # поиск через интернет: статьи и подборки, где люди советуют чаты
         n_search = 0
-        web_ok = params.web_search
+        # Локальная ниша: YouTube и статьи ведут в тематические чаты про ремесло, а клиент
+        # сидит в чате своего города. Шиномонтажу так достался @pro_shinomontazha — чат
+        # мастеров, где нашёлся коллега с балансиром вместо автовладельца. Ищем прямо
+        # по названиям в Telegram: там город в имени чата и виден.
+        web_ok = params.web_search and not getattr(profile, "geo", "")
         if web_ok:
             n_web = await _web_candidates(client, queries, pool, params, store, log, state)
             web_ok = n_web is not None
-        if params.web_search and not web_ok:
+        if params.web_search and not web_ok and not getattr(profile, "geo", ""):
             log.warn("источники", f"{'YouTube' if params.source == 'youtube' else 'поиск в интернете'} "
                                   "недоступен — в этом раунде ищем по названиям в Telegram")
             from .profile import _fallback_queries

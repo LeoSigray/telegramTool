@@ -2378,3 +2378,83 @@ class SellerFilterTests(unittest.TestCase):
                        "сколько стоит замена стеклопакета"):
             self.assertFalse(lex.competitor.find(lemmas(phrase)),
                              f"покупателя приняли за конкурента: {phrase!r}")
+
+
+class LocalNicheTests(unittest.TestCase):
+    """Локальная ниша: клиент сидит в чате своего города, а не в чате про ремесло.
+
+    Шиномонтажу из Москвы искали людей в @pro_shinomontazha — профессиональном чате
+    мастеров. Оттуда пришёл коллега с цитатой «у меня тоже есть итальянский балансир»
+    вместо соседа-автовладельца. В каталоге при этом 0 чатов с упоминанием Москвы из 2756.
+    """
+
+    @staticmethod
+    def _chat(cid, title, username=None, about=""):
+        from telethon.tl.types import Channel
+
+        ch = Channel(id=cid, title=title, photo=None, date=None, creator=False, left=False,
+                     broadcast=False, verified=False, megagroup=True, restricted=False,
+                     signatures=False, min=False, scam=False, has_link=False,
+                     has_geo=False, slowmode_enabled=False, username=username,
+                     participants_count=500)
+        ch.about = about          # описание приходит отдельным запросом, в тесте проставляем руками
+        return ch
+
+    def test_pool_keeps_only_chats_that_name_the_place(self):
+        from parsing.smart.discovery import _Pool
+
+        pool = _Pool(exclude=set(), geo_terms=["москва", "сокольники"])
+        self.assertIsNotNone(pool.add(self._chat(1, "Сокольники | Соседи"), "поиск"),
+                             "чат района обязан пройти")
+        self.assertIsNotNone(pool.add(self._chat(2, "Автомобилисты Москвы"), "поиск"),
+                             "городской чат обязан пройти")
+        self.assertIsNone(pool.add(self._chat(3, "PRO Шиномонтаж",
+                                              about="Всё о шиномонтаже и оборудовании"), "поиск"),
+                          "профессиональный чат без места брать нельзя")
+        self.assertEqual(pool.geo_rejected, 1)
+        self.assertEqual(len(pool.items), 2)
+
+    def test_place_in_description_is_enough(self):
+        from parsing.smart.discovery import _Pool
+
+        pool = _Pool(exclude=set(), geo_terms=["москва"])
+        self.assertIsNotNone(pool.add(self._chat(1, "Барахолка", about="Объявления по Москве"), "поиск"),
+                             "место в описании тоже считается")
+
+    def test_place_in_username_is_enough(self):
+        from parsing.smart.discovery import _Pool
+
+        pool = _Pool(exclude=set(), geo_terms=["москва", "moskva"])
+        self.assertIsNotNone(pool.add(self._chat(1, "Барахолка", username="baraholka_moskva"), "поиск"),
+                             "место в имени чата тоже считается")
+
+    def test_without_geo_nothing_changes(self):
+        """Обычная ниша по каналу работает как раньше: никакого фильтра по месту."""
+        from parsing.smart.discovery import _Pool
+
+        pool = _Pool(exclude=set())
+        self.assertIsNotNone(pool.add(self._chat(1, "PRO Шиномонтаж"), "поиск"))
+        self.assertEqual(pool.geo_rejected, 0)
+
+    def test_queries_put_place_first(self):
+        from parsing.smart.profile import Profile, _with_geo
+
+        prof = Profile(channel="topic-1", geo="Москва", geo_terms=["Москва", "Сокольники"],
+                       product_keywords=["шиномонтаж", "шины"])
+        out = _with_geo(["шиномонтаж оборудование", "чат мастеров"], prof, limit=30)
+
+        self.assertTrue(any("москва" in q.lower() for q in out[:6]),
+                        f"городские запросы должны идти первыми: {out[:6]}")
+        self.assertIn("шиномонтаж оборудование", out, "тематические остаются запасным слоем")
+        self.assertLess(out.index("Москва чат"), out.index("шиномонтаж оборудование"),
+                        "место важнее темы для локальной ниши")
+
+    def test_youtube_is_off_for_local_niche(self):
+        """YouTube ведёт в тематические чаты про ремесло — для локальной ниши он вреден."""
+        import inspect
+
+        from parsing.smart import discovery
+
+        src = inspect.getsource(discovery.discover_round)
+        self.assertIn('web_ok = params.web_search and not getattr(profile, "geo", "")', src,
+                      "при локальной нише внешний поиск должен отключаться")

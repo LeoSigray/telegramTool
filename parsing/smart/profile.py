@@ -45,6 +45,8 @@ class Profile:
     keywords_checked: bool = False                         # слова и фразы проверены поиском в Telegram
     keyword_hits: dict = field(default_factory=dict)       # слово/фраза → сколько сообщений нашлось
     languages: list = field(default_factory=list)          # языки покупателей
+    geo: str = ""                                          # город или район: ниша привязана к месту
+    geo_terms: list = field(default_factory=list)          # как этот город называют в чатах
     posts_sample: list = field(default_factory=list)
     built_with: str = "правила"
 
@@ -158,6 +160,8 @@ _PROFILE_PROMPT = """Ниже описание и посты Telegram-канал
   "community_queries": ["до 50 запросов из 1-3 слов для поиска ЧАТОВ, где общаются ПОКУПАТЕЛИ (не продавцы): по роли покупателя, его бизнесу, площадкам и профессиональным сообществам. Пример для CRM-интегратора: чат предпринимателей, селлеры wildberries, владельцы интернет-магазинов, маркетологи чат. Запрещено называть сам товар, бренды и технологии продукта: покупатели обычно не называют так свои чаты"],
   "product_keywords": ["8-15 отдельных слов, которыми покупатель называет САМ ТОВАР или услугу, в разных написаниях (кириллицей и латиницей), например: айфон, iphone, макбук, macbook, apple, смартфоны, электроника"],
   "languages": ["коды языков покупателей, например ru"],
+  "geo": "город или район, если услуга оказывается на месте и клиенту надо приехать (шиномонтаж, салон, ремонт квартир). Пустая строка, если услуга работает по всей стране или онлайн",
+  "geo_terms": ["3-8 названий этого места, как его пишут в чатах: город, сокращения, районы, станции метро рядом. Пусто, если geo пустой"],
   "anti": ["3-8 пунктов: кого НЕ считать клиентом"],
   "seller_phrases": ["5-10 фраз, которыми в этой нише рекламируют себя исполнители-конкуренты"]
 }}"""
@@ -217,6 +221,8 @@ async def build_profile(client, params, lex: tp.Lexicon, log, use_llm: bool) -> 
             prof.anti = _clean_list(data.get("anti"), 8, 120)
             prof.seller_phrases = _clean_list(data.get("seller_phrases"), 10)
             prof.community_queries = _clean_list(data.get("community_queries"), 50, 40)
+            prof.geo = str(data.get("geo", "") or "").strip()[:60]
+            prof.geo_terms = _clean_list(data.get("geo_terms"), 8, 40)
             prof.queries_version = QUERIES_VERSION
             prof.product_keywords = _clean_list(data.get("product_keywords"), 20, 25)
             prof.languages = _clean_list(data.get("languages"), 3, 5)
@@ -351,6 +357,37 @@ async def generate_queries(prof: Profile, use_llm: bool, log, used: set, good_ti
     return out[:n]
 
 
+def _with_geo(queries: list[str], prof: Profile, limit: int) -> list[str]:
+    """Названия чатов для локальной ниши: место важнее темы.
+
+    Клиент шиномонтажа ищется не в чате про шиномонтаж, а в чате своего города или
+    района. Поэтому сначала идут чисто географические запросы («Москва чат»,
+    «Сокольники соседи»), затем тема вместе с местом, и только потом исходные
+    тематические — они остаются как запасной слой, если городских чатов не нашлось.
+    """
+    places = [p for p in ([prof.geo] + list(prof.geo_terms)) if p and p.strip()]
+    if not places:
+        return queries[:limit]
+    out: list[str] = []
+    seen: set = set()
+
+    def add(q: str) -> None:
+        q = " ".join(q.split())[:40]
+        if q and q.lower() not in seen:
+            seen.add(q.lower())
+            out.append(q)
+
+    for place in places:                       # чистая география: соседи, барахолки, объявления
+        for tail in ("чат", "соседи", "объявления", "барахолка", "флудилка", "онлайн"):
+            add(f"{place} {tail}")
+    for place in places[:3]:                   # место плюс тема услуги
+        for term in (prof.product_keywords or prof.topic_terms)[:4]:
+            add(f"{term} {place}")
+    for q in queries:                          # исходные тематические — последним слоем
+        add(q)
+    return out[:limit]
+
+
 async def ensure_query_pool(prof: Profile, use_llm: bool, log, params) -> bool:
     """Пулы на запуск: названия чатов и фразы покупателя, до queries_target / phrases_target.
     Пулы старой версии генератора пересоздаются. Возвращает True, если профиль изменился."""
@@ -371,6 +408,16 @@ async def ensure_query_pool(prof: Profile, use_llm: bool, log, params) -> bool:
         changed = True
     log.info("профиль", f"пулы запросов: названий чатов {len(prof.community_queries)}, "
                         f"фраз покупателя {len(prof.buyer_phrases)} ({'нейросеть' if use_llm else 'шаблоны'})")
+    if prof.geo:
+        # Локальная ниша: клиент сидит не в профильном чате, а в чате своего города.
+        # Шиномонтажу из Москвы мы искали людей в @pro_shinomontazha — чате мастеров,
+        # где он получил коллегу с балансиром вместо автовладельца. Поэтому к названиям
+        # чатов подмешиваем место: «чат Москва», «Соколиная Гора соседи».
+        prof.community_queries = _with_geo(prof.community_queries, prof, params.queries_target)
+        log.info("профиль", f"ниша привязана к месту: {prof.geo} "
+                            f"({', '.join(prof.geo_terms[:5]) or 'без уточнений'}); "
+                            f"ищем городские чаты, YouTube не используем")
+        changed = True
     log.info("профиль", "названия чатов: " + ", ".join(prof.community_queries[:10])
              + (" …" if len(prof.community_queries) > 10 else ""))
     log.info("профиль", "фразы покупателя: " + "; ".join(prof.buyer_phrases[:5])

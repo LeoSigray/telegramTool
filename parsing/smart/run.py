@@ -325,7 +325,9 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
             from .discovery import (build_queries, discover_round, graph_round, load_saved_seeds,
                                     start_discovery)
             from .harvest import harvest
-            state = await start_discovery(client, params, own_ids, log)
+            # для локальной ниши чаты обязаны упоминать место: город в названии или описании
+            geo_terms = ([profile.geo] + list(profile.geo_terms)) if getattr(profile, "geo", "") else None
+            state = await start_discovery(client, params, own_ids, log, geo_terms)
             state_ref["state"] = state
             if params.reset_seeds:
                 log.info("источники", f"зёрна клиента сброшены: удалено {store.clear_seeds(params.channel)}")
