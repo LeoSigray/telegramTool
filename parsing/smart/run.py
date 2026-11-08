@@ -530,9 +530,34 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
                 cached["final"], cached["read"] = await final_pass(), len(read)
             return cached["final"]
 
-        def hand_over(final: dict) -> None:
+        async def vet_before_handover(fresh: list) -> list:
+            """Последняя проверка перед отдачей: не продавец ли это.
+
+            LLM размечает роль только у верхушки списка (llm_budget × llm_batch), потому что
+            проверять все тысячи кандидатов дорого. Но отдаём мы не верхушку: при низком
+            пороге интереса наверх всплывает и хвост. Так шиномонтажнику ушёл коллега с
+            цитатой «у меня тоже есть итальянский балансир» — интерес 0.3, в верхушку он не
+            попал и проверку миновал. Отдаваемых единицы, поэтому проверить их поимённо дёшево.
+            """
+            if judge is None or not fresh:
+                return fresh
+            # у судьи свой кеш: уже проверенных он не спросит у нейросети повторно
+            extra = await judge.judge([(c.msg.key, c.msg.text, c.post_text) for c in fresh])
+            kept = []
+            for c in fresh:
+                v = extra.get(c.msg.key)
+                if v is not None and getattr(v, "role", "") == "seller":
+                    who = getattr(getattr(c, "author", None), "username", None) or c.msg.sender_id
+                    log.info("отдача", f"не отдаём @{who}: продавец той же услуги (LLM), "
+                                       f"интерес {getattr(c, 'interest', 0):.1f}")
+                    continue
+                kept.append(c)
+            return kept
+
+        async def hand_over(final: dict) -> None:
             """Отдаёт вызывающему тех, кто прошёл все проверки и ещё не был отдан."""
             fresh = [c for c in final["result"] if c.msg.sender_id not in sent_ids]
+            fresh = await vet_before_handover(fresh)
             if not fresh:
                 return
             sent_ids.update(c.msg.sender_id for c in fresh)
@@ -549,7 +574,7 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
             if on_found is not None and have > checked:
                 # по правилам кто-то уже подходит: проверяем по-настоящему и отдаём сразу
                 checked = have
-                hand_over(await checked_pass())
+                await hand_over(await checked_pass())
                 if len(sent_ids) >= params.people:
                     break
             if have >= goal and on_found is None:
@@ -564,7 +589,7 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
             log.info("сбор", f"после финальных проверок не хватает людей — дочитали волну {rounds}")
             final = await checked_pass()
             if on_found is not None:
-                hand_over(final)
+                await hand_over(final)
 
         # статусы источников: мусор по содержимому, непрочитанные из очереди
         filter_sources({s.chat_id: s for s in read}, final["messages"], final["authors"], lex,
@@ -585,7 +610,7 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
 
         result, reserve, no_u = final["result"], final["reserve"], final["no_u"]
         if on_found is not None:
-            hand_over(final)
+            await hand_over(final)
         if not params.offline:
             from collections import Counter
             per_src = Counter(c.msg.source_id for c in result)

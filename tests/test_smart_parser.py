@@ -2347,3 +2347,34 @@ class BlindResolveTests(unittest.TestCase):
         state.blind = False
         self.assertFalse(state.blind)
         self.assertEqual(state.name_misses, 0, "успешный резолв снимает подозрение")
+
+
+class SellerFilterTests(unittest.TestCase):
+    """Коллега по ремеслу — не клиент, писать ему нельзя.
+
+    Шиномонтажнику ушёл другой шиномонтажник с цитатой «у меня тоже есть итальянский
+    балансир»: интерес 0.3, в верхушку для LLM он не попал, а словарь конкурентов его
+    не ловит — PhraseMatcher не находит фразу в середине реплики, и расширять словарь
+    бесполезно: на заказчике «нужно разместить заведение, напишите в личку» он даёт
+    ложное срабатывание. Поэтому роль определяет нейросеть, а правило ниже только
+    фиксирует, что словарь для этой задачи не годится.
+    """
+
+    def test_lexicon_alone_cannot_catch_professionals(self):
+        from parsing.smart.textproc import Lexicon, lemmas
+
+        lex = Lexicon()
+        boast = "Не поверишь, но у меня тоже есть итальянский балансир! Прикинь!"
+        self.assertFalse(lex.competitor.find(lemmas(boast)),
+                         "если словарь начал это ловить — проверь, не ловит ли он заодно заказчиков")
+
+    def test_lexicon_must_not_catch_real_buyers(self):
+        """Заказчик, зовущий исполнителей в личку, — лучший лид, а не конкурент."""
+        from parsing.smart.textproc import Lexicon, lemmas
+
+        lex = Lexicon()
+        for phrase in ("подскажите, кроссовки Sprandi стоит ли брать для повседневной носки",
+                       "кто делал шиномонтаж в москве, посоветуйте",
+                       "сколько стоит замена стеклопакета"):
+            self.assertFalse(lex.competitor.find(lemmas(phrase)),
+                             f"покупателя приняли за конкурента: {phrase!r}")
