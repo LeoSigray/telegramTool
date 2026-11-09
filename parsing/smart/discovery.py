@@ -123,7 +123,12 @@ def build_queries(profile, params) -> list:
     """Полный пул запросов для поиска по названиям, в порядке использования:
     короткие (1–2 слова) запросы профиля → их отдельные слова → длинные → «… чат»."""
     base = list(profile.community_queries) or list(GENERIC_B2B)
-    base += [q for q in profile.search_queries if q not in base]
+    local = bool(getattr(profile, "geo", ""))
+    if not local:
+        # Для локальной ниши запросы под видео не годятся: из «обзор гидронагнетателей
+        # 2026» получаются отдельные слова «обзор» и «урок», а по ним находится что
+        # угодно, кроме чата нужного города.
+        base += [q for q in profile.search_queries if q not in base]
     out: list = []
     seen: set = set()
 
@@ -137,8 +142,14 @@ def build_queries(profile, params) -> list:
     long_ = [q for q in base if len(q.split()) > 2]
     for q in short:
         add(q)
-    for w in _words(base, set(tp.read_lexicon("stopwords")) | _GENERIC):
-        add(w)
+    if not local:
+        for w in _words(base, set(tp.read_lexicon("stopwords")) | _GENERIC):
+            add(w)
+    else:
+        # из географических запросов берём сами названия мест, а не все слова подряд
+        for place in ([getattr(profile, "geo", "")] + list(getattr(profile, "geo_terms", []))):
+            if place:
+                add(place)
     for q in long_:
         add(q)
     for q in short[:15]:
@@ -802,15 +813,11 @@ async def discover_round(client, profile, params, store, lex, log, state: Discov
 
         # поиск через интернет: статьи и подборки, где люди советуют чаты
         n_search = 0
-        # Локальная ниша: YouTube и статьи ведут в тематические чаты про ремесло, а клиент
-        # сидит в чате своего города. Шиномонтажу так достался @pro_shinomontazha — чат
-        # мастеров, где нашёлся коллега с балансиром вместо автовладельца. Ищем прямо
-        # по названиям в Telegram: там город в имени чата и виден.
-        web_ok = params.web_search and not getattr(profile, "geo", "")
+        web_ok = params.web_search
         if web_ok:
             n_web = await _web_candidates(client, queries, pool, params, store, log, state)
             web_ok = n_web is not None
-        if params.web_search and not web_ok and not getattr(profile, "geo", ""):
+        if params.web_search and not web_ok:
             log.warn("источники", f"{'YouTube' if params.source == 'youtube' else 'поиск в интернете'} "
                                   "недоступен — в этом раунде ищем по названиям в Telegram")
             from .profile import _fallback_queries
@@ -929,7 +936,9 @@ async def discover_round(client, profile, params, store, lex, log, state: Discov
 
     new_ids = [i for i in pool.items if i not in before]
     log.info("источники", f"раунд {state.round}: новых кандидатов {len(new_ids)} "
-                         f"(всего в пуле {len(pool.items)})")
+                         f"(всего в пуле {len(pool.items)})"
+                         + (f"; без упоминания места отсеяно {pool.geo_rejected}"
+                            if pool.geo_terms else ""))
     budget = {"checked": 0}
     passed = await _qualify(client, new_ids, pool, profile, params, store, lex, log, report,
                             budget, state) if new_ids else []

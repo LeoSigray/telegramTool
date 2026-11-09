@@ -2449,12 +2449,87 @@ class LocalNicheTests(unittest.TestCase):
         self.assertLess(out.index("Москва чат"), out.index("шиномонтаж оборудование"),
                         "место важнее темы для локальной ниши")
 
-    def test_youtube_is_off_for_local_niche(self):
-        """YouTube ведёт в тематические чаты про ремесло — для локальной ниши он вреден."""
+    def test_search_uses_place_queries_not_video_ones(self):
+        """Пул запросов для локальной ниши — географический, без видеозапросов.
+
+        Проверка идёт через build_queries: именно его порцию получает поиск чатов,
+        когда внешний поиск выключен.
+        """
+        from parsing.smart.discovery import build_queries
+        from parsing.smart.profile import Profile
+
+        prof = Profile(channel="topic-1", geo="Раменское",
+                       geo_terms=["Раменское", "Домодедово"],
+                       community_queries=["Раменское чат", "Раменское соседи"],
+                       search_queries=["обзор гидронагнетателей 2026", "урок бурения скважин"],
+                       product_keywords=["бурение скважин"])
+
+        class P:
+            pass
+
+        out = build_queries(prof, P())
+        head = [q.lower() for q in out[:8]]
+        self.assertTrue(any("раменское" in q for q in head),
+                        f"географические запросы должны идти первыми: {out[:8]}")
+        self.assertFalse(any("обзор" in q or "урок" in q for q in head),
+                         f"видеозапросы не должны открывать поиск чатов: {out[:8]}")
+
+
+class LocalNicheQueriesTests(unittest.TestCase):
+    """Запросы и названия мест для локальной ниши — разбор живого провала.
+
+    Бурение скважин в Московской области: четыре нажатия клиента, все впустую. В логе
+    поиск чатов шёл по видеозапросам «обзор гидронагнетателей 2026», потому что
+    params.web_search оставался включённым и порция запросов приходила из yt_queries.
+    А geo нейросеть вернула целой фразой «Московская область, районы Раменское,
+    Домодедово, Воскресенск» — и как запрос, и как признак чата это не работает.
+    """
+
+    def test_local_niche_turns_off_web_search(self):
+        """Иначе поиску чатов достаются запросы для видео, а не «Раменское чат»."""
         import inspect
 
-        from parsing.smart import discovery
+        from parsing.smart import run
 
-        src = inspect.getsource(discovery.discover_round)
-        self.assertIn('web_ok = params.web_search and not getattr(profile, "geo", "")', src,
-                      "при локальной нише внешний поиск должен отключаться")
+        src = inspect.getsource(run)
+        self.assertIn('params.web_search = False', src,
+                      "при локальной нише внешний поиск обязан выключаться на уровне параметров")
+        i_off = src.find("params.web_search = False")
+        i_ensure = src.find("if params.web_search and not (params.offline or params.finish):")
+        self.assertLess(i_off, i_ensure, "выключать нужно до догенерации видеозапросов")
+
+    def test_phrase_is_split_into_separate_places(self):
+        from parsing.smart.profile import _split_places
+
+        geo, terms = _split_places("Московская область, районы Раменское, Домодедово, Воскресенск", [])
+        self.assertIn("Раменское", terms, f"название района потерялось: {terms}")
+        self.assertIn("Домодедово", terms)
+        self.assertIn("Воскресенск", terms)
+        self.assertTrue(all(len(t.split()) <= 3 for t in terms), f"длинные фразы остались: {terms}")
+        self.assertEqual(geo, terms[0], "geo — первое из разобранных мест")
+
+    def test_service_words_are_dropped(self):
+        from parsing.smart.profile import _split_places
+
+        _, terms = _split_places("город Казань", ["районы Авиастроительный"])
+        self.assertIn("Казань", terms)
+        self.assertIn("Авиастроительный", terms)
+
+    def test_online_niche_has_no_places(self):
+        from parsing.smart.profile import _split_places
+
+        geo, terms = _split_places("", [])
+        self.assertEqual(geo, "")
+        self.assertEqual(terms, [])
+
+    def test_split_places_feed_working_filter(self):
+        """Разобранные места обязаны реально пропускать городской чат."""
+        from parsing.smart.discovery import _Pool
+        from parsing.smart.profile import _split_places
+
+        _, terms = _split_places("Московская область, районы Раменское, Домодедово", [])
+        pool = _Pool(exclude=set(), geo_terms=terms)
+        self.assertIsNotNone(pool.add(LocalNicheTests._chat(1, "Раменское | Барахолка"), "поиск"),
+                             "чат района обязан пройти после разбора фразы")
+        self.assertIsNone(pool.add(LocalNicheTests._chat(2, "Бурение скважин | оборудование"), "поиск"),
+                          "профильный чат без места брать нельзя")

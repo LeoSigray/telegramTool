@@ -258,6 +258,11 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
             changed = True
         if not (params.offline or params.finish) and await ensure_query_pool(profile, use_llm, log, params):
             changed = True
+        if getattr(profile, "geo", ""):
+            # Локальная ниша ищется только внутри Telegram. Отключаем здесь, а не внутри
+            # поиска: иначе порция запросов берётся из yt_queries, и поиску чатов достаются
+            # видеозапросы вроде «обзор гидронагнетателей 2026» вместо «Раменское чат».
+            params.web_search = False
         if params.web_search and not (params.offline or params.finish):
             ensure = ensure_yt_queries if params.source == "youtube" else ensure_web_queries
             if await ensure(profile, use_llm, log, params):

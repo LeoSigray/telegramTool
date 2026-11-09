@@ -160,8 +160,8 @@ _PROFILE_PROMPT = """Ниже описание и посты Telegram-канал
   "community_queries": ["до 50 запросов из 1-3 слов для поиска ЧАТОВ, где общаются ПОКУПАТЕЛИ (не продавцы): по роли покупателя, его бизнесу, площадкам и профессиональным сообществам. Пример для CRM-интегратора: чат предпринимателей, селлеры wildberries, владельцы интернет-магазинов, маркетологи чат. Запрещено называть сам товар, бренды и технологии продукта: покупатели обычно не называют так свои чаты"],
   "product_keywords": ["8-15 отдельных слов, которыми покупатель называет САМ ТОВАР или услугу, в разных написаниях (кириллицей и латиницей), например: айфон, iphone, макбук, macbook, apple, смартфоны, электроника"],
   "languages": ["коды языков покупателей, например ru"],
-  "geo": "город или район, если услуга оказывается на месте и клиенту надо приехать (шиномонтаж, салон, ремонт квартир). Пустая строка, если услуга работает по всей стране или онлайн",
-  "geo_terms": ["3-8 названий этого места, как его пишут в чатах: город, сокращения, районы, станции метро рядом. Пусто, если geo пустой"],
+  "geo": "ОДНО название места одним-двумя словами, если услуга оказывается на месте и клиенту надо приехать: Москва, Раменское, Казань. Не перечисление и не фраза. Пустая строка, если услуга работает по всей стране или онлайн",
+  "geo_terms": ["3-8 отдельных названий, как место пишут в чатах: сам город, соседние города, районы, сокращения (мск, спб), станции метро. Каждое — одним-двумя словами, не фразой. Пусто, если geo пустой"],
   "anti": ["3-8 пунктов: кого НЕ считать клиентом"],
   "seller_phrases": ["5-10 фраз, которыми в этой нише рекламируют себя исполнители-конкуренты"]
 }}"""
@@ -221,8 +221,8 @@ async def build_profile(client, params, lex: tp.Lexicon, log, use_llm: bool) -> 
             prof.anti = _clean_list(data.get("anti"), 8, 120)
             prof.seller_phrases = _clean_list(data.get("seller_phrases"), 10)
             prof.community_queries = _clean_list(data.get("community_queries"), 50, 40)
-            prof.geo = str(data.get("geo", "") or "").strip()[:60]
-            prof.geo_terms = _clean_list(data.get("geo_terms"), 8, 40)
+            prof.geo, prof.geo_terms = _split_places(str(data.get("geo", "") or "").strip()[:300],
+                                                     _clean_list(data.get("geo_terms"), 12, 40))
             prof.queries_version = QUERIES_VERSION
             prof.product_keywords = _clean_list(data.get("product_keywords"), 20, 25)
             prof.languages = _clean_list(data.get("languages"), 3, 5)
@@ -386,6 +386,33 @@ def _with_geo(queries: list[str], prof: Profile, limit: int) -> list[str]:
     for q in queries:                          # исходные тематические — последним слоем
         add(q)
     return out[:limit]
+
+
+def _split_places(geo: str, terms: list) -> tuple[str, list]:
+    """Отдельные названия мест вместо одной фразы.
+
+    Нейросеть на бриф «бурение скважин в Московской области» вернула geo целой строкой
+    «Московская область, районы Раменское, Домодедово, Воскресенск». Как запрос это мусор,
+    а как признак для чата — неработающее условие: искать чат, в названии которого есть
+    сразу все эти слова, бессмысленно. Поэтому режем по запятым и держим короткие названия:
+    чат называется «Раменское чат», а не «Московская область районы Раменское».
+    """
+    raw = [geo] + list(terms or [])
+    places: list[str] = []
+    seen: set = set()
+    for chunk in raw:
+        for part in str(chunk or "").replace(";", ",").split(","):
+            part = " ".join(part.split()).strip(" -—·")
+            # «районы Раменское» → убираем служебное слово, оставляем само название
+            for drop in ("районы", "район", "города", "город", "округ", "посёлки", "поселки"):
+                if part.lower().startswith(drop + " "):
+                    part = part[len(drop) + 1:]
+            if not part or len(part.split()) > 3 or len(part) < 3:
+                continue
+            if part.lower() not in seen:
+                seen.add(part.lower())
+                places.append(part)
+    return (places[0] if places else ""), places[:8]
 
 
 async def ensure_query_pool(prof: Profile, use_llm: bool, log, params) -> bool:
