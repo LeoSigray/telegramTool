@@ -263,6 +263,17 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
             # поиска: иначе порция запросов берётся из yt_queries, и поиску чатов достаются
             # видеозапросы вроде «обзор гидронагнетателей 2026» вместо «Раменское чат».
             params.web_search = False
+            # Городские чаты живут по другим правилам, чем тематические сообщества, и
+            # общие пороги их не пропускают. Правим только для ниш с местом: у обычных
+            # клиентов поиск остаётся прежним.
+            params.junk_dups = max(params.junk_dups, params.local_junk_dups)
+            params.junk_bots = max(params.junk_bots, params.local_junk_bots)
+            params.probe_cap = max(params.probe_cap, params.local_probe_cap)
+            params.days = max(params.days, params.local_days)
+            params.search_terms = max(params.search_terms, params.local_search_terms)
+            log.info("профиль", f"локальный режим отбора: мусор {params.junk_dups:.2f}/{params.junk_bots:.2f}, "
+                                f"проба до {params.probe_cap} чатов, окно {params.days} дн., "
+                                f"маркеров запроса {params.search_terms}")
         if params.web_search and not (params.offline or params.finish):
             ensure = ensure_yt_queries if params.source == "youtube" else ensure_web_queries
             if await ensure(profile, use_llm, log, params):

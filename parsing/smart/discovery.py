@@ -420,14 +420,22 @@ async def _qualify(client, ids: list, pool: _Pool, profile, params, store, lex, 
     # (сколько авторов YouTube сослалось, сколько связей в графе), поэтому отсекается
     # хвост, а не сильные. На живом прогоне 32 чата стоили 98 с.
     if len(checked) > params.probe_cap:
-        checked.sort(key=lambda se: -(se[0].meta_score or 0))
+        local = bool(getattr(profile, "geo", ""))
+        if local:
+            # В локальной нише тема не различает кандидатов: чаты одного города все
+            # одинаково «про город». Зато различает размер — в Новокузнецке клиент
+            # сидит в барахолке на 15 тысяч человек, а не в чате дома на сорок.
+            checked.sort(key=lambda se: (-(se[0].members or 0), -(se[0].meta_score or 0)))
+        else:
+            checked.sort(key=lambda se: -(se[0].meta_score or 0))
         skipped = checked[params.probe_cap:]
         checked = checked[:params.probe_cap]
         for s, _ent in skipped:
             s.status, s.reason = "rejected", f"не пробован: хватило {params.probe_cap} лучших за раунд"
             report.append(s)
         log.info("источники", f"проба: берём {params.probe_cap} лучших из "
-                              f"{params.probe_cap + len(skipped)} кандидатов")
+                              f"{params.probe_cap + len(skipped)} кандидатов"
+                              + (" (по числу участников)" if local else ""))
 
     # проба: смотрим содержимое. Чаты независимы, поэтому идём пачками —
     # последовательный обход с паузами занимал больше минуты на раунд.

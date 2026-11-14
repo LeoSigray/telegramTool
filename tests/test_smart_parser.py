@@ -2533,3 +2533,82 @@ class LocalNicheQueriesTests(unittest.TestCase):
                              "чат района обязан пройти после разбора фразы")
         self.assertIsNone(pool.add(LocalNicheTests._chat(2, "Бурение скважин | оборудование"), "поиск"),
                           "профильный чат без места брать нельзя")
+
+
+class LocalNicheSelectionTests(unittest.TestCase):
+    """Отбор чатов для ниши с городом — разбор провала по живым данным.
+
+    LPG-массаж в Новокузнецке: гео нашло 134 чата города, а отправок ноль. Проба
+    пропускала только мёртвые (@novokuzneck_obyav, 1.8 сообщений в неделю), а самый
+    живой чат города — @chat_nvkzonline42, 15 790 человек, 2400 сообщений в неделю —
+    уходил в брак как «копипаст». Городская барахолка состоит из шаблонных объявлений
+    и анонимов: общие пороги мусора считают её помойкой, хотя это и есть рынок.
+    """
+
+    @staticmethod
+    def _params(geo: bool):
+        from parsing.smart.settings import Params
+
+        p = Params(channel="topic-1")
+        if geo:                                   # повторяем то, что делает run.py
+            p.junk_dups = max(p.junk_dups, p.local_junk_dups)
+            p.junk_bots = max(p.junk_bots, p.local_junk_bots)
+            p.probe_cap = max(p.probe_cap, p.local_probe_cap)
+            p.days = max(p.days, p.local_days)
+            p.search_terms = max(p.search_terms, p.local_search_terms)
+        return p
+
+    def test_city_marketplace_passes_in_local_mode(self):
+        """Доля копипаста реального чата города не должна считаться мусором."""
+        loc, usual = self._params(True), self._params(False)
+        marketplace_dups = 0.42        # столько похожих объявлений в живой барахолке
+        self.assertGreater(marketplace_dups, usual.junk_dups,
+                           "в обычном режиме такой чат бракуется — это и был баг")
+        self.assertLess(marketplace_dups, loc.junk_dups,
+                        "в локальном режиме барахолка обязана проходить")
+
+    def test_obvious_spam_still_rejected(self):
+        """Смягчили, но не отключили: явная помойка отсекается и в локальном режиме."""
+        loc = self._params(True)
+        self.assertLess(loc.junk_dups, 1.0)
+        self.assertLess(loc.junk_bots, 1.0)
+        self.assertGreater(0.95, loc.junk_dups, "100% копипаста — всё ещё мусор")
+
+    def test_local_mode_widens_window_and_probe(self):
+        loc, usual = self._params(True), self._params(False)
+        self.assertGreater(loc.days, usual.days, "в малом городе запрос редкий — окно шире")
+        self.assertGreater(loc.probe_cap, usual.probe_cap, "городских чатов находится больше сотни")
+
+    def test_intent_markers_reach_advice_words(self):
+        """При 8 маркерах список обрывался на «ищу/нужен» и не доходил до «посоветуйте».
+
+        В городском чате услугу спрашивают именно так: «посоветуйте массажиста».
+        """
+        from parsing.smart.keywords import search_terms
+        from parsing.smart.profile import Profile
+
+        prof = Profile(channel="topic-1", geo="Новокузнецк")
+        terms = search_terms(prof, self._params(True))
+        low = [t.lower() for t in terms]
+        self.assertTrue(any("посоветуйте" in t for t in low),
+                        f"маркеры совета не попали в список: {terms}")
+        usual = search_terms(prof, self._params(False))
+        self.assertLess(len(usual), len(terms), "в обычном режиме список остаётся прежним")
+
+    def test_usual_niche_thresholds_untouched(self):
+        """Клиентов без города правка не касается вообще."""
+        from parsing.smart.settings import Params
+
+        d, usual = Params(channel="topic-1"), self._params(False)
+        for f in ("junk_dups", "junk_bots", "probe_cap", "days", "search_terms"):
+            self.assertEqual(getattr(usual, f), getattr(d, f), f"изменилось {f} у обычной ниши")
+
+    def test_local_probe_prefers_crowded_chats(self):
+        """Порядок пробы: в городе важен размер чата, а не тематическая близость."""
+        import inspect
+
+        from parsing.smart import discovery
+
+        src = inspect.getsource(discovery._qualify)
+        self.assertIn("-(se[0].members or 0)", src,
+                      "для локальной ниши кандидаты должны сортироваться по участникам")
