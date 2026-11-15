@@ -2612,3 +2612,60 @@ class LocalNicheSelectionTests(unittest.TestCase):
         src = inspect.getsource(discovery._qualify)
         self.assertIn("-(se[0].members or 0)", src,
                       "для локальной ниши кандидаты должны сортироваться по участникам")
+
+
+class GenericPlaceTests(unittest.TestCase):
+    """Общее слово — не признак города.
+
+    Для «миофасциальный массаж для женщин в Москве» нейросеть вернула places
+    «центр», «юго-запад», «станция метро», «красные ворота». По слову «центр» фильтр
+    места пропустил «Барахолку Новый Центр Пермь» и «Буданбай — Казахстан и
+    Центральную Азию», в поиск ушли запросы «станция метро соседи», и клиент за 24
+    нажатия получил одну отправку: читались эзотерика, политика Казахстана и интим.
+    """
+
+    def test_generic_words_dropped(self):
+        from parsing.smart.profile import _split_places
+
+        geo, places = _split_places("Москва", ["Москва", "мск", "центр", "юго‑запад",
+                                               "мкр. юго‑запад", "станция метро", "красные ворота"])
+        low = [p.lower() for p in places]
+        self.assertIn("москва", low)
+        self.assertIn("мск", low)
+        self.assertIn("красные ворота", low, "настоящее название места терять нельзя")
+        for bad in ("центр", "станция метро", "юго‑запад", "юго-запад", "мкр. юго‑запад"):
+            self.assertNotIn(bad.lower(), low, f"общее слово осталось признаком города: {bad}")
+        self.assertEqual(geo, places[0])
+
+    def test_foreign_city_no_longer_passes(self):
+        """Главная проверка: чужой город обязан отсеяться."""
+        from parsing.smart.discovery import _Pool
+        from parsing.smart.profile import _split_places
+
+        _, places = _split_places("Москва", ["Москва", "мск", "центр", "станция метро"])
+        pool = _Pool(exclude=set(), geo_terms=places)
+        self.assertIsNone(pool.add(LocalNicheTests._chat(1, "Барахолка Новый Центр Пермь"), "поиск"),
+                          "чат Перми проходил по слову «центр» — это и был баг")
+        self.assertIsNone(pool.add(LocalNicheTests._chat(2, "Буданбай — Казахстан и Центральная Азия"), "поиск"),
+                          "чат Казахстана проходил по слову «центральная»")
+        self.assertIsNotNone(pool.add(LocalNicheTests._chat(3, "Москва мамочки ЮЗАО"), "поиск"),
+                             "целевой московский чат обязан проходить")
+
+    def test_real_district_names_survive(self):
+        """Собственные имена районов — нормальный признак, их не трогаем."""
+        from parsing.smart.profile import _split_places
+
+        _, places = _split_places("Новокузнецк", ["Новокузнецк", "Новоильинка", "Кузнецкий"])
+        low = [p.lower() for p in places]
+        for good in ("новокузнецк", "новоильинка", "кузнецкий"):
+            self.assertIn(good, low, f"потеряли настоящее название: {good}")
+
+    def test_drop_reason_is_logged(self):
+        """Молчаливый отсев кандидатов больше не допускается."""
+        import inspect
+
+        from parsing.smart import run
+
+        src = inspect.getsource(run)
+        self.assertIn("ни один из", src, "нужна причина, когда не отдан никто")
+        self.assertIn('log.warn("отбор"', src)

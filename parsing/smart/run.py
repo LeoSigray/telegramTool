@@ -530,6 +530,23 @@ async def run_smart_parse(params: Params, client=None, echo: bool = True, *, on_
             log.info("сообщения", f"прочитано {len(messages)} сообщений в {len(sources)} чатах; "
                                   f"людей после всех проверок: {len(result)} из {params.people} "
                                   f"(с запросом {n_hot}, тёплых {len(result) - n_hot})")
+            if not result and ranked:
+                # Разбор прогона массажа в Москве занял полчаса ровно потому, что здесь
+                # ничего не писалось: в логе «подходящих людей 4», а на выходе ноль, без
+                # единой причины. Теперь видно, на чём именно отвалились кандидаты.
+                no_name = sum(1 for c in ranked if not (c.author and c.author.username))
+                not_elig = sum(1 for c in ranked if (c.author and c.author.username) and not c.eligible)
+                low = [c for c in all_u if c.eligible and c.interest < params.min_interest]
+                log.warn("отбор", f"ни один из {len(ranked)} кандидатов не отдан: "
+                                  f"без имени {no_name}, не подходят по проверкам {not_elig}, "
+                                  f"интерес ниже {params.min_interest:g} — {len(low)}")
+                for c in sorted(all_u, key=lambda x: -x.interest)[:5]:
+                    why = ("нет имени" if not (c.author and c.author.username)
+                           else "не прошёл проверки" if not c.eligible
+                           else f"интерес {c.interest:.1f} ниже порога" if c.interest < params.min_interest
+                           else "отдан")
+                    text = " ".join(str(getattr(c.msg, "text", "") or "").split())[:70]
+                    log.info("отбор", f"  @{(c.author.username if c.author else '—')}: {why}; «{text}»")
             chat_info = {sid: {"weight": weights.get(sid, 0.0), "overlap": overlap.get(sid, 0.0),
                                "product_share": shares.get(sid),
                                "members": len(members.get(sid, ())), "people": len(people_by_chat.get(sid, ()))}
